@@ -28,17 +28,20 @@ O NexusRouter é um broker de mensagens de baixa latência construído especific
 
 ```
 nexusrouter/
+├── AGENTS.md                         — Instruções para Kiro e Cursor (aponta para .kiro/)
 ├── .kiro/
 │   ├── specs/
-│   │   ├── requirements.md   — Requisitos Funcionais e Não Funcionais
-│   │   ├── design.md         — Documento de Design de Arquitetura
-│   │   └── tasks.md          — Plano de tarefas incremental (T-01 → T-43)
+│   │   └── nexusrouter/
+│   │       ├── requirements.md       — Requisitos Funcionais e Não Funcionais
+│   │       ├── design.md             — Documento de Design de Arquitetura
+│   │       └── tasks.md              — Plano de tarefas incremental (T-01 → T-43)
 │   └── steering/
-│       ├── coding-standards.md   — Convenções .NET 10 C#, regras do hot path
-│       └── b3-guidelines.md      — Regras de protocolo FIX 4.4 do B3 EntryPoint
+│       ├── coding-standards.md       — Convenções .NET 10 C#, regras do hot path
+│       ├── b3-guidelines.md          — Regras de protocolo FIX 4.4 do B3 EntryPoint
+│       └── git-workflow.md           — Branch, commit, push e PR
 ├── docs/
-│   ├── EntryPointMessageSpecs.pdf  (existente)
-│   └── FIX44Entrypoint.xml         (existente)
+│   ├── EntryPointMessageSpecs.pdf    (referência; pode estar ausente localmente)
+│   └── FIX44Entrypoint.xml           (existente)
 ├── README.md
 └── (src/, tests/, NexusRouter.sln — criados na Fase 1, Tarefa T-01)
 ```
@@ -121,12 +124,15 @@ Consulte `docs/EntryPointMessageSpecs.pdf` e `.kiro/steering/b3-guidelines.md` p
 
 ## Spec-Driven Development
 
-Este projeto segue o **Spec-Driven Development (SDD)** usando o task runner do Kiro. Todas as tarefas de implementação estão rastreadas em `.kiro/specs/tasks.md` (T-01 → T-43 distribuídos em 8 fases). O comportamento do agente é governado por dois arquivos de steering:
+Este projeto segue o **Spec-Driven Development (SDD)**. A fonte da verdade é `.kiro/`; o Cursor e o Kiro devem ler os mesmos arquivos (ver `AGENTS.md`).
+
+Todas as tarefas de implementação estão em `.kiro/specs/nexusrouter/tasks.md` (T-01 → T-43 em 8 fases). O comportamento do agente é governado por:
 
 - `.kiro/steering/coding-standards.md` — Convenções C#, regras do hot path, padrões de teste
 - `.kiro/steering/b3-guidelines.md` — Regras do protocolo B3 EntryPoint, catálogo de mensagens, restrições de campos
+- `.kiro/steering/git-workflow.md` — Branch, commits confirmados pelo usuário, push e PR
 
-Para implementar uma tarefa, abra o Kiro e selecione a tarefa em `.kiro/specs/tasks.md`.
+No Kiro, abra a spec `nexusrouter` e execute a próxima tarefa no task runner. No Cursor, execute a próxima tarefa `- [ ]` em `tasks.md` e marque `- [x]` ao concluir.
 
 ---
 

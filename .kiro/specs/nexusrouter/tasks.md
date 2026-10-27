@@ -8,7 +8,9 @@
 
 ## Modelo de Execução
 
-As tarefas são projetadas para ser executadas **uma por vez** via task runner do Kiro. Cada tarefa é autocontida, possui entradas/saídas explícitas e produz um artefato verificável. As tarefas dentro de uma fase devem ser concluídas em ordem; fases posteriores dependem da saída de fases anteriores.
+As tarefas são projetadas para ser executadas **uma por vez**. Cada tarefa é autocontida, possui entradas/saídas explícitas e produz um artefato verificável. As tarefas dentro de uma fase devem ser concluídas em ordem; fases posteriores dependem da saída de fases anteriores.
+
+No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a próxima tarefa `- [ ]` em ordem e marque `- [x]` ao concluir. Não execute duas tarefas em paralelo no mesmo working tree.
 
 **Visão Geral das Fases:**
 
@@ -27,7 +29,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 1 — Scaffold da Solução e Camada de Domínio
 
-### T-01 — Inicializar a Solução .NET 10 e a Estrutura de Projetos
+- [ ] T-01 — Inicializar a Solução .NET 10 e a Estrutura de Projetos
 
 **Objetivo:** Criar o arquivo de solução e todos os projetos esqueleto com as referências de projeto corretas.
 
@@ -56,7 +58,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-02 — Definir as Enumerações do Núcleo
+- [ ] T-02 — Definir as Enumerações do Núcleo
 
 **Objetivo:** Definir todos os enums compartilhados no projeto de Domínio.
 
@@ -72,7 +74,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
+- [ ] T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
 
 **Objetivo:** Implementar os value types primitivos usados em todo o hot path.
 
@@ -88,7 +90,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
+- [ ] T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
 
 **Objetivo:** Estabelecer as abstrações primárias que todas as implementações downstream devem satisfazer.
 
@@ -112,7 +114,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
+- [ ] T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
 
 **Objetivo:** Implementar os containers de dados que fluem entre os tiers.
 
@@ -135,7 +137,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
+- [ ] T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
 
 **Objetivo:** Implementar os utilitários de pool zero-allocation necessários para o hot path.
 
@@ -161,7 +163,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 2 — Camada de Ingress
 
-### T-07 — Implementar `ExponentialBackoffReconnectPolicy`
+- [ ] T-07 — Implementar `ExponentialBackoffReconnectPolicy`
 
 **Objetivo:** Implementar a estratégia de delay de reconexão usada por todas as sessões.
 
@@ -179,7 +181,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-08 — Implementar `FixSessionStateMachine`
+- [ ] T-08 — Implementar `FixSessionStateMachine`
 
 **Objetivo:** Implementar a state machine de nível de sessão FIX (ciclo de vida Logon, Heartbeat, Logout, TestRequest).
 
@@ -198,7 +200,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-09 — Implementar `Fix44FrameDecoder` e `Fix50FrameDecoder`
+- [ ] T-09 — Implementar `Fix44FrameDecoder` e `Fix50FrameDecoder`
 
 **Objetivo:** Implementar detecção de limite de frame específica do protocolo para FIX 4.x e FIX 5.0/FIXT.
 
@@ -218,7 +220,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-10 — Implementar `FixSession` — Conexão TCP e Loop de Leitura do Pipe
+- [ ] T-10 — Implementar `FixSession` — Conexão TCP e Loop de Leitura do Pipe
 
 **Objetivo:** Implementar o ciclo de vida TCP da sessão e o message pump do `PipeReader`.
 
@@ -242,7 +244,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-11 — Implementar o Handshake de Logon FIX e o Timer de Heartbeat
+- [ ] T-11 — Implementar o Handshake de Logon FIX e o Timer de Heartbeat
 
 **Objetivo:** Completar o protocolo FIX de nível de sessão: envio/recebimento de Logon, geração de Heartbeat, TestRequest em caso de staleness.
 
@@ -267,7 +269,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-12 — Implementar a Publicação de Eventos de Ciclo de Vida da Sessão
+- [ ] T-12 — Implementar a Publicação de Eventos de Ciclo de Vida da Sessão
 
 **Objetivo:** Emitir eventos de ciclo de vida da sessão para o channel de auditoria sem acoplamento ao hot path.
 
@@ -285,7 +287,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 3 — Core Router / Hot Path
 
-### T-13 — Implementar `PassThroughRewriter`
+- [ ] T-13 — Implementar `PassThroughRewriter`
 
 **Objetivo:** Reescrita in-place de `MsgSeqNum (34)` e `CheckSum (10)` em um `Span<byte>` sem alocação.
 
@@ -305,7 +307,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-14 — Implementar `FixTokenizer`
+- [ ] T-14 — Implementar `FixTokenizer`
 
 **Objetivo:** Tokenizador de campos FIX zero-allocation para o modo de entrega `Parse`.
 
@@ -325,7 +327,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-15 — Implementar `RouteResolver`
+- [ ] T-15 — Implementar `RouteResolver`
 
 **Objetivo:** Construir a tabela de roteamento imutável a partir da configuração e expor lookup O(1) lock-free.
 
@@ -343,7 +345,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-16 — Implementar `FanOutEngine`
+- [ ] T-16 — Implementar `FanOutEngine`
 
 **Objetivo:** Despachar um `DispatchPayload` para todos os dispatchers registrados em uma rota, de forma não bloqueante.
 
@@ -362,7 +364,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-17 — Implementar `RouterEngine`
+- [ ] T-17 — Implementar `RouterEngine`
 
 **Objetivo:** Compor o pipeline de roteamento do hot path em um único ponto de entrada.
 
@@ -385,7 +387,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-18 — Implementar a Interface `IMessageRouter` e Conectar Session ↔ Router
+- [ ] T-18 — Implementar a Interface `IMessageRouter` e Conectar Session ↔ Router
 
 **Objetivo:** Desacoplar `FixSession` do `RouterEngine` concreto via interface.
 
@@ -405,7 +407,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 4 — Camada de Egress
 
-### T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
+- [ ] T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
 
 **Objetivo:** Fornecer o consume loop de background comum, gerenciamento de ciclo de vida e tratamento de erros compartilhados por todos os dispatchers.
 
@@ -428,7 +430,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-20 — Implementar `KafkaMessageDispatcher`
+- [ ] T-20 — Implementar `KafkaMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para Kafka usando `Confluent.Kafka`.
 
@@ -450,7 +452,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-21 — Implementar `RabbitMQMessageDispatcher`
+- [ ] T-21 — Implementar `RabbitMQMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para RabbitMQ usando `RabbitMQ.Client`.
 
@@ -469,7 +471,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
+- [ ] T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
 
 **Objetivo:** Dispatcher FIX outbound que re-emite mensagens para um consumidor FIX downstream.
 
@@ -488,7 +490,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
+- [ ] T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
 
 **Objetivo:** Serializar um value type `FixMessage` de volta para `byte[]` no formato wire para dispatchers outbound operando em modo `Parse`.
 
@@ -507,7 +509,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
+- [ ] T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
 
 **Objetivo:** Adicionar mTLS TLS 1.2/1.3 opcional ao `FixSession` (inbound) e `FixOutboundDispatcher` (outbound).
 
@@ -526,7 +528,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
+- [ ] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
 
 **Objetivo:** Garantir que cada `FixOutboundDispatcher` rastreie seu próprio contador independente de `MsgSeqNum` outbound, com persistência para recuperação de crash.
 
@@ -545,7 +547,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 5 — Auditoria / Cold Path
 
-### T-26 — Implementar `AuditChannelSingleton`
+- [ ] T-26 — Implementar `AuditChannelSingleton`
 
 **Objetivo:** Criar o `Channel<AuditRecord>` compartilhado usado em todo o sistema como mecanismo de desacoplamento entre hot path e audit writer.
 
@@ -562,7 +564,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-27 — Implementar `AuditWriterService`
+- [ ] T-27 — Implementar `AuditWriterService`
 
 **Objetivo:** Serviço hosted de background que drena o channel de auditoria e persiste os registros.
 
@@ -580,7 +582,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
+- [ ] T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
 
 **Objetivo:** Conectar `IMessageDispatcher.OnDispatchError` e eventos de overflow de channel cheio ao channel de auditoria.
 
@@ -599,7 +601,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 6 — Host, Wiring de DI e Configuração
 
-### T-29 — Implementar as Classes de Options de Configuração
+- [ ] T-29 — Implementar as Classes de Options de Configuração
 
 **Objetivo:** Definir POCOs de configuração fortemente tipados para todo o sistema.
 
@@ -621,7 +623,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-30 — Implementar as Extensions de Registro de DI
+- [ ] T-30 — Implementar as Extensions de Registro de DI
 
 **Objetivo:** Conectar todos os serviços ao `IServiceCollection` de forma limpa e organizada.
 
@@ -639,7 +641,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-31 — Implementar `Program.cs` e o Entry Point da Aplicação
+- [ ] T-31 — Implementar `Program.cs` e o Entry Point da Aplicação
 
 **Objetivo:** Inicializar o Generic Host com todos os serviços registrados e configurar Serilog.
 
@@ -658,7 +660,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-32 — Implementar a Sequência de Shutdown Gracioso
+- [ ] T-32 — Implementar a Sequência de Shutdown Gracioso
 
 **Objetivo:** Impor a sequência de shutdown definida em NFR-REL-04.
 
@@ -677,7 +679,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 7 — Observabilidade e Benchmarks
 
-### T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
+- [ ] T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
 
 **Objetivo:** Adicionar métricas de runtime para throughput, latência e profundidade de fila.
 
@@ -697,7 +699,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
+- [ ] T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
 
 **Objetivo:** Expor métricas no formato de scrape Prometheus.
 
@@ -713,7 +715,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
+- [ ] T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
 
 **Objetivo:** Adicionar spans de rastreamento distribuído nas fronteiras chave do hot path.
 
@@ -730,7 +732,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
+- [ ] T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
 
 **Objetivo:** Fornecer benchmarks de latência reproduzíveis para os componentes do hot path.
 
@@ -752,7 +754,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ## Fase 8 — Testes
 
-### T-37 — Testes Unitários: Camada de Domínio
+- [ ] T-37 — Testes Unitários: Camada de Domínio
 
 **Objetivo:** Testar todos os value types de domínio, utilitários de pooling e enumerações.
 
@@ -764,7 +766,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
+- [ ] T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
 
 **Objetivo:** Verificar a corretude dos dois algoritmos centrais de processamento do hot path.
 
@@ -780,7 +782,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-39 — Testes Unitários: `FixSessionStateMachine`
+- [ ] T-39 — Testes Unitários: `FixSessionStateMachine`
 
 **Objetivo:** Verificar transições de estado, rejeição de transições ilegais e detecção de staleness de heartbeat.
 
@@ -792,7 +794,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-40 — Testes Unitários: `ExponentialBackoffReconnectPolicy`
+- [ ] T-40 — Testes Unitários: `ExponentialBackoffReconnectPolicy`
 
 **Objetivo:** Verificar a corretude do cálculo de delay.
 
@@ -804,7 +806,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
+- [ ] T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
 
 **Objetivo:** Teste de roteamento end-to-end com stubs de dispatcher em memória.
 
@@ -816,7 +818,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
+- [ ] T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
 
 **Objetivo:** Testar a lógica de reconexão da sessão e o comportamento de heartbeat sem uma bolsa real.
 
@@ -830,7 +832,7 @@ As tarefas são projetadas para ser executadas **uma por vez** via task runner d
 
 ---
 
-### T-43 — Testes de Integração: Fan-Out End-to-End com Stubs de Kafka e RabbitMQ
+- [ ] T-43 — Testes de Integração: Fan-Out End-to-End com Stubs de Kafka e RabbitMQ
 
 **Objetivo:** Verificar o pipeline completo desde a sessão inbound simulada até a entrega pelo dispatcher.
 
