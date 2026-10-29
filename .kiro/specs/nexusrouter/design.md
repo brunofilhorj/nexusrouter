@@ -500,7 +500,7 @@ NexusRouter/
 │       └── init.sql                      # CREATE EXTENSION timescaledb + hypertable
 ├── docker-compose.yml                    # Kafka KRaft, RabbitMQ, TimescaleDB
 ├── .env.example
-└── NexusRouter.sln
+└── NexusRouter.slnx
 ```
 
 ---
