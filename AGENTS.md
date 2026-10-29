@@ -22,4 +22,6 @@ This repository is spec-driven. **`.kiro/` is the source of truth** for both Kir
 .kiro/specs/nexusrouter/   # requirements, design, tasks (Kiro spec)
 .kiro/steering/            # always-on project rules (Kiro steering)
 docs/FIX44Entrypoint.xml   # B3 FIX 4.4 data dictionary
+docker-compose.yml         # Kafka, RabbitMQ, PostgreSQL+TimescaleDB (local)
+docker/postgres/init.sql   # hypertable de mensagens FIX
 ```

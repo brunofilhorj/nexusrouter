@@ -59,7 +59,8 @@ O NexusRouter é um motor de ingestão, roteamento e distribuição de alta perf
 | FR-EGR-05 | Cada instância de dispatcher DEVE ter seu próprio buffer/channel de envio isolado. A back-pressure de um consumidor downstream DEVE ser absorvida pela fila interna daquele dispatcher e NÃO DEVE se propagar de volta ao receive loop do hot path. |
 | FR-EGR-06 | O registro de dispatchers e as regras de roteamento (qual sessão roteia para qual(is) dispatcher(s)) DEVEM ser definidos em configuração e carregados na inicialização. Mutação dinâmica de rotas em tempo de execução é desejável, mas está fora do escopo da v1. |
 | FR-EGR-07 | Cada dispatcher DEVE implementar um ciclo de vida `StartAsync` / `StopAsync` alinhado ao padrão `IHostedService` do .NET para inicialização limpa e shutdown gracioso. |
-| FR-EGR-08 | O `KafkaMessageDispatcher` DEVE publicar em tópicos Kafka configuráveis usando o producer `Confluent.Kafka` em modo fire-and-forget (acks=0 para latência mínima) OU com política de confirmação configurável. A estratégia de tópico e chave de partição DEVE ser configurável por instância de dispatcher. |
+| FR-EGR-08 | O `KafkaMessageDispatcher` DEVE publicar em tópicos Kafka configuráveis usando o producer `Confluent.Kafka` em modo fire-and-forget (acks=0 para latência mínima) OU com política de confirmação configurável. A estratégia de tópico e chave de partição DEVE ser configurável por instância de dispatcher. O mesmo dispatcher DEVE conectar tanto a Kafka auto-gerenciado (Docker, VM, cluster Apache/Redpanda/Confluent Platform) quanto a Kafka gerenciado na AWS (Amazon MSK), sem código específico de provedor no hot path — apenas `ProducerConfig` derivado de options. |
+| FR-EGR-11 | Cada instância Kafka DEVE expor, via configuração, no mínimo: `BootstrapServers`, `Topic`, `Acks`, `ClientId`, `SecurityProtocol` (`Plaintext`, `Ssl`, `SaslPlaintext`, `SaslSsl`), `SaslMechanism` (`None`, `Plain`, `ScramSha256`, `ScramSha512`, `OAuthBearer`, `AwsMskIam`), nomes de variáveis de ambiente para `SaslUsername`/`SaslPassword`, e opções TLS do producer (`SslCaLocation`, `EnableSslCertificateVerification`). Valores default DEVEM permitir Kafka local PLAINTEXT (`localhost:9092` / hostname Compose). Amazon MSK SASL/SCRAM DEVE ser alcançável com `SaslSsl` + `ScramSha512` e bootstrap `:9096`. Auth IAM do MSK (`AwsMskIam`) é opcional e DEVE ser isolada atrás de um callback/pacote carregado apenas quando o mechanism estiver selecionado. |
 | FR-EGR-09 | O `RabbitMQMessageDispatcher` DEVE publicar em exchanges/routing keys configuráveis usando a biblioteca oficial `RabbitMQ.Client` com um channel dedicado por dispatcher para evitar contenção de channel. |
 | FR-EGR-10 | Erros de dispatcher (falha de publicação, perda de conexão) DEVEM ser capturados, registrados no log de auditoria estruturado, e NÃO DEVEM propagar exceções para o hot path. |
 
@@ -70,10 +71,13 @@ O NexusRouter é um motor de ingestão, roteamento e distribuição de alta perf
 | FR-AUD-01 | O sistema DEVE manter uma trilha de auditoria no cold path de todas as mensagens recebidas, decisões de roteamento e resultados de dispatchers sem bloquear o hot path. |
 | FR-AUD-02 | O pipeline do log de auditoria DEVE usar `System.Threading.Channels.Channel<T>` (bounded, capaz de single-writer-multiple-reader) como mecanismo de desacoplamento entre o hot path e o audit writer. |
 | FR-AUD-03 | O channel de auditoria DEVE ser configurado com uma **capacidade limitada** e uma estratégia de overflow `BoundedChannelFullMode.DropOldest` ou `DropWrite`. O hot path DEVE usar o `TryWrite` não bloqueante no channel de auditoria e NÃO DEVE aguardar ou bloquear nele. |
-| FR-AUD-04 | O serviço de background audit writer DEVE consumir do channel e persistir registros em um sink configurável (log de arquivo estruturado via Serilog, ou banco de dados de série temporal) de forma assíncrona. |
+| FR-AUD-04 | O serviço de background audit writer DEVE consumir do channel e persistir registros de forma assíncrona em um ou mais sinks configuráveis. Sinks em escopo da v1: (a) log de arquivo estruturado via Serilog; (b) PostgreSQL com extensão TimescaleDB (persistência canônica das mensagens FIX recebidas). |
 | FR-AUD-05 | Eventos de ciclo de vida de sessão (FR-ING-07) TAMBÉM DEVEM ser escritos no channel de auditoria. |
-| FR-AUD-06 | O registro de auditoria de uma mensagem DEVE capturar no mínimo: `SessionId`, `IngressTimestamp` (UTC ticks, timestamp de hardware se disponível), `MsgType`, `ClOrdID` (se presente), `DeliveryMode`, `DispatcherIds` alvo e `EgressTimestamp`. |
+| FR-AUD-06 | O registro de auditoria de uma mensagem DEVE capturar no mínimo: `SessionId`, `IngressTimestamp` (UTC ticks, timestamp de hardware se disponível), `MsgType`, `ClOrdID` (se presente), `MsgSeqNum` (se presente), `DeliveryMode`, `DispatcherIds` alvo, `EgressTimestamp` e o payload FIX bruto (`RawFix`, cópia alugada no cold path — nunca I/O no hot path). |
 | FR-AUD-07 | As gravações no log de auditoria DEVEM sobreviver a um shutdown gracioso: o sistema DEVE drenar o channel de auditoria completamente antes de o processo encerrar. |
+| FR-AUD-08 | O sistema DEVE persistir as mensagens FIX recebidas de forma **assíncrona** no PostgreSQL (hypertable TimescaleDB). O hot path NÃO DEVE abrir conexões, executar SQL nem alocar strings de SQL. A cópia do payload para o `AuditRecord` ocorre após o fan-out, via `TryWrite` no channel de auditoria (ou um channel dedicado de persistência com a mesma semântica não bloqueante). |
+| FR-AUD-09 | A escrita no PostgreSQL DEVE ser em lote (`COPY` binário ou `INSERT` em batch via `Npgsql`). Tamanho do lote e intervalo de flush DEVEM ser configuráveis. Falha de persistência DEVE ser registrada no Serilog e NÃO DEVE afetar o hot path nem o egress. |
+| FR-AUD-10 | Persistência do payload bruto DEVE ser configurável por sessão: `Full` (bytes FIX completos), `MetadataOnly` (sem `RawFix`) ou `Sampled` (fração configurável). Default de desenvolvimento: `Full`. Default sugerido de produção em throughput extremo: `MetadataOnly` ou `Sampled` (ver design — orçamento de ingestão). |
 
 ---
 
@@ -111,8 +115,8 @@ O NexusRouter é um motor de ingestão, roteamento e distribuição de alta perf
 | ID | Requisito |
 |----|-----------|
 | NFR-SEC-01 | Sessões FIX/SBE outbound e inbound DEVEM suportar autenticação mútua TLS 1.2/1.3 (mTLS) opcional com caminhos de certificado configuráveis. |
-| NFR-SEC-02 | Credenciais (FIX Password, segredos SASL do Kafka, senhas do RabbitMQ) NÃO DEVEM ser armazenadas em texto simples em arquivos de configuração. A integração com o .NET Secret Manager ou injeção por variável de ambiente DEVE ser suportada. |
-| NFR-SEC-03 | Todos os endpoints externos (brokers Kafka, nós RabbitMQ, hosts FIX downstream) DEVEM ser configuráveis. Nenhum endpoint DEVE ser hardcoded. |
+| NFR-SEC-02 | Credenciais (FIX Password, SASL do Kafka, senhas do RabbitMQ, connection string / senha do PostgreSQL) NÃO DEVEM ser armazenadas em texto simples em arquivos de configuração. A integração com o .NET Secret Manager ou injeção por variável de ambiente DEVE ser suportada. |
+| NFR-SEC-03 | Todos os endpoints externos (brokers Kafka, nós RabbitMQ, hosts FIX downstream, PostgreSQL) DEVEM ser configuráveis. Nenhum endpoint DEVE ser hardcoded. |
 
 ### 3.5 Manutenibilidade e Extensibilidade (NFR-MAINT)
 
@@ -129,6 +133,9 @@ O NexusRouter é um motor de ingestão, roteamento e distribuição de alta perf
 
 - **Runtime Alvo:** .NET 10 LTS em Linux (x86-64, kernel ≥ 5.15 com suporte a SO_REUSEPORT). Compatibilidade com Windows é desejável, mas não é uma restrição primária.
 - **Escopo de Protocolo da Bolsa:** Os protocolos de nível de sessão FIX 4.2, FIX 4.4 e FIX 5.0/FIXT 1.1 estão em escopo. Encoding/decoding SBE é uma extensão futura; a arquitetura deve acomodá-la.
-- **Sem Persistência de Estado no Hot Path:** Não há RDBMS no caminho crítico. O estado de sequence number pode ser persistido de forma assíncrona em um store leve (arquivo/Redis) para recuperação de crash, mas leituras ocorrem apenas na inicialização da sessão.
+- **Kafka ambiente-agnóstico:** O único cliente Kafka é `Confluent.Kafka`. Amazon MSK, MSK Serverless (via bootstrap IAM, se habilitado), Kafka auto-gerenciado na AWS (EC2/EKS), Confluent Cloud, Redpanda e Kafka em Docker DEVEM ser alcançados só com options. Não há SDK AWS no caminho padrão; IAM MSK é opt-in.
+- **Persistência de mensagens (cold path):** PostgreSQL 16+ com extensão **TimescaleDB** é o store canônico das mensagens FIX recebidas. Não há RDBMS no hot path. Sequence numbers outbound continuam em store leve (arquivo) conforme o design de egress.
+- **Sem Persistência de Estado no Hot Path:** Leituras de banco ocorrem apenas na inicialização (health/schema check). Escritas são exclusivamente no cold path, em lote.
 - **Single-Process, Multi-Threaded:** O NexusRouter roda como um único processo de SO. Scale-out horizontal é uma preocupação futura e não deve restringir o design inicial.
 - **Injeção de Dependência:** O sistema usa `Microsoft.Extensions.DependencyInjection` e o Generic Host (`IHostedService`) como container de runtime.
+- **Ambiente local:** `docker-compose.yml` na raiz sobe Kafka (KRaft, PLAINTEXT), RabbitMQ, e PostgreSQL+TimescaleDB para desenvolvimento e testes.

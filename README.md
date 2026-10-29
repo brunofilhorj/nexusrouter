@@ -42,6 +42,9 @@ nexusrouter/
 ├── docs/
 │   ├── EntryPointMessageSpecs.pdf    (referência; pode estar ausente localmente)
 │   └── FIX44Entrypoint.xml           (existente)
+├── docker-compose.yml                — Kafka, RabbitMQ, TimescaleDB (local)
+├── docker/postgres/init.sql          — hypertable de mensagens FIX
+├── .env.example
 ├── README.md
 └── (src/, tests/, NexusRouter.sln — criados na Fase 1, Tarefa T-01)
 ```
@@ -86,9 +89,8 @@ nexusrouter/
 ### Pré-requisitos
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- Acesso ao B3 EntryPoint (credenciais de certificação ou produção)
-- Broker Kafka (opcional, para o dispatcher Kafka)
-- RabbitMQ (opcional, para o dispatcher RabbitMQ)
+- [Docker](https://docs.docker.com/get-docker/) + Docker Compose v2 (stack local)
+- Acesso ao B3 EntryPoint (credenciais de certificação ou produção), quando for conectar na bolsa
 
 ### Build
 
@@ -109,6 +111,26 @@ cd tests/NexusRouter.Benchmarks
 dotnet run -c Release
 ```
 
+### Stack local (Docker Compose)
+
+Sobe Kafka (KRaft, PLAINTEXT), RabbitMQ e PostgreSQL com TimescaleDB — o mesmo cliente Kafka (`Confluent.Kafka`) usado contra Amazon MSK, só mudando options.
+
+```bash
+cp .env.example .env
+docker compose up -d
+docker compose ps
+```
+
+| Serviço | Na rede Compose | No host (`dotnet run`) |
+|---------|-----------------|------------------------|
+| Kafka | `kafka:9092` | `localhost:19092` |
+| RabbitMQ AMQP | `rabbitmq:5672` | `localhost:5672` |
+| RabbitMQ UI | — | http://localhost:15672 (`nexus` / `.env`) |
+| TimescaleDB | `timescaledb:5432` | `localhost:5432` |
+| Kafka UI (opcional) | — | `docker compose --profile tools up -d` → http://localhost:8080 |
+
+Amazon MSK: não use este Compose. Aponte `BootstrapServers` para o bootstrap MSK (`:9096` SCRAM ou `:9098` IAM), `SecurityProtocol: SaslSsl` e as env vars `NEXUS_KAFKA_SASL_*`. Ver `design.md` Seção 6.
+
 ### Configuração
 
 Copie `src/NexusRouter.Host/appsettings.json` e configure os parâmetros da sua sessão. **Não armazene credenciais em `appsettings.json`** — use variáveis de ambiente:
@@ -116,7 +138,11 @@ Copie `src/NexusRouter.Host/appsettings.json` e configure os parâmetros da sua 
 ```bash
 export NEXUS_FIX_PASSWORD="sua-senha-b3"
 export NEXUS_CERT_PWD="sua-senha-de-certificado"
+export NEXUS_PG_USER="nexus"
+export NEXUS_PG_PASSWORD="nexus"
 ```
+
+Mensagens FIX recebidas são persistidas de forma assíncrona na hypertable `ingress_fix_messages` (cold path). O hot path não fala com o banco.
 
 Consulte `docs/EntryPointMessageSpecs.pdf` e `.kiro/steering/b3-guidelines.md` para detalhes completos de configuração do protocolo B3.
 

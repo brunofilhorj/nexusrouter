@@ -93,7 +93,9 @@ O NexusRouter é projetado em torno de uma única restrição fundamental: **o h
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
 │  │                          COLD PATH / AUDIT TIER                           │  │
 │  │                                                                           │  │
-│  │  Channel<AuditRecord> (bounded) → AuditWriterService → Serilog Sink      │  │
+│  │  Channel<AuditRecord> (bounded) → AuditWriterService                      │  │
+│  │       ├─► Serilog Sink (arquivo / console — metadados operacionais)       │  │
+│  │       └─► PostgresAuditSink (Npgsql COPY → TimescaleDB hypertable)        │  │
 │  └───────────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -143,15 +145,66 @@ Todos os dispatchers compartilham o mesmo padrão operacional:
 
 **`KafkaMessageDispatcher`:** Encapsula um `Confluent.Kafka.IProducer<Null, byte[]>`. Payloads são publicados em um tópico configurado. A estratégia de chave de partição (ex.: por `ClOrdID`, `SenderCompID` ou round-robin) é uma `IKafkaPartitionStrategy` configurável injetada na construção.
 
+O producer é **agnóstico ao provedor**. `ConnectAsync` monta um `ProducerConfig` a partir de `KafkaDispatcherOptions` e não ramifica em “AWS vs local”. O mesmo código cobre:
+
+| Ambiente | `SecurityProtocol` | `SaslMechanism` | Bootstrap típico |
+|----------|--------------------|-----------------|------------------|
+| Docker Compose / Kafka auto-gerenciado PLAINTEXT | `Plaintext` | `None` | `kafka:9092` (rede Compose) ou `localhost:19092` (host) |
+| Kafka auto-gerenciado com TLS | `Ssl` | `None` | brokers internos `:9093` |
+| Kafka auto-gerenciado / Confluent Cloud SASL | `SaslSsl` | `Plain` ou `ScramSha512` | bootstrap do cluster |
+| Amazon MSK SASL/SCRAM | `SaslSsl` | `ScramSha512` | `b-#.xxx.kafka.region.amazonaws.com:9096` |
+| Amazon MSK TLS mútuo | `Ssl` | `None` | bootstrap `:9094` |
+| Amazon MSK IAM (opt-in) | `SaslSsl` | `AwsMskIam` | bootstrap `:9098` |
+
+`AwsMskIam` é o único caso que carrega um callback OAUTHBEARER (pacote AWS MSK Auth). Não entra no DI a menos que o mechanism esteja selecionado. Credenciais SASL nunca ficam no POCO — só nomes de variáveis de ambiente.
+
 **`RabbitMQMessageDispatcher`:** Encapsula um `IModel` (cliente clássico) ou `IChannel` (futuro cliente async v7+). Cada instância de dispatcher mantém um channel dedicado para evitar contenção. O flag mandatory e as confirmações de publisher são configuráveis — desabilitados por padrão para latência mínima.
 
 ---
 
 ### 3.4 Cold Path / Audit Tier
 
-Um `AuditWriterService` (implementando `IHostedService`) possui um `Channel<AuditRecord>` com capacidade limitada (configurável, ex.: 65.536 itens). Drena o channel via `ReadAllAsync` e grava registros em lotes em um sink Serilog. O tamanho do lote e o intervalo de flush são configuráveis.
+Um `AuditWriterService` (implementando `IHostedService`) possui um `Channel<AuditRecord>` com capacidade limitada (configurável, ex.: 65.536 itens). Drena o channel via `ReadAllAsync` e grava registros em lotes nos sinks registrados (`IAuditSink`). O tamanho do lote e o intervalo de flush são configuráveis.
 
-O hot path apenas chama `auditChannel.Writer.TryWrite(record)` — não bloqueante. Um registro de auditoria descartado é rastreado via contador `System.Diagnostics.Metrics` e nunca pode afetar o roteamento.
+O hot path apenas chama `auditChannel.Writer.TryWrite(record)` — não bloqueante. A cópia do payload FIX para `AuditRecord.RawFix` (quando `PersistMode=Full` ou amostra em `Sampled`) ocorre **depois** do fan-out, ainda na thread da sessão, mas apenas um `ArrayPool.Rent` + memcpy + `TryWrite`. Sem SQL, sem socket de banco, sem `await`. Um registro descartado por channel cheio é rastreado via `System.Diagnostics.Metrics` e nunca pode afetar o roteamento.
+
+**Sinks v1:**
+
+1. **`SerilogAuditSink`** — metadados estruturados (ciclo de vida, drops, erros de dispatcher). Não é o store de mensagens.
+2. **`PostgresAuditSink`** — persistência canônica das mensagens FIX recebidas via `Npgsql` `COPY` binário (ou batch insert) na hypertable `ingress_fix_messages`.
+
+#### 3.4.1 Por que PostgreSQL + TimescaleDB
+
+Antes desta revisão o cold path só previa Serilog em arquivo (ou um “banco de série temporal” sem produto). Isso **não salvava as mensagens FIX** de forma consultável.
+
+O padrão de dados é append-only, indexado por tempo (`IngressTimestamp`), com consultas do tipo “sessão S no intervalo T”, retenção por idade e ingestão em lote. PostgreSQL puro com uma tabela heap cresce sem bound, o VACUUM compete com o ingest e particionamento manual por dia vira operação. **TimescaleDB** (extensão no mesmo PostgreSQL) resolve isso com:
+
+- **Hypertables** particionadas por `ingress_ts` (chunks diários no default).
+- **Compression** nativa de chunks frios (política, ex.: 7 dias).
+- **Retention** declarativa (ex.: 90 dias) sem job externo de `DELETE`.
+- **Índices** `(session_id, ingress_ts)` e `(cl_ord_id, ingress_ts)` por chunk.
+
+Timescale **é necessário** para este store — não como produto separado, e sim como extensão obrigatória da instância PostgreSQL. A imagem Docker `timescale/timescaledb` *é* PostgreSQL 16 com a extensão. Em AWS o equivalente é RDS PostgreSQL + Timescale (onde licenciado) ou Timescale Cloud / EC2 self-managed com a mesma extensão. O cliente .NET é só `Npgsql`; não há cliente Timescale específico.
+
+**Orçamento de ingestão:** 50k msg/s × ~300 B ≈ 15 MB/s; 200k msg/s ≈ 60 MB/s de payload. Um único Timescale com `COPY` em lote de 1–5k linhas sustenta o laboratório e certificação. Em produção no teto de throughput, `PersistMode=MetadataOnly` ou `Sampled` evita transformar o banco no gargalo; o Kafka continua sendo o bus de alto volume. Persistência nunca é entrega — é auditoria/consulta.
+
+#### 3.4.2 Schema (`ingress_fix_messages`)
+
+```
+ingress_ts        timestamptz NOT NULL
+session_id        text        NOT NULL
+msg_type          text
+cl_ord_id         text
+msg_seq_num       bigint
+delivery_mode     text        NOT NULL
+dispatcher_ids    text[]
+routing_sequence  bigint
+raw_fix           bytea       -- NULL quando MetadataOnly
+was_dropped       boolean     NOT NULL DEFAULT false
+drop_reason       text
+```
+
+Hypertable em `ingress_ts`, `chunk_time_interval = 1 day`. Script de bootstrap em `docker/postgres/init.sql`.
 
 ---
 
@@ -229,6 +282,18 @@ RouteContext (readonly record struct)
 
 Armazenado em um `FrozenDictionary<SessionId, RouteContext>` no `RouterEngine`. O dicionário é construído uma única vez na inicialização e nunca é mutado durante a operação normal.
 
+### 4.7 `IAuditSink`
+
+```
+IAuditSink
+├── Name : string
+├── StartAsync(CancellationToken) : ValueTask
+├── WriteBatchAsync(ReadOnlyMemory<AuditRecord> batch, CancellationToken) : ValueTask
+└── StopAsync(CancellationToken) : ValueTask
+```
+
+`AuditWriterService` não conhece Serilog nem Npgsql — apenas `IReadOnlyList<IAuditSink>`. Falha em um sink não aborta os demais.
+
 ---
 
 ## 5. Modelo de Concorrência
@@ -292,13 +357,32 @@ NexusRouter:
         - DispatcherId: "fix-out-client1"
 
   Dispatchers:
+    # Local / Kafka auto-gerenciado (Docker Compose). App no host usa localhost:19092.
     - Id: "kafka-main"
       Type: Kafka
-      BootstrapServers: "kafka:9092"
+      BootstrapServers: "localhost:19092"
       Topic: "fix.ordexec.raw"
+      ClientId: "nexusrouter"
       Acks: 0
+      SecurityProtocol: Plaintext
+      SaslMechanism: None
       PartitionStrategy: ByClOrdId
       ChannelCapacity: 16384
+
+    # Exemplo Amazon MSK SASL/SCRAM (produção). Secrets só via env.
+    # - Id: "kafka-msk"
+    #   Type: Kafka
+    #   BootstrapServers: "b-1.xxx.kafka.us-east-1.amazonaws.com:9096,b-2.xxx.kafka.us-east-1.amazonaws.com:9096"
+    #   Topic: "fix.ordexec.raw"
+    #   ClientId: "nexusrouter"
+    #   Acks: 1
+    #   SecurityProtocol: SaslSsl
+    #   SaslMechanism: ScramSha512
+    #   SaslUsernameEnvVar: "NEXUS_KAFKA_SASL_USERNAME"
+    #   SaslPasswordEnvVar: "NEXUS_KAFKA_SASL_PASSWORD"
+    #   EnableSslCertificateVerification: true
+    #   PartitionStrategy: ByClOrdId
+    #   ChannelCapacity: 16384
 
     - Id: "fix-out-client1"
       Type: FixOutbound
@@ -319,9 +403,22 @@ NexusRouter:
   Audit:
     ChannelCapacity: 65536
     OverflowMode: DropOldest
-    Sink: File
-    FilePath: "/var/log/nexusrouter/audit-.log"
-    RollingInterval: Hour
+    BatchSize: 1000
+    FlushIntervalMs: 100
+    PersistMode: Full                 # Full | MetadataOnly | Sampled
+    SampleRate: 1.0
+    Sinks:
+      - Type: Serilog
+        FilePath: "/var/log/nexusrouter/audit-.log"
+        RollingInterval: Hour
+      - Type: Postgres
+        Host: "localhost"
+        Port: 5432
+        Database: "nexusrouter"
+        UsernameEnvVar: "NEXUS_PG_USER"
+        PasswordEnvVar: "NEXUS_PG_PASSWORD"
+        SslMode: Disable              # Disable local; Require / VerifyFull em AWS
+        CommandTimeoutSeconds: 15
 ```
 
 ---
@@ -375,7 +472,11 @@ NexusRouter/
 │   │
 │   ├── NexusRouter.Audit/                # Log de auditoria do cold path
 │   │   ├── AuditWriterService.cs
-│   │   └── AuditChannelSingleton.cs
+│   │   ├── AuditChannelSingleton.cs
+│   │   └── Sinks/
+│   │       ├── IAuditSink.cs
+│   │       ├── SerilogAuditSink.cs
+│   │       └── PostgresAuditSink.cs      # Npgsql COPY → TimescaleDB
 │   │
 │   └── NexusRouter.Host/                 # Entry point, wiring de DI, configuração
 │       ├── Program.cs
@@ -394,6 +495,11 @@ NexusRouter/
 │   ├── NexusRouter.Egress.Tests/
 │   └── NexusRouter.Benchmarks/           # Benchmarks de hot path com BenchmarkDotNet
 │
+├── docker/
+│   └── postgres/
+│       └── init.sql                      # CREATE EXTENSION timescaledb + hypertable
+├── docker-compose.yml                    # Kafka KRaft, RabbitMQ, TimescaleDB
+├── .env.example
 └── NexusRouter.sln
 ```
 
@@ -444,7 +550,8 @@ NexusRouter/
         └─► FixOutboundDispatcher: PipeWriter.WriteAsync(frame reescrito)
 
 [AuditWriterService Consumer Task — thread do thread-pool em background]
-        └─► Gravação de log estruturado Serilog (em lote, async)
+        ├─► SerilogAuditSink (metadados, lote async)
+        └─► PostgresAuditSink.WriteBatchAsync — Npgsql COPY na hypertable
 ```
 
 ---
@@ -480,3 +587,6 @@ Contribuições estimadas dos componentes do hot path para a latência end-to-en
 | Thread dedicada de longa duração por sessão | Tasks do thread-pool | Elimina latência de scheduling do thread-pool para o hot path; afinidade de CPU previsível (future CPU pinning possível) |
 | Contagem de referências do buffer (fan-out) | Cópia de buffer por dispatcher | Evita cópias O(N) no fan-out; ciclo único de rent/return independente da contagem de dispatchers |
 | `ObjectPool<DispatchPayload>` | `new DispatchPayload()` por mensagem | Elimina alocação em regime estacionário; `DispatchPayload` é uma classe (necessária para compartilhamento entre channels) mas poolizada |
+| `Confluent.Kafka` + options de segurança | Cliente AWS-only ou QuickFIX-style engine | Um producer cobre Docker, Kafka auto-gerenciado e Amazon MSK; IAM é opt-in |
+| TimescaleDB (extensão PostgreSQL) para FIX persistido | Só Serilog arquivo, ou PG heap sem particionar | Store consultável no cold path; chunks, compressão e retenção batem com ingestão temporal; `Npgsql` único cliente |
+| Kafka PLAINTEXT no Compose + dual listener | Um listener `kafka:9092` | App no host usa `localhost:19092`; outros containers usam `kafka:9092`; evita advertised.listeners quebrado |

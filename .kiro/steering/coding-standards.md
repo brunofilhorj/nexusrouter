@@ -144,8 +144,10 @@ Estas regras se aplicam a qualquer código no **hot path** (recebimento no socke
 - Usar `Directory.Build.props` na raiz da solução para configurações cross-project.
 - Usar `Directory.Packages.props` (Central Package Management) se a solução crescer além de 6 projetos.
 - Lista de bibliotecas externas (aprovadas para uso em produção):
-  - `Confluent.Kafka` — producer/consumer Kafka
+  - `Confluent.Kafka` — producer Kafka (Docker, Kafka auto-gerenciado, Amazon MSK via `ProducerConfig`)
+  - `AWS.MSK.Auth` (ou equivalente fixado) — **somente** quando `SaslMechanism=AwsMskIam`; não é dependência default
   - `RabbitMQ.Client` — cliente AMQP RabbitMQ
+  - `Npgsql` — cliente PostgreSQL / TimescaleDB (apenas cold path; sem SQL no hot path)
   - `Serilog` + sinks (`Serilog.Sinks.Console`, `Serilog.Sinks.File`) — logging estruturado
   - `Microsoft.Extensions.*` — hosting, DI, configuration, object pool
   - `System.Collections.Frozen` — coleções imutáveis (built-in, .NET 8+)

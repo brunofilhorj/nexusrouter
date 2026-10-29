@@ -20,7 +20,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 2 | Ingress (Sessões e Framing) | T-07 → T-12 |
 | Fase 3 | Core Router / Hot Path | T-13 → T-18 |
 | Fase 4 | Egress (Implementações de Dispatchers) | T-19 → T-25 |
-| Fase 5 | Auditoria / Cold Path | T-26 → T-28 |
+| Fase 5 | Auditoria / Cold Path (Serilog + TimescaleDB) | T-26 → T-28 |
 | Fase 6 | Host, Wiring de DI e Configuração | T-29 → T-32 |
 | Fase 7 | Observabilidade e Benchmarks | T-33 → T-36 |
 | Fase 8 | Testes | T-37 → T-43 |
@@ -53,6 +53,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 6. Conectar todas as referências projeto-a-projeto conforme definido em `design.md`.
 7. Adicionar `.editorconfig` e `.gitignore` em nível de solução (template dotnet).
 8. Adicionar `Directory.Build.props` na raiz com: `<TargetFramework>net10.0</TargetFramework>`, `<Nullable>enable</Nullable>`, `<ImplicitUsings>enable</ImplicitUsings>`, `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
+9. **Não recriar** `docker-compose.yml`, `docker/postgres/init.sql` nem `.env.example` — já existem na raiz. Garantir que o `.gitignore` continue ignorando `.env` e preservando `.env.example`.
 
 **Saída:** `dotnet build NexusRouter.sln` conclui com zero avisos.
 
@@ -128,7 +129,8 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - Propriedades: `SessionId`, `DeliveryMode`, `IMemoryOwner<byte>? RawBuffer`, `FixMessage? ParsedMessage`, `long IngressTimestampTicks`, `long RoutingSequence`, `long EgressTimestampTicks`.
    - Método: `void Reset()` — limpa todos os campos para devolução ao pool.
 3. Criar `src/NexusRouter.Domain/Models/AuditRecord.cs` como `sealed class`:
-   - Propriedades: `SessionId`, `long IngressTimestampTicks`, `string? MsgType`, `string? ClOrdId`, `DeliveryMode`, `string[] DispatcherIds`, `long EgressTimestampTicks`, `bool WasDropped`, `string? DropReason`.
+   - Propriedades: `SessionId`, `long IngressTimestampTicks`, `string? MsgType`, `string? ClOrdId`, `long? MsgSeqNum`, `DeliveryMode`, `string[] DispatcherIds`, `long EgressTimestampTicks`, `bool WasDropped`, `string? DropReason`, `byte[]? RawFix`.
+   - `RawFix` é preenchido no cold-path enqueue (cópia de `ArrayPool` / array próprio do `AuditRecord`), nunca no `RouterEngine` via I/O. `Reset`/pool se aplicável deve soltar a referência.
 4. Criar `src/NexusRouter.Domain/Models/FixMessage.cs` como `ref struct`:
    - Propriedades: `ReadOnlySpan<byte> MsgType`, `ReadOnlySpan<FixField> Fields`.
    - Método: `bool TryGetField(int tag, out ReadOnlySpan<byte> value)`.
@@ -434,7 +436,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 **Objetivo:** Dispatcher de egress para Kafka usando `Confluent.Kafka`.
 
-**Entradas:** `requirements.md` (FR-EGR-08)
+**Entradas:** `requirements.md` (FR-EGR-08, FR-EGR-11)
 
 **Passos:**
 1. Adicionar o pacote NuGet `Confluent.Kafka` (versão fixada) ao `NexusRouter.Egress.csproj`.
@@ -443,10 +445,10 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 3. Criar `src/NexusRouter.Egress/Kafka/ByClOrdIdPartitionStrategy.cs` implementando `IKafkaPartitionStrategy`:
    - Extrai `ClOrdId` (tag 11) de `ParsedMessage` se disponível, aplica hash módulo `partitionCount` (parâmetro do construtor). Retorna null se o campo não estiver presente.
 4. Criar `src/NexusRouter.Egress/Kafka/KafkaMessageDispatcher.cs` estendendo `DispatcherBase<KafkaDispatcherOptions>`:
-   - `ConnectAsync`: constrói `ProducerConfig` a partir das options, cria `IProducer<Null, byte[]>` usando `ProducerBuilder`.
+   - `ConnectAsync`: constrói `ProducerConfig` a partir das options (sem `if (aws)`). Mapeia `SecurityProtocol` e `SaslMechanism` para os enums do `Confluent.Kafka`. Lê usuário/senha SASL apenas das env vars nomeadas. Se `SaslMechanism == AwsMskIam`, registra o callback OAUTHBEARER do pacote AWS MSK Auth; caso contrário o pacote não é exigido em runtime.
    - `SendAsync`: chama `_producer.Produce(topic, new Message<Null, byte[]> { Value = payload.RawBuffer.Memory.ToArray() })` em modo fire-and-forget (sobrecarga `Produce` não async para latência mínima quando `Acks=0`). Para modos de ack maiores, usar `ProduceAsync`.
    - Tratar `ProduceException<Null, byte[]>` — invocar `OnDispatchError`.
-5. Criar `src/NexusRouter.Egress/Kafka/KafkaDispatcherOptions.cs` com: `BootstrapServers`, `Topic`, `Acks` (int), `ChannelCapacity`, `PartitionStrategy` (enum string).
+5. Criar `src/NexusRouter.Egress/Kafka/KafkaDispatcherOptions.cs` com: `BootstrapServers`, `Topic`, `ClientId`, `Acks` (int), `SecurityProtocol`, `SaslMechanism`, `SaslUsernameEnvVar`, `SaslPasswordEnvVar`, `SslCaLocation`, `EnableSslCertificateVerification`, `ChannelCapacity`, `PartitionStrategy` (enum string). Validar: `SaslSsl`/`SaslPlaintext` exigem mechanism ≠ `None` e env vars quando o mechanism usa usuário/senha.
 
 **Saída:** `KafkaMessageDispatcher` compila e pode ser registrado como `IMessageDispatcher`.
 
@@ -568,17 +570,24 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 **Objetivo:** Serviço hosted de background que drena o channel de auditoria e persiste os registros.
 
-**Entradas:** `requirements.md` (FR-AUD-04, FR-AUD-07)
+**Entradas:** `requirements.md` (FR-AUD-04, FR-AUD-07, FR-AUD-08, FR-AUD-09, FR-AUD-10)
 
 **Passos:**
-1. Criar `src/NexusRouter.Audit/AuditWriterService.cs` implementando `IHostedService`:
-   - Construtor: recebe `Channel<AuditRecord>`, `ILogger<AuditWriterService>`, `AuditOptions`.
-   - `StartAsync`: inicia uma `Task` de background que lê do channel via `ReadAllAsync`.
-   - Batching: coletar registros em uma `List<AuditRecord>` até `options.BatchSize` ou `options.FlushIntervalMs`, o que ocorrer primeiro; então escrever o lote no logger Serilog usando um evento de log estruturado.
-   - Drenagem graciosa em `StopAsync`: após disparar o `CancellationToken`, drenar os itens restantes do channel até que esteja vazio.
-2. Cada `AuditRecord` é serializado como uma única entrada de log estruturado com todos os campos como propriedades nomeadas (não uma string concatenada) para habilitar ferramentas de agregação de log.
+1. Criar `src/NexusRouter.Audit/Sinks/IAuditSink.cs` com `Name`, `StartAsync`, `WriteBatchAsync(ReadOnlyMemory<AuditRecord>, CancellationToken)`, `StopAsync`.
+2. Criar `src/NexusRouter.Audit/Sinks/SerilogAuditSink.cs`: cada registro do lote vira um evento estruturado (propriedades nomeadas, sem concatenar string). Não logar `RawFix` em `Information` ou acima.
+3. Criar `src/NexusRouter.Audit/Sinks/PostgresAuditSink.cs`:
+   - Pacote NuGet `Npgsql` (versão fixada) em `NexusRouter.Audit.csproj`.
+   - `StartAsync`: abre `NpgsqlDataSource` a partir das options (host/port/database + user/password via env). Executa um `SELECT 1` de health. Não cria schema em runtime — o schema vem de `docker/postgres/init.sql` (local) ou migração equivalente em AWS.
+   - `WriteBatchAsync`: `COPY` binário (ou `BeginBinaryImport`) para `ingress_fix_messages`. Respeitar `PersistMode`: omitir `raw_fix` quando `MetadataOnly`; em `Sampled`, persistir `raw_fix` só na fração configurada.
+   - Falhas: logar via `ILogger`, não relançar para o writer (os outros sinks do lote ainda rodam).
+4. Criar `src/NexusRouter.Audit/AuditWriterService.cs` implementando `IHostedService`:
+   - Construtor: recebe `Channel<AuditRecord>`, `IReadOnlyList<IAuditSink>`, `ILogger<AuditWriterService>`, `AuditOptions`.
+   - `StartAsync`: `StartAsync` em cada sink; inicia `Task` que lê via `ReadAllAsync`.
+   - Batching: coletar até `options.BatchSize` ou `options.FlushIntervalMs`; então `WriteBatchAsync` em cada sink (try/catch por sink).
+   - Drenagem graciosa em `StopAsync`: drenar o channel até vazio (timeout absoluto 10s), flush final, `StopAsync` nos sinks.
+5. Comentários XML: proibir qualquer chamada a `IAuditSink` a partir do hot path.
 
-**Saída:** Registros de auditoria escritos no log; channel totalmente drenado no shutdown.
+**Saída:** Metadados no Serilog e mensagens FIX (conforme `PersistMode`) na hypertable TimescaleDB; channel drenado no shutdown.
 
 ---
 
@@ -614,8 +623,9 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - `TlsOptions.cs`: configurações específicas de TLS.
    - `ReconnectPolicyOptions.cs`: parâmetros de backoff.
    - `DispatcherOptions.cs`: classe base / union discriminada para options de Kafka, RabbitMQ e FIX outbound.
-   - `KafkaDispatcherOptions.cs`, `RabbitMQDispatcherOptions.cs`, `FixOutboundDispatcherOptions.cs`.
-   - `AuditOptions.cs`: configurações de channel de auditoria e sink.
+   - `KafkaDispatcherOptions.cs`, `RabbitMQDispatcherOptions.cs`, `FixOutboundDispatcherOptions.cs` (Kafka: campos de FR-EGR-11 / design Seção 6).
+   - `AuditOptions.cs`: channel, overflow, batch, persist mode, lista de sinks.
+   - `PostgresAuditSinkOptions.cs`: host, port, database, env vars de credencial, SslMode.
 2. Todos os POCOs implementam `IValidateOptions<T>` ou usam atributos `DataAnnotations` para validação na inicialização.
 3. Nenhum secret em qualquer POCO — credenciais referenciam apenas nomes de variáveis de ambiente.
 
@@ -634,7 +644,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - `AddNexusRouterIngress(this IServiceCollection, IConfiguration)`: registra implementações de `ISessionFrameDecoder` (com chave por nome de tipo de decoder), `ExponentialBackoffReconnectPolicy`, um `FixSession` `IHostedService` por sessão configurada.
    - `AddNexusRouterRouter(this IServiceCollection, IConfiguration)`: registra `RouterEngine` como `IMessageRouter` (singleton), `RouteResolver` (singleton), `FanOutEngine` (singleton), `DispatchPayloadPool` (singleton).
    - `AddNexusRouterEgress(this IServiceCollection, IConfiguration)`: registra cada dispatcher (Kafka, RabbitMQ, FixOutbound) com base em `DispatcherOptions.Type`. Cada dispatcher registrado tanto como tipo concreto quanto como `IMessageDispatcher` (registro nomeado).
-   - `AddNexusRouterAudit(this IServiceCollection, IConfiguration)`: registra `AuditChannelSingleton`, `AuditWriterService` como `IHostedService`, `DispatcherAuditObserver` como `IHostedService`.
+   - `AddNexusRouterAudit(this IServiceCollection, IConfiguration)`: registra `AuditChannelSingleton`, sinks (`SerilogAuditSink`, `PostgresAuditSink` conforme `Audit:Sinks`), `AuditWriterService` como `IHostedService`, `DispatcherAuditObserver` como `IHostedService`.
 2. Objetos `RouteContext` são construídos a partir de `SessionOptions.Routes` resolvendo instâncias de dispatcher pelo nome no container de DI.
 
 **Saída:** Todos os serviços registrados. `dotnet run` inicia sem erros de resolução de DI (com um `appsettings.json` válido).
@@ -653,7 +663,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - Configurar Serilog a partir de `appsettings.json` (`UseSerilog`).
    - Chamar todos os métodos de extensão `AddNexusRouter*`.
    - Adicionar `UseConsoleLifetime()` para shutdown limpo via Ctrl+C.
-2. Criar `src/NexusRouter.Host/appsettings.json` com uma configuração de exemplo completa (usando placeholders `localhost`, sem credenciais reais).
+2. Criar `src/NexusRouter.Host/appsettings.json` com uma configuração de exemplo completa alinhada ao `docker-compose.yml` (`localhost:19092` Kafka, `localhost:5672` RabbitMQ, `localhost:5432` Postgres, sem credenciais reais — só nomes de env vars).
 3. Adicionar pacotes NuGet do Serilog: `Serilog.AspNetCore` ou `Serilog.Extensions.Hosting`, `Serilog.Sinks.Console`, `Serilog.Sinks.File` (versões fixadas).
 
 **Saída:** `dotnet run` inicia a aplicação, registra mensagens de startup e as sessões começam a tentar conectar.
@@ -837,12 +847,13 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 **Objetivo:** Verificar o pipeline completo desde a sessão inbound simulada até a entrega pelo dispatcher.
 
 **Passos:**
-1. Usar `Testcontainers` (ou mock in-process) para iniciar instâncias mínimas de Kafka e RabbitMQ para a execução do teste.
-2. Configurar um `FixSession` apontando para o listener FIX do teste, roteando para `KafkaMessageDispatcher` e `RabbitMQMessageDispatcher`.
+1. Usar `Testcontainers` (ou o stack `docker-compose.yml`) para Kafka, RabbitMQ e TimescaleDB.
+2. Configurar um `FixSession` apontando para o listener FIX do teste, roteando para `KafkaMessageDispatcher` e `RabbitMQMessageDispatcher`, com `Audit:Sinks` incluindo Postgres e `PersistMode=Full`.
 3. Enviar 100 mensagens FIX pelo pipeline.
 4. Verificar que todas as 100 mensagens foram consumidas do tópico Kafka.
 5. Verificar que todas as 100 mensagens foram consumidas da fila RabbitMQ.
-6. Verificar que o log de auditoria contém 100 registros com timestamps correspondentes.
+6. Verificar que o log Serilog contém 100 registros de metadados com timestamps correspondentes.
+7. Verificar que `ingress_fix_messages` contém 100 linhas e que `raw_fix` é não-nulo.
 
 ---
 
@@ -879,7 +890,7 @@ T-01 (scaffold)
                           │              └── T-25 (SeqNum Store)
                           │
                           ├── T-26 (AuditChannel)
-                          │    └── T-27 (AuditWriter)
+                          │    └── T-27 (AuditWriter + IAuditSink Serilog/Postgres)
                           │         └── T-28 (DispatcherAudit)
                           │
                           └── T-29 (Config POCOs)
