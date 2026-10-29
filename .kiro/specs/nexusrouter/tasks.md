@@ -59,7 +59,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-02 — Definir as Enumerações do Núcleo
+- [x] T-02 — Definir as Enumerações do Núcleo
 
 **Objetivo:** Definir todos os enums compartilhados no projeto de Domínio.
 
@@ -75,7 +75,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
+- [x] T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
 
 **Objetivo:** Implementar os value types primitivos usados em todo o hot path.
 
@@ -91,7 +91,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
+- [x] T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
 
 **Objetivo:** Estabelecer as abstrações primárias que todas as implementações downstream devem satisfazer.
 
@@ -115,7 +115,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
+- [x] T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
 
 **Objetivo:** Implementar os containers de dados que fluem entre os tiers.
 
@@ -139,7 +139,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
+- [x] T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
 
 **Objetivo:** Implementar os utilitários de pool zero-allocation necessários para o hot path.
 
