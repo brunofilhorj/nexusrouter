@@ -46,7 +46,7 @@ nexusrouter/
 ├── docker/postgres/init.sql          — hypertable de mensagens FIX
 ├── .env.example
 ├── README.md
-└── (src/, tests/, NexusRouter.sln — criados na Fase 1, Tarefa T-01)
+└── (src/, tests/, NexusRouter.slnx — criados na Fase 1, Tarefa T-01)
 ```
 
 ---
@@ -95,13 +95,13 @@ nexusrouter/
 ### Build
 
 ```bash
-dotnet build NexusRouter.sln
+dotnet build NexusRouter.slnx
 ```
 
 ### Executar Testes
 
 ```bash
-dotnet test NexusRouter.sln
+dotnet test NexusRouter.slnx
 ```
 
 ### Executar Benchmarks

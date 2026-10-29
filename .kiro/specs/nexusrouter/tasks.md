@@ -29,14 +29,14 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 1 — Scaffold da Solução e Camada de Domínio
 
-- [ ] T-01 — Inicializar a Solução .NET 10 e a Estrutura de Projetos
+- [x] T-01 — Inicializar a Solução .NET 10 e a Estrutura de Projetos
 
 **Objetivo:** Criar o arquivo de solução e todos os projetos esqueleto com as referências de projeto corretas.
 
 **Entradas:** `design.md` (Seção 7 — Estrutura do Projeto)
 
 **Passos:**
-1. Criar `NexusRouter.sln` na raiz do workspace.
+1. Criar `NexusRouter.slnx` na raiz do workspace (formato de solução XML padrão do .NET 10).
 2. Criar os seguintes projetos `classlib` em `src/`:
    - `NexusRouter.Domain`
    - `NexusRouter.Ingress`
@@ -55,11 +55,11 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 8. Adicionar `Directory.Build.props` na raiz com: `<TargetFramework>net10.0</TargetFramework>`, `<Nullable>enable</Nullable>`, `<ImplicitUsings>enable</ImplicitUsings>`, `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 9. **Não recriar** `docker-compose.yml`, `docker/postgres/init.sql` nem `.env.example` — já existem na raiz. Garantir que o `.gitignore` continue ignorando `.env` e preservando `.env.example`.
 
-**Saída:** `dotnet build NexusRouter.sln` conclui com zero avisos.
+**Saída:** `dotnet build NexusRouter.slnx` conclui com zero avisos.
 
 ---
 
-- [ ] T-02 — Definir as Enumerações do Núcleo
+- [x] T-02 — Definir as Enumerações do Núcleo
 
 **Objetivo:** Definir todos os enums compartilhados no projeto de Domínio.
 
@@ -75,7 +75,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
+- [x] T-03 — Definir os Value Types do Núcleo: `SessionId`, `FixField`, `RouteContext`
 
 **Objetivo:** Implementar os value types primitivos usados em todo o hot path.
 
@@ -91,7 +91,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
+- [x] T-04 — Definir as Interfaces do Núcleo: `IMessageDispatcher`, `ISessionFrameDecoder`, `IReconnectPolicy`
 
 **Objetivo:** Estabelecer as abstrações primárias que todas as implementações downstream devem satisfazer.
 
@@ -115,7 +115,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
+- [x] T-05 — Definir os Transfer Object Types: `IngressFrame`, `DispatchPayload`, `AuditRecord`
 
 **Objetivo:** Implementar os containers de dados que fluem entre os tiers.
 
@@ -139,7 +139,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
+- [x] T-06 — Definir `ArrayPoolMemoryOwner<T>` e `DispatchPayloadPool`
 
 **Objetivo:** Implementar os utilitários de pool zero-allocation necessários para o hot path.
 

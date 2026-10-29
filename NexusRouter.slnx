@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/NexusRouter.Audit/NexusRouter.Audit.csproj" />
+    <Project Path="src/NexusRouter.Domain/NexusRouter.Domain.csproj" />
+    <Project Path="src/NexusRouter.Egress/NexusRouter.Egress.csproj" />
+    <Project Path="src/NexusRouter.Host/NexusRouter.Host.csproj" />
+    <Project Path="src/NexusRouter.Ingress/NexusRouter.Ingress.csproj" />
+    <Project Path="src/NexusRouter.Router/NexusRouter.Router.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/NexusRouter.Benchmarks/NexusRouter.Benchmarks.csproj" />
+    <Project Path="tests/NexusRouter.Domain.Tests/NexusRouter.Domain.Tests.csproj" />
+    <Project Path="tests/NexusRouter.Egress.Tests/NexusRouter.Egress.Tests.csproj" />
+    <Project Path="tests/NexusRouter.Ingress.Tests/NexusRouter.Ingress.Tests.csproj" />
+    <Project Path="tests/NexusRouter.Router.Tests/NexusRouter.Router.Tests.csproj" />
+  </Folder>
+</Solution>

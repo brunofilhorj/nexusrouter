@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\NexusRouter.Domain\NexusRouter.Domain.csproj" />
+    <ProjectReference Include="..\NexusRouter.Ingress\NexusRouter.Ingress.csproj" />
+    <ProjectReference Include="..\NexusRouter.Router\NexusRouter.Router.csproj" />
+    <ProjectReference Include="..\NexusRouter.Egress\NexusRouter.Egress.csproj" />
+    <ProjectReference Include="..\NexusRouter.Audit\NexusRouter.Audit.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
