@@ -1,0 +1,95 @@
+name: Sync master into dev
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-master-to-dev
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge master into dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Merge master into dev
+        id: merge
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin master
+
+          if ! git ls-remote --exit-code --heads origin dev >/dev/null 2>&1; then
+            git push origin HEAD:dev
+            echo "result=created" >> "$GITHUB_OUTPUT"
+            echo "dev did not exist; created it from master."
+            exit 0
+          fi
+
+          git checkout -B dev origin/dev
+
+          if git merge origin/master --no-edit -m "chore: merge master into dev"; then
+            if git diff --quiet origin/dev HEAD; then
+              echo "result=up-to-date" >> "$GITHUB_OUTPUT"
+              echo "dev already contains master."
+            else
+              git push origin HEAD:dev
+              echo "result=merged" >> "$GITHUB_OUTPUT"
+              echo "Merged master into dev and pushed."
+            fi
+          else
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            echo "Merge conflict. A pull request will be opened for the team."
+          fi
+
+      - name: Open pull request when merge conflicts
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          existing="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base dev \
+            --state open \
+            --json number,headRefName \
+            --jq 'first(.[] | select(.headRefName == "master") | .number) // empty')"
+
+          body=$(cat <<EOF
+          O merge automático de master em dev encontrou conflitos no commit ${GITHUB_SHA}.
+
+          Resolva os conflitos nesta pull request e faça o merge em dev.
+
+          Push que disparou o sync: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          EOF
+          )
+
+          if [ -n "$existing" ]; then
+            gh pr comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Pull request #${existing} already tracks master -> dev."
+            exit 0
+          fi
+
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base dev \
+            --head master \
+            --title "chore: sincronizar master em dev" \
+            --body "$body"
