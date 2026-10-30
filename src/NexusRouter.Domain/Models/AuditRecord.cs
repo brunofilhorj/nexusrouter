@@ -3,11 +3,14 @@ using NexusRouter.Domain.Enums;
 namespace NexusRouter.Domain.Models;
 
 /// <summary>
-/// Registro de auditoria de uma mensagem ou de um descarte, preenchido fora do I/O de banco.
+/// Registro de auditoria de uma mensagem, de um descarte ou de um evento de ciclo de vida.
 /// </summary>
 /// <remarks>
 /// <see cref="RawFix"/> é preenchido no enqueue do cold path, por cópia para um array do próprio registro
 /// ou alugado de <see cref="System.Buffers.ArrayPool{T}"/>. O router não faz I/O para produzir este registro.
+/// Quando <see cref="LifecycleEvent"/> está definido, os campos de roteamento e despacho ficam sem valor:
+/// <see cref="MsgType"/>, <see cref="ClOrdId"/>, <see cref="MsgSeqNum"/>, <see cref="DropReason"/> e <see cref="RawFix"/>
+/// são nulos, e <see cref="DispatcherIds"/> permanece vazio.
 /// </remarks>
 public sealed class AuditRecord
 {
@@ -67,6 +70,14 @@ public sealed class AuditRecord
     public byte[]? RawFix { get; set; }
 
     /// <summary>
+    /// Evento de ciclo de vida da sessão. Nulo quando o registro descreve uma mensagem ou um descarte.
+    /// </summary>
+    /// <remarks>
+    /// Com este campo definido, o registro não carrega decisão de roteamento nem resultado de dispatcher.
+    /// </remarks>
+    public SessionLifecycleEvent? LifecycleEvent { get; set; }
+
+    /// <summary>
     /// Zera o registro para reutilização. Solta <see cref="RawFix"/> sem devolver o array ao pool:
     /// quem alugou o buffer devolve o array antes de chamar este método.
     /// </summary>
@@ -83,5 +94,6 @@ public sealed class AuditRecord
         WasDropped = false;
         DropReason = null;
         RawFix = null;
+        LifecycleEvent = null;
     }
 }

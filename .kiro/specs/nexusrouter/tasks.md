@@ -165,7 +165,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 2 — Camada de Ingress
 
-- [ ] T-07 — Implementar `ExponentialBackoffReconnectPolicy`
+- [x] T-07 — Implementar `ExponentialBackoffReconnectPolicy`
 
 **Objetivo:** Implementar a estratégia de delay de reconexão usada por todas as sessões.
 
@@ -183,7 +183,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-08 — Implementar `FixSessionStateMachine`
+- [x] T-08 — Implementar `FixSessionStateMachine`
 
 **Objetivo:** Implementar a state machine de nível de sessão FIX (ciclo de vida Logon, Heartbeat, Logout, TestRequest).
 
@@ -202,7 +202,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-09 — Implementar `Fix44FrameDecoder` e `Fix50FrameDecoder`
+- [x] T-09 — Implementar `Fix44FrameDecoder` e `Fix50FrameDecoder`
 
 **Objetivo:** Implementar detecção de limite de frame específica do protocolo para FIX 4.x e FIX 5.0/FIXT.
 
@@ -222,7 +222,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-10 — Implementar `FixSession` — Conexão TCP e Loop de Leitura do Pipe
+- [x] T-10 — Implementar `FixSession` — Conexão TCP e Loop de Leitura do Pipe
 
 **Objetivo:** Implementar o ciclo de vida TCP da sessão e o message pump do `PipeReader`.
 
@@ -246,7 +246,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-11 — Implementar o Handshake de Logon FIX e o Timer de Heartbeat
+- [x] T-11 — Implementar o Handshake de Logon FIX e o Timer de Heartbeat
 
 **Objetivo:** Completar o protocolo FIX de nível de sessão: envio/recebimento de Logon, geração de Heartbeat, TestRequest em caso de staleness.
 
@@ -271,7 +271,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-12 — Implementar a Publicação de Eventos de Ciclo de Vida da Sessão
+- [x] T-12 — Implementar a Publicação de Eventos de Ciclo de Vida da Sessão
 
 **Objetivo:** Emitir eventos de ciclo de vida da sessão para o channel de auditoria sem acoplamento ao hot path.
 
