@@ -1,0 +1,52 @@
+name: Deploy to Staging
+
+on:
+  push:
+    tags:
+      # Release candidate: v1.0.0-rc.1. Não casa a tag estável v1.0.0 (production).
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify Build & Test
+        run: |
+          dotnet build NexusRouter.slnx --configuration Release
+          dotnet test NexusRouter.slnx --configuration Release --no-build
+
+  deploy:
+    name: Execute Deploy
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Deployment Tools
+        run: echo "Configurando ferramentas de infraestrutura (Ex: AWS, Docker, K8s, etc.)..."
+
+      - name: Publish Application
+        run: dotnet publish NexusRouter.slnx --configuration Release --output ./publish
+
+      - name: Release to Staging Server
+        run: |
+          echo "Executando o deploy da versão ${{ github.ref_name }} para o ambiente de staging..."
+          # Adicione aqui os comandos reais de publicação (ex: docker push, aws ecs, etc.)

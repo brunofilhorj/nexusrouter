@@ -38,12 +38,17 @@ nexusrouter/
 │   └── steering/
 │       ├── coding-standards.md       — Convenções .NET 10 C#, regras do hot path
 │       ├── b3-guidelines.md          — Regras de protocolo FIX 4.4 do B3 EntryPoint
-│       └── git-workflow.md           — Branch, commit, push e PR
+│       └── git-workflow.md           — Trunk-based: branch curta, commit, push e PR para main
 ├── docs/
 │   ├── EntryPointMessageSpecs.pdf    (referência; pode estar ausente localmente)
 │   └── FIX44Entrypoint.xml           (existente)
 ├── docker-compose.yml                — Kafka, RabbitMQ, TimescaleDB (local)
 ├── docker/postgres/init.sql          — hypertable de mensagens FIX
+├── .github/workflows/
+│   ├── build-and-test.yml            — CI em pull request e push para main
+│   ├── deploy-development.yml        — deploy manual (workflow_dispatch)
+│   ├── deploy-staging.yml            — deploy em tag vX.Y.Z-rc.N
+│   └── deploy-production.yml         — deploy em tag vX.Y.Z
 ├── .env.example
 ├── README.md
 └── (src/, tests/, NexusRouter.slnx — criados na Fase 1, Tarefa T-01)
@@ -148,6 +153,55 @@ Consulte `docs/EntryPointMessageSpecs.pdf` e `.kiro/steering/b3-guidelines.md` p
 
 ---
 
+## Git e ambientes
+
+O repositório usa **trunk-based development**. `main` é a única branch de longa duração e deve permanecer sempre integrável. Não há `develop` nem branch `release/*`.
+
+O dia a dia é uma branch curta a partir de `main` (`feature/*`, `bugfix/*`, `chore/*`), pull request para `main` e merge. O workflow `Build and test` roda no pull request e de novo no push para `main`.
+
+Cada ambiente tem o seu workflow e o seu trigger. Crie os GitHub Environments `development`, `staging` e `production` em **Settings → Environments** do repositório para guardar segredos e, em production, exigir revisores.
+
+| Ambiente | Workflow | Trigger |
+|----------|----------|---------|
+| CI | `build-and-test.yml` | pull request e push em `main` |
+| Development | `deploy-development.yml` | manual (`workflow_dispatch`) |
+| Staging | `deploy-staging.yml` | tag `vX.Y.Z-rc.N` |
+| Production | `deploy-production.yml` | tag `vX.Y.Z` |
+
+O filtro de production é `v[0-9]+.[0-9]+.[0-9]+`. Uma tag `v1.0.0-rc.1` não entra nesse workflow. O filtro `v*` pegaria as duas e publicaria o release candidate em production.
+
+### Development
+
+O merge em `main` só roda `Build and test`. O deploy acontece quando você dispara o workflow na mão, no commit que escolher (em geral `main`):
+
+**Actions → Deploy to Development → Run workflow**
+
+Sem esse disparo, nada é publicado em development. Staging e production continuam independentes: sem a tag, o ambiente correspondente também não recebe deploy.
+
+### Staging
+
+A tag de release candidate sai de `main` atualizada. O `N` aumenta a cada candidato (`rc.1`, `rc.2`).
+
+```bash
+git checkout main
+git pull origin main
+git tag v1.0.0-rc.1
+git push origin v1.0.0-rc.1
+```
+
+### Production
+
+A tag estável aponta para o mesmo commit já validado em staging. Não reutilize um nome de tag: o `push` da tag é o que dispara o workflow.
+
+```bash
+git checkout main
+git pull origin main
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+---
+
 ## Spec-Driven Development
 
 Este projeto segue o **Spec-Driven Development (SDD)**. A fonte da verdade é `.kiro/`; o Cursor e o Kiro devem ler os mesmos arquivos (ver `AGENTS.md`).
@@ -156,7 +210,7 @@ Todas as tarefas de implementação estão em `.kiro/specs/nexusrouter/tasks.md`
 
 - `.kiro/steering/coding-standards.md` — Convenções C#, regras do hot path, padrões de teste
 - `.kiro/steering/b3-guidelines.md` — Regras do protocolo B3 EntryPoint, catálogo de mensagens, restrições de campos
-- `.kiro/steering/git-workflow.md` — Branch, commits confirmados pelo usuário, push e PR
+- `.kiro/steering/git-workflow.md` — Trunk-based: branch curta a partir de `main`, commits confirmados pelo usuário, push e PR para `main`
 
 No Kiro, abra a spec `nexusrouter` e execute a próxima tarefa no task runner. No Cursor, execute a próxima tarefa `- [ ]` em `tasks.md` e marque `- [x]` ao concluir.
 
