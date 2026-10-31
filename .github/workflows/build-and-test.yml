@@ -3,12 +3,10 @@ name: Build and test
 on:
   pull_request:
     branches:
-      - master
-      - dev
+      - main
   push:
     branches:
-      - master
-      - dev
+      - main
 
 permissions:
   contents: read
