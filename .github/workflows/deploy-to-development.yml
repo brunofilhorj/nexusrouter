@@ -3,6 +3,9 @@ name: Deploy to Development
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: deploy-development-${{ github.ref }}
   cancel-in-progress: false
@@ -35,7 +38,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Deployment Tools
-        run: echo "Configurando ferramentas de infraestrutura (Ex: AWS, Docker, K8s, etc.)..."
+        run: >
+         echo "Configurando ferramentas de infraestrutura (Ex: AWS, Docker, K8s, etc.)..."
 
       - name: Publish Application
         run: dotnet publish NexusRouter.slnx --configuration Release --output ./publish
