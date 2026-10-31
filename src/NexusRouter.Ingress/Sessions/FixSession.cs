@@ -1,8 +1,6 @@
 using System.Buffers;
 using System.IO.Pipelines;
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Channels;
 
@@ -21,7 +19,7 @@ namespace NexusRouter.Ingress.Sessions;
 /// <remarks>
 /// Uma thread de longa duração executa o ciclo de conexão. O heartbeat sai por um timer e usa o mesmo
 /// envio do Logon. No encerramento, o Logout é escrito depois que a leitura do pipe para,
-/// para não usar o <see cref="SslStream"/> ao mesmo tempo em leitura e escrita.
+/// para não usar o stream TLS ao mesmo tempo em leitura e escrita.
 /// </remarks>
 public sealed class FixSession : IHostedService
 {
@@ -43,7 +41,7 @@ public sealed class FixSession : IHostedService
     private CancellationTokenSource? _stoppingCts;
     private Task? _runTask;
     private Socket? _activeSocket;
-    private SslStream? _activeSsl;
+    private Stream? _activeSecureStream;
     private long _nextOutboundSequence;
     private long _testRequestSentTicks;
     private int _failedAttempts;
@@ -239,8 +237,8 @@ public sealed class FixSession : IHostedService
         socket.SendTimeout = (int)StopTimeout.TotalMilliseconds;
         await socket.ConnectAsync(_options.Host, _options.Port, cancellationToken).ConfigureAwait(false);
 
-        SslStream? sslStream = null;
-        X509Certificate2? certificate = null;
+        TcpClient? tlsClient = null;
+        Stream? secureStream = null;
         using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task? heartbeat = null;
         Task? logonWatch = null;
@@ -248,10 +246,17 @@ public sealed class FixSession : IHostedService
         {
             if (_options.TlsEnabled)
             {
-                certificate = LoadClientCertificate();
-                var networkStream = new NetworkStream(socket, ownsSocket: false);
-                sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-                await AuthenticateTlsAsync(sslStream, certificate, cancellationToken).ConfigureAwait(false);
+                tlsClient = AdoptConnectedSocket(socket);
+                secureStream = await TlsSocketFactory.WrapAsync(
+                    tlsClient,
+                    new TlsOptions
+                    {
+                        Enabled = true,
+                        CertificatePath = _options.TlsCertificatePath,
+                        CertificatePasswordEnvVar = _options.TlsCertificatePasswordEnvVar,
+                        TargetHost = _options.Host,
+                    },
+                    cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation(
                     "Sessão {SessionId} autenticou TLS com {Host}:{Port}",
                     _sessionId.Value,
@@ -266,7 +271,7 @@ public sealed class FixSession : IHostedService
             Volatile.Write(ref _testRequestSentTicks, 0);
             Volatile.Write(ref _sawInboundSinceTestRequest, 0);
             Volatile.Write(ref _activeSocket, socket);
-            Volatile.Write(ref _activeSsl, sslStream);
+            Volatile.Write(ref _activeSecureStream, secureStream);
             _logger.LogInformation(
                 "Sessão {SessionId} conectou em {Host}:{Port}",
                 _sessionId.Value,
@@ -278,7 +283,7 @@ public sealed class FixSession : IHostedService
             SendAdmin(OutboundAdmin.Logon, ReadOnlySpan<byte>.Empty);
 
             var pipe = new Pipe(CreatePipeOptions());
-            Task fill = FillPipeAsync(socket, sslStream, pipe.Writer, cancellationToken);
+            Task fill = FillPipeAsync(socket, secureStream, pipe.Writer, cancellationToken);
             Task read = ReadPipeAsync(pipe.Reader, cancellationToken);
             heartbeat = HeartbeatLoopAsync(connectionCts.Token);
             logonWatch = WatchLogonAsync(connectionCts.Token);
@@ -290,20 +295,20 @@ public sealed class FixSession : IHostedService
             await ObserveAdminLoopAsync(heartbeat).ConfigureAwait(false);
             await ObserveAdminLoopAsync(logonWatch).ConfigureAwait(false);
             TrySendLogout();
-            Volatile.Write(ref _activeSsl, null);
+            Volatile.Write(ref _activeSecureStream, null);
             Volatile.Write(ref _activeSocket, null);
-            if (sslStream is not null)
+            if (secureStream is not null)
             {
-                await sslStream.DisposeAsync().ConfigureAwait(false);
+                await secureStream.DisposeAsync().ConfigureAwait(false);
             }
 
-            certificate?.Dispose();
+            tlsClient?.Dispose();
         }
     }
 
     private async Task FillPipeAsync(
         Socket socket,
-        SslStream? sslStream,
+        Stream? secureStream,
         PipeWriter writer,
         CancellationToken cancellationToken)
     {
@@ -313,9 +318,9 @@ public sealed class FixSession : IHostedService
             while (!cancellationToken.IsCancellationRequested)
             {
                 Memory<byte> memory = writer.GetMemory(MinimumReceiveBytes);
-                int received = sslStream is null
+                int received = secureStream is null
                     ? await socket.ReceiveAsync(memory, SocketFlags.None, cancellationToken).ConfigureAwait(false)
-                    : await sslStream.ReadAsync(memory, cancellationToken).ConfigureAwait(false);
+                    : await secureStream.ReadAsync(memory, cancellationToken).ConfigureAwait(false);
                 if (received == 0)
                 {
                     break;
@@ -573,10 +578,10 @@ public sealed class FixSession : IHostedService
 
     private void WriteSocket(ReadOnlySpan<byte> payload)
     {
-        SslStream? ssl = Volatile.Read(ref _activeSsl);
-        if (ssl is not null)
+        Stream? secure = Volatile.Read(ref _activeSecureStream);
+        if (secure is not null)
         {
-            ssl.Write(payload);
+            secure.Write(payload);
             return;
         }
 
@@ -787,47 +792,13 @@ public sealed class FixSession : IHostedService
         return false;
     }
 
-    private X509Certificate2? LoadClientCertificate()
+    private static TcpClient AdoptConnectedSocket(Socket socket)
     {
-        if (string.IsNullOrWhiteSpace(_options.TlsCertificatePath))
-        {
-            return null;
-        }
-
-        string? password = null;
-        if (!string.IsNullOrWhiteSpace(_options.TlsCertificatePasswordEnvVar))
-        {
-            password = Environment.GetEnvironmentVariable(_options.TlsCertificatePasswordEnvVar);
-            if (string.IsNullOrEmpty(password))
-            {
-                throw new InvalidOperationException(
-                    $"A variável de ambiente '{_options.TlsCertificatePasswordEnvVar}' não está definida.");
-            }
-        }
-
-        return X509CertificateLoader.LoadPkcs12FromFile(
-            _options.TlsCertificatePath,
-            password,
-            X509KeyStorageFlags.EphemeralKeySet);
-    }
-
-    private async Task AuthenticateTlsAsync(
-        SslStream stream,
-        X509Certificate2? certificate,
-        CancellationToken cancellationToken)
-    {
-        var authentication = new SslClientAuthenticationOptions
-        {
-            TargetHost = _options.Host,
-        };
-        if (certificate is not null)
-        {
-            var certificates = new X509CertificateCollection();
-            certificates.Add(certificate);
-            authentication.ClientCertificates = certificates;
-        }
-
-        await stream.AuthenticateAsClientAsync(authentication, cancellationToken).ConfigureAwait(false);
+        var client = new TcpClient();
+        Socket unused = client.Client;
+        client.Client = socket;
+        unused.Dispose();
+        return client;
     }
 
     private void ShutdownActiveSocket()

@@ -409,7 +409,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 4 — Camada de Egress
 
-- [ ] T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
+- [x] T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
 
 **Objetivo:** Fornecer o consume loop de background comum, gerenciamento de ciclo de vida e tratamento de erros compartilhados por todos os dispatchers.
 
@@ -432,7 +432,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-20 — Implementar `KafkaMessageDispatcher`
+- [x] T-20 — Implementar `KafkaMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para Kafka usando `Confluent.Kafka`.
 
@@ -454,7 +454,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-21 — Implementar `RabbitMQMessageDispatcher`
+- [x] T-21 — Implementar `RabbitMQMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para RabbitMQ usando `RabbitMQ.Client`.
 
@@ -473,7 +473,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
+- [x] T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
 
 **Objetivo:** Dispatcher FIX outbound que re-emite mensagens para um consumidor FIX downstream.
 
@@ -492,7 +492,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
+- [x] T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
 
 **Objetivo:** Serializar um value type `FixMessage` de volta para `byte[]` no formato wire para dispatchers outbound operando em modo `Parse`.
 
@@ -511,7 +511,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
+- [x] T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
 
 **Objetivo:** Adicionar mTLS TLS 1.2/1.3 opcional ao `FixSession` (inbound) e `FixOutboundDispatcher` (outbound).
 
@@ -530,7 +530,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
+- [x] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
 
 **Objetivo:** Garantir que cada `FixOutboundDispatcher` rastreie seu próprio contador independente de `MsgSeqNum` outbound, com persistência para recuperação de crash.
 
