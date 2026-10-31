@@ -42,7 +42,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Deployment Tools
-        run: echo "Configurando ferramentas de infraestrutura (Ex: AWS, Docker, K8s, etc.)..."
+        run: >
+          echo "Configurando ferramentas de infraestrutura (Ex: AWS, Docker, K8s, etc.)..."
 
       - name: Publish Application
         run: dotnet publish NexusRouter.slnx --configuration Release --output ./publish
