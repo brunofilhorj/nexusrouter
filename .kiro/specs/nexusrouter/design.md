@@ -88,6 +88,7 @@ O NexusRouter é projetado em torno de uma única restrição fundamental: **o h
 │  │  │ Confluent.Kafka    │  │ RabbitMQ.Client      │  │ TcpListener      │ │   │
 │  │  │ IProducer          │  │ IChannel             │  │ N sessões FIX    │ │   │
 │  │  └────────────────────┘  └──────────────────────┘  └──────────────────┘ │   │
+│  │  WebSocketMessageDispatcher: acceptor, N sessões, projeção por Logon     │   │
 │  └──────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
@@ -162,6 +163,98 @@ O producer é **agnóstico ao provedor**. `ConnectAsync` monta um `ProducerConfi
 
 **`RabbitMQMessageDispatcher`:** Encapsula um `IModel` (cliente clássico) ou `IChannel` (futuro cliente async v7+). Cada instância de dispatcher mantém um channel dedicado para evitar contenção. O flag mandatory e as confirmações de publisher são configuráveis — desabilitados por padrão para latência mínima.
 
+#### 3.3.1 `WebSocketMessageDispatcher`
+
+Acceptor para aplicação web ou nativa. O NexusRouter escuta; o cliente abre o WebSocket. O hot path não muda: o router continua fazendo `TryEnqueue` do `DispatchPayload` inteiro. JSON, binário e filtro de campos existem só no consume loop deste dispatcher, e só quando há sessão logada.
+
+O que este acceptor aproveita do `FixOutboundDispatcher`, e o que deixa de lado:
+
+| Do acceptor FIX | No WebSocket |
+|-----------------|--------------|
+| Escuta, aceita N clientes, não disca | Igual. `TcpListener` mais upgrade HTTP/1.1. Subprotocolo obrigatório `nexusrouter.v1`. |
+| Fila de envio por sessão; socket lento não segura os outros | Igual. Channel bounded por `WebSocketAcceptedSession`. Channel cheio descarta só aquela sessão e emite métrica. |
+| Sem sessão logada, o payload morre neste dispatcher | Igual, e sem sessão logada não há tokenização. |
+| Logon é o primeiro frame e congela a retenção do dia UTC | Igual. O campo é `replay` (true/false), com a mesma regra da tag `9001`: a primeira declaração do dia vale; as seguintes não mudam. |
+| Seq próprio, arquivo por cliente, retomado no próximo Logon | Igual. `SequenceNumberStore` com chave `DispatcherId` + `ClientId`. O número vai no envelope, não na tag 34. |
+| ResendRequest devolve o que foi retido; o resto é GapFill | Pedido `replay` devolve os bytes guardados. Buraco vira frame `gap`. Sem retenção no dia, um único `gap` cobre o intervalo. |
+| Heartbeat e queda por silêncio | Ping de protocolo no intervalo configurado. Pong ausente pelo limite configurado encerra a sessão. `{ "type": "heartbeat" }` recebe eco. |
+| TLS opcional no socket aceito | TLS de servidor opcional, reusando o wrap de servidor já usado no acceptor FIX. Autenticação do cliente é o token do Logon. mTLS não é o caminho do browser. |
+| Cópia do frame FIX com tag 34 e checksum reescritos | Não se aplica. O cliente não consome wire FIX. |
+| Uma forma única de payload para todo mundo | Cada Logon escolhe encoding e campos. Duas sessões no mesmo dispatcher podem receber projeções diferentes da mesma ordem. |
+
+**Upgrade.** `ConnectAsync` abre `TcpListener` em `ListenAddress`/`ListenPort`. Com TLS ligado, o socket aceito passa pelo wrap de servidor antes do HTTP. O request exige `Upgrade: websocket` e `Sec-WebSocket-Protocol: nexusrouter.v1`. Se o request traz `Origin`, o valor tem de estar em `AllowedOrigins`; lista vazia recusa qualquer `Origin` e aceita só cliente sem esse header (aplicação nativa). Falha de upgrade fecha o TCP com resposta HTTP e não cria sessão. O WebSocket é `WebSocket.CreateFromStream` sobre o stream já aceito — sem Kestrel e sem ASP.NET no projeto de egress.
+
+**Logon.** Primeiro frame de dados, dentro de `LogonTimeoutSeconds`, texto JSON, no máximo `MaxControlFrameBytes`:
+
+```json
+{
+  "type": "logon",
+  "clientId": "6f1e0b3a-9c2d-4a7e-8b15-2d4c0a9e7f31",
+  "token": "<valor da variável de ambiente>",
+  "replay": false,
+  "encoding": "json",
+  "fields": [11, 55, 54, 38, 44, 39]
+}
+```
+
+`clientId` tem de estar no cadastro apontando para este `DispatcherId`. `token` é comparado em tempo constante com o valor de `TokenEnvVar`; o valor não entra em log nem na URL. `encoding` é `json` ou `binary`. `fields` omitido ou vazio pede todas as propriedades de aplicação. Lista presente pede só essas tags, na ordem dada, com no máximo `MaxFields` (64). Duplicata sai. As tags de sessão 8, 9, 10, 34, 35, 49, 52 e 56 saem da lista: não são propriedade da ordem. Tag desconhecida no filtro é ignorada. `replay` ausente vale `false`.
+
+Sucesso devolve texto:
+
+```json
+{
+  "type": "logonAck",
+  "replay": false,
+  "encoding": "json",
+  "fields": [11, 55, 54, 38, 44, 39],
+  "nextSeq": 1
+}
+```
+
+`fields` ausente no ack significa projeção completa. `replay` no ack é a escolha já congelada do dia UTC, que pode divergir do valor recém enviado. Falha devolve `{ "type": "reject", "reason": "unauthorized|origin|protocol|logon" }` e fecha. Um segundo Logon do mesmo `ClientId` derruba o socket anterior e continua o `seq`. Até o ack, a sessão não recebe execução.
+
+**Projeção.** Com ao menos uma sessão logada, o consume loop tokeniza o body uma vez: usa o `FixMessage` quando o ingresso veio em `Parse`; no `PassThrough`, tokeniza o frame cru aqui. Para cada sessão, monta o envelope e os campos selecionados e faz `TryWrite` na fila daquela sessão. A escrita no socket é outra task. O loop do dispatcher não espera o browser.
+
+Envelope, sempre presente, fora do filtro: `type=exec`, `seq` da sessão, `msgType` (tag 35) e `ts` (timestamp de ingresso). Valores de campo continuam a string ASCII do FIX, sem conversão numérica, nos dois encodings. Sem filtro, a ordem dos campos é a ordem do wire. Frame maior que `MaxOutboundFrameBytes` é descartado só naquela sessão.
+
+JSON, frame de texto:
+
+```json
+{
+  "type": "exec",
+  "seq": 42,
+  "msgType": "8",
+  "ts": 638000000000000000,
+  "fields": { "11": "ORD1", "55": "PETR4", "54": "1", "38": "100" }
+}
+```
+
+Binário, frame binário, little-endian, os mesmos campos:
+
+```
+u8  type            1 = exec, 2 = gap, 3 = heartbeat
+u64 seq
+u64 ts
+u8  msgTypeLen
+    msgType bytes
+u16 fieldCount
+    repetido: u16 tag, u16 valueLen, value bytes
+```
+
+`json` é o formato que a página consome direto. `binary` é o mesmo conteúdo em menos bytes, para cliente que lê `ArrayBuffer`. O filtro encolhe os dois: uma tela que só mostra símbolo, lado, quantidade e status não recebe o body inteiro.
+
+**Liveness e entrada.** O servidor manda ping no `HeartbeatIntervalSeconds` e encerra após `MissedHeartbeatLimit` pongs ausentes. O cliente só pode enviar `logon` (uma vez), `heartbeat` e `replay`. Outro frame encerra a sessão. v1 é drop copy: o WebSocket não aceita ordem nova.
+
+**Replay.** Mesmo store `client_replay_messages` e o mesmo `TrySetDailyChoice` do FIX e da API. Com a retenção do dia ligada, cada frame projetado que entrou na fila da sessão também segue para o channel de replay, com o `seq` do envelope. O que fica gravado é o byte que aquele cliente ia receber naquela conexão. Um reconnect com outro `encoding` ou outro `fields` muda só o tráfego novo; o pedido de replay devolve o frame antigo, sem reprojetar.
+
+Pedido, texto JSON: `{ "type": "replay", "fromSeq": 10, "toSeq": 20 }`. `toSeq` 0 significa até o último `seq` enviado. A resposta segue a ordem do `seq`, misturando `exec` retido e `gap`. `fromSeq` e `toSeq` do pedido são inclusivos. No `gap`, `fromSeq` é inclusivo e `toSeq` é exclusivo (o próximo `seq` que existe ou o fim do intervalo):
+
+```json
+{ "type": "gap", "fromSeq": 4, "toSeq": 6 }
+```
+
+Sem retenção naquele dia, a resposta é um único `gap` sobre o intervalo pedido. Buraco por channel de replay cheio, ou por opt-in ainda desligado na hora, também vira `gap` só naquele trecho.
+
 ---
 
 ### 3.4 Cold Path / Audit Tier
@@ -230,6 +323,8 @@ Hypertable em `ingress_ts`. Índice `(client_id, trading_day, replay_seq)`. Rete
 **Cliente FIX.** O cadastro liga `FixSenderCompId` ao UUID. No primeiro Logon do dia UTC, `9001=Y` liga a retenção até a meia-noite UTC; sem a tag, ou com `N`, fica desligada. Cada mensagem de aplicação enfileirada para a sessão entra no channel com o sequence number que aquela sessão acabou de reservar. No ResendRequest, o servidor lê essa faixa e reenvia os bytes guardados. Sequence number ausente no store (opt-in ainda desligado na hora, ou drop do channel) recebe GapFill só nesse trecho.
 
 **Cliente de broker.** Kafka e RabbitMQ não identificam o assinante. O cadastro só tem `ClientId` + `DispatcherId`. A primeira chamada do dia UTC em `POST /v1/clients/{clientId}/replay` com `{ "enabled": true|false }` fixa a escolha. Mensagens publicadas depois disso, com retenção ligada, recebem `replay_seq` 1, 2, 3… daquele UUID. O assinante recupera com `GET /v1/clients/{clientId}/replay?fromSeq=&toSeq=`. O token da API é a variável `NEXUS_REPLAY_API_TOKEN`.
+
+**Cliente WebSocket.** O cadastro liga o UUID ao dispatcher e a `TokenEnvVar`. No primeiro Logon do dia UTC, `replay: true` liga a retenção até a meia-noite UTC; ausência ou `false` deixa desligada. O `raw_payload` guardado é o frame já projetado (JSON ou binário, com o filtro da conexão que o enviou), e o `replay_seq` é o `seq` do envelope. A recuperação é o pedido `replay` na própria sessão. Um Logon posterior no mesmo dia pode mudar encoding e campos; não muda a escolha de retenção, e não reescreve o que já foi guardado.
 
 ---
 
@@ -427,14 +522,37 @@ NexusRouter:
       RoutingKey: ""
       ChannelCapacity: 8192
 
+    - Id: "ws-dropcopy"
+      Type: WebSocket
+      ListenAddress: "0.0.0.0"
+      ListenPort: 6002
+      AllowedOrigins: ["https://app.example.com"]
+      HeartbeatIntervalSeconds: 30
+      MissedHeartbeatLimit: 2
+      LogonTimeoutSeconds: 5
+      MaxControlFrameBytes: 4096
+      MaxFields: 64
+      MaxOutboundFrameBytes: 65536
+      SessionChannelCapacity: 1024
+      SequenceStoreDirectory: "/var/lib/nexusrouter/seq"
+      ChannelCapacity: 8192
+      # TLS:
+      #   Enabled: true
+      #   CertificatePath: "/certs/server.pfx"
+      #   CertificatePasswordEnvVar: "NEXUS_WS_CERT_PWD"
+
   # Cadastro opcional. Sem esta lista não há retenção.
-  # A escolha do dia não fica aqui: FIX manda 9001 no primeiro Logon; broker chama a API.
+  # A escolha do dia não fica aqui: FIX manda 9001 no primeiro Logon;
+  # WebSocket manda replay no primeiro Logon; broker chama a API.
   Clients:
     - ClientId: "6f1e0b3a-9c2d-4a7e-8b15-2d4c0a9e7f31"
       DispatcherId: "fix-out-client1"
       FixSenderCompId: "OMS1"
     - ClientId: "a4c8e2d1-1b6f-4e90-9a33-7c5d2e8b0146"
       DispatcherId: "kafka-main"
+    - ClientId: "c1d2e3f4-a5b6-4789-8abc-def012345678"
+      DispatcherId: "ws-dropcopy"
+      TokenEnvVar: "NEXUS_WS_CLIENT_TOKEN"
 
   Replay:
     ChannelCapacity: 65536
@@ -508,9 +626,13 @@ NexusRouter/
 │   │   │   └── IKafkaPartitionStrategy.cs
 │   │   ├── RabbitMQ/
 │   │   │   └── RabbitMQMessageDispatcher.cs
-│   │   └── Fix/
-│   │       ├── FixOutboundDispatcher.cs  # TcpListener; N sessões aceitas
-│   │       └── FixAcceptedSession.cs     # uma conexão, um MsgSeqNum
+│   │   ├── Fix/
+│   │   │   ├── FixOutboundDispatcher.cs  # TcpListener; N sessões aceitas
+│   │   │   └── FixAcceptedSession.cs     # uma conexão, um MsgSeqNum
+│   │   └── WebSocket/
+│   │       ├── WebSocketMessageDispatcher.cs  # TcpListener; upgrade; N sessões
+│   │       ├── WebSocketAcceptedSession.cs    # uma conexão, um seq, um filtro
+│   │       └── WebSocketFrameEncoder.cs       # JSON ou binário, fora do hot path
 │   │
 │   ├── NexusRouter.Audit/                # Log de auditoria do cold path
 │   │   ├── AuditWriterService.cs
@@ -589,7 +711,8 @@ NexusRouter/
         │
         ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message)
         ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body)
-        └─► FixOutboundDispatcher: enfileira uma cópia por sessão aceita, cada uma com o próprio MsgSeqNum
+        ├─► FixOutboundDispatcher: enfileira uma cópia por sessão aceita, cada uma com o próprio MsgSeqNum
+        └─► WebSocketMessageDispatcher: projeta por sessão (json ou binary, campos do Logon) e enfileira
 
 [AuditWriterService Consumer Task — thread do thread-pool em background]
         ├─► SerilogAuditSink (metadados, lote async)
@@ -632,3 +755,5 @@ Contribuições estimadas dos componentes do hot path para a latência end-to-en
 | `Confluent.Kafka` + options de segurança | Cliente AWS-only ou QuickFIX-style engine | Um producer cobre Docker, Kafka auto-gerenciado e Amazon MSK; IAM é opt-in |
 | TimescaleDB (extensão PostgreSQL) para FIX persistido | Só Serilog arquivo, ou PG heap sem particionar | Store consultável no cold path; chunks, compressão e retenção batem com ingestão temporal; `Npgsql` único cliente |
 | Kafka PLAINTEXT no Compose + dual listener | Um listener `kafka:9092` | App no host usa `localhost:19092`; outros containers usam `kafka:9092`; evita advertised.listeners quebrado |
+| WebSocket projeta no consume loop, por sessão | Filtrar campos no router, ou reenviar o frame FIX | O hot path continua entregando o payload inteiro. Cada browser pede no Logon o encoding e as tags que cabem na tela. Binário e JSON carregam os mesmos valores ASCII do FIX, sem coerção numérica |
+| Replay WebSocket guarda o frame já enviado | Reprojetar o histórico com o filtro do reconnect | O cliente recebe de volta o byte que perdeu. Trocar `fields` no Logon seguinte vale só para o tráfego novo |
