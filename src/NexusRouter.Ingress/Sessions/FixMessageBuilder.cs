@@ -137,6 +137,43 @@ public static class FixMessageBuilder
         return buffer[..written];
     }
 
+    /// <summary>
+    /// Escreve um SequenceReset (MsgType=4) em <paramref name="buffer"/>.
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString e comp IDs.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34) desta mensagem. No GapFill é o início do buraco, não o próximo número da sessão.</param>
+    /// <param name="newSeqNo">NewSeqNo (tag 36). O próximo MsgSeqNum que a sessão vai enviar.</param>
+    /// <param name="gapFill">Quando <see langword="true"/>, GapFillFlag (tag 123) sai como Y.</param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentException">BeginString ou comp ID é inválido.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="msgSeqNum"/> ou <paramref name="newSeqNo"/> não é positivo.</exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
+    public static Span<byte> BuildSequenceReset(
+        Span<byte> buffer,
+        SessionOptions options,
+        long msgSeqNum,
+        long newSeqNo,
+        bool gapFill)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSeqNo);
+
+        Span<byte> extra = stackalloc byte[48];
+        int length = AppendLiteral(extra, 0, gapFill ? "123=Y\x01"u8 : "123=N\x01"u8);
+        length = AppendLiteral(extra, length, "36="u8);
+        if (!Utf8Formatter.TryFormat(newSeqNo, extra[length..], out int width))
+        {
+            throw new InvalidOperationException("NewSeqNo não coube no SequenceReset.");
+        }
+
+        length += width;
+        length = AppendSoh(extra, length);
+        int written = WriteMessage(buffer, options, msgSeqNum, "4"u8, extra[..length]);
+        return buffer[..written];
+    }
+
     private static int WriteMessage(
         Span<byte> buffer,
         SessionOptions options,

@@ -24,6 +24,8 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 6 | Host, Wiring de DI e Configuração | T-29 → T-32 |
 | Fase 7 | Observabilidade e Benchmarks | T-33 → T-36 |
 | Fase 8 | Testes | T-37 → T-43 |
+| Fase 9 | Retransmissão opcional por cliente | T-44 → T-48 |
+| Fase 10 | Egress WebSocket | T-49 → T-53 |
 
 ---
 
@@ -409,7 +411,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 4 — Camada de Egress
 
-- [ ] T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
+- [x] T-19 — Implementar a Classe Base Abstrata `DispatcherBase<TOptions>`
 
 **Objetivo:** Fornecer o consume loop de background comum, gerenciamento de ciclo de vida e tratamento de erros compartilhados por todos os dispatchers.
 
@@ -432,7 +434,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-20 — Implementar `KafkaMessageDispatcher`
+- [x] T-20 — Implementar `KafkaMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para Kafka usando `Confluent.Kafka`.
 
@@ -454,7 +456,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-21 — Implementar `RabbitMQMessageDispatcher`
+- [x] T-21 — Implementar `RabbitMQMessageDispatcher`
 
 **Objetivo:** Dispatcher de egress para RabbitMQ usando `RabbitMQ.Client`.
 
@@ -473,26 +475,24 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
+- [x] T-22 — Implementar `FixOutboundDispatcher` — Acceptor FIX para Clientes Downstream
 
-**Objetivo:** Dispatcher FIX outbound que re-emite mensagens para um consumidor FIX downstream.
+**Objetivo:** Dispatcher FIX que escuta e re-emite mensagens para cada cliente FIX conectado, com sequence number próprio.
 
 **Entradas:** `requirements.md` (FR-EGR-03), `design.md` (Seção 3.3)
 
 **Passos:**
 1. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcher.cs` estendendo `DispatcherBase<FixOutboundDispatcherOptions>`:
-   - `ConnectAsync`: abre conexão TCP para o host/porta downstream configurado. Opcionalmente encapsula em `SslStream`. Cria um `Pipe` para escritas outbound. Realiza handshake de Logon FIX usando `FixMessageBuilder` (de T-11). Mantém contador `long _outboundSeqNum`.
-   - `SendAsync`:
-     - Payload `PassThrough`: o buffer já foi reescrito com o SeqNum inbound pelo `PassThroughRewriter`. Para outbound, chamar `PassThroughRewriter.Rewrite(buffer, Interlocked.Increment(ref _outboundSeqNum))` novamente para aplicar o próprio SeqNum da sessão outbound.
-     - Payload `Parse`: serializar `FixMessage` de volta para formato wire, injetando `_outboundSeqNum`. Usar utilitários de serialização do `FixMessageBuilder`.
-   - Reconectar em erro de socket: exponential backoff (usar `ExponentialBackoffReconnectPolicy`), re-Logon na reconexão.
-2. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcherOptions.cs`.
+   - `ConnectAsync`: abre `TcpListener` em `ListenAddress`/`ListenPort`. Não conecta em cliente. Opcionalmente encapsula cada socket aceito em TLS de servidor.
+   - Aceita N clientes. O primeiro frame de cada um é Logon. TargetCompID (tag 56) tem de ser o `SenderCompId` do acceptor. Cada Logon aceito vira uma `FixAcceptedSession` com fila e MsgSeqNum próprios.
+   - `SendAsync`: para cada sessão logada, copia o frame e aplica o MsgSeqNum daquela sessão. `PassThrough` usa `PassThroughRewriter`. `Parse` usa `FixMessageSerializer` com o SenderCompID do acceptor e o TargetCompID do cliente. Falha ou fila cheia de uma sessão não bloqueia as outras. Sem sessão logada, descarta o payload neste dispatcher.
+2. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcherOptions.cs` com endereço de escuta, não host de destino.
 
-**Saída:** `FixOutboundDispatcher` mantém uma sessão FIX ativa para um cliente downstream e encaminha mensagens com sequence numbers outbound corretos.
+**Saída:** `FixOutboundDispatcher` escuta e mantém uma sessão FIX independente por cliente conectado, cada uma com sequence number outbound próprio.
 
 ---
 
-- [ ] T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
+- [x] T-23 — Implementar `FixMessageSerializer` (Serialização Outbound para Modo Parse)
 
 **Objetivo:** Serializar um value type `FixMessage` de volta para `byte[]` no formato wire para dispatchers outbound operando em modo `Parse`.
 
@@ -511,7 +511,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
+- [x] T-24 — Implementar Suporte a TLS para Sessões Inbound e Outbound
 
 **Objetivo:** Adicionar mTLS TLS 1.2/1.3 opcional ao `FixSession` (inbound) e `FixOutboundDispatcher` (outbound).
 
@@ -523,27 +523,27 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
      - Se `options.Enabled == false`: retornar `client.GetStream()` diretamente.
      - Se habilitado: carregar `X509Certificate2` de `options.CertificatePath` usando `options.CertificatePasswordEnvVar` como nome da variável de ambiente para a senha.
      - Criar `SslStream`, chamar `AuthenticateAsClientAsync` com `SslClientAuthenticationOptions` (TLS 1.2 mínimo).
-2. Usar `TlsSocketFactory.WrapAsync` em `FixSession.ConnectAsync` e `FixOutboundDispatcher.ConnectAsync` quando TLS estiver configurado.
+2. Usar `TlsSocketFactory.WrapAsync` em `FixSession.ConnectAsync` quando TLS estiver configurado. No `FixOutboundDispatcher`, usar `TlsSocketFactory.WrapServerAsync` em cada socket aceito.
 3. NÃO registrar em log nem expor material de chave privada de certificado.
 
 **Saída:** Sessões conectam com sucesso via TLS quando configurado. O caminho plaintext não é alterado.
 
 ---
 
-- [ ] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
+- [x] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
 
-**Objetivo:** Garantir que cada `FixOutboundDispatcher` rastreie seu próprio contador independente de `MsgSeqNum` outbound, com persistência para recuperação de crash.
+**Objetivo:** Garantir que cada sessão aceita pelo `FixOutboundDispatcher` rastreie seu próprio contador de `MsgSeqNum` outbound, com persistência para recuperação de crash. O contador é independente da sessão inbound e das outras sessões aceitas.
 
 **Entradas:** `requirements.md` (FR-EGR-03), restrições de design (sem I/O síncrono no hot path; seqnum persistido de forma async)
 
 **Passos:**
 1. Criar `src/NexusRouter.Egress/Fix/SequenceNumberStore.cs`:
-   - Lê o último sequence number conhecido de um arquivo flat local (um arquivo por ID de dispatcher, armazenado em diretório configurável) durante `LoadAsync(string dispatcherId)` na inicialização.
+   - Lê o último sequence number conhecido de um arquivo flat local (um arquivo por chave de sessão — id do dispatcher mais o SenderCompID do cliente —, armazenado em diretório configurável) durante `LoadAsync(string dispatcherId)` no Logon.
    - Persiste o sequence number atual no arquivo de forma assíncrona via `PeriodicTimer` em background (ex.: a cada 5 segundos) e em `StopAsync`.
    - O contador em memória (`long`) é acessado exclusivamente via `Interlocked.Increment` no hot path; a persistência é somente cold-path.
-2. Integrar `SequenceNumberStore` em `FixOutboundDispatcher.ConnectAsync` e `StopAsync`.
+2. Integrar `SequenceNumberStore` em cada `FixAcceptedSession`: carregar no Logon e gravar ao encerrar a sessão. `FixOutboundDispatcher.StopAsync` encerra todas as sessões aceitas.
 
-**Saída:** Sequence numbers outbound sobrevivem a reinicializações do processo sem perda.
+**Saída:** Sequence numbers outbound de cada cliente sobrevivem a reinicializações do processo sem perda.
 
 ---
 
@@ -622,8 +622,8 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - `SessionOptions.cs`: todas as configurações de nível de sessão (host, porta, comp IDs, TLS, reconexão, delivery mode, tipo de frame decoder, rotas).
    - `TlsOptions.cs`: configurações específicas de TLS.
    - `ReconnectPolicyOptions.cs`: parâmetros de backoff.
-   - `DispatcherOptions.cs`: classe base / union discriminada para options de Kafka, RabbitMQ e FIX outbound.
-   - `KafkaDispatcherOptions.cs`, `RabbitMQDispatcherOptions.cs`, `FixOutboundDispatcherOptions.cs` (Kafka: campos de FR-EGR-11 / design Seção 6).
+   - `DispatcherOptions.cs`: classe base / union discriminada para options de Kafka, RabbitMQ, FIX outbound e WebSocket.
+   - `KafkaDispatcherOptions.cs`, `RabbitMQDispatcherOptions.cs`, `FixOutboundDispatcherOptions.cs`, `WebSocketDispatcherOptions.cs` (Kafka: campos de FR-EGR-11 / design Seção 6; WebSocket: campos de FR-EGR-12 / design Seção 6).
    - `AuditOptions.cs`: channel, overflow, batch, persist mode, lista de sinks.
    - `PostgresAuditSinkOptions.cs`: host, port, database, env vars de credencial, SslMode.
 2. Todos os POCOs implementam `IValidateOptions<T>` ou usam atributos `DataAnnotations` para validação na inicialização.
@@ -643,7 +643,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 1. Criar `src/NexusRouter.Host/Extensions/ServiceCollectionExtensions.cs`:
    - `AddNexusRouterIngress(this IServiceCollection, IConfiguration)`: registra implementações de `ISessionFrameDecoder` (com chave por nome de tipo de decoder), `ExponentialBackoffReconnectPolicy`, um `FixSession` `IHostedService` por sessão configurada.
    - `AddNexusRouterRouter(this IServiceCollection, IConfiguration)`: registra `RouterEngine` como `IMessageRouter` (singleton), `RouteResolver` (singleton), `FanOutEngine` (singleton), `DispatchPayloadPool` (singleton).
-   - `AddNexusRouterEgress(this IServiceCollection, IConfiguration)`: registra cada dispatcher (Kafka, RabbitMQ, FixOutbound) com base em `DispatcherOptions.Type`. Cada dispatcher registrado tanto como tipo concreto quanto como `IMessageDispatcher` (registro nomeado).
+   - `AddNexusRouterEgress(this IServiceCollection, IConfiguration)`: registra cada dispatcher (Kafka, RabbitMQ, FixOutbound, WebSocket) com base em `DispatcherOptions.Type`. Cada dispatcher registrado tanto como tipo concreto quanto como `IMessageDispatcher` (registro nomeado).
    - `AddNexusRouterAudit(this IServiceCollection, IConfiguration)`: registra `AuditChannelSingleton`, sinks (`SerilogAuditSink`, `PostgresAuditSink` conforme `Audit:Sinks`), `AuditWriterService` como `IHostedService`, `DispatcherAuditObserver` como `IHostedService`.
 2. Objetos `RouteContext` são construídos a partir de `SessionOptions.Routes` resolvendo instâncias de dispatcher pelo nome no container de DI.
 
@@ -663,7 +663,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
    - Configurar Serilog a partir de `appsettings.json` (`UseSerilog`).
    - Chamar todos os métodos de extensão `AddNexusRouter*`.
    - Adicionar `UseConsoleLifetime()` para shutdown limpo via Ctrl+C.
-2. Criar `src/NexusRouter.Host/appsettings.json` com uma configuração de exemplo completa alinhada ao `docker-compose.yml` (`localhost:19092` Kafka, `localhost:5672` RabbitMQ, `localhost:5432` Postgres, sem credenciais reais — só nomes de env vars).
+2. Criar `src/NexusRouter.Host/appsettings.json` com uma configuração de exemplo completa alinhada ao `docker-compose.yml` (`localhost:19092` Kafka, `localhost:5672` RabbitMQ, `localhost:5432` Postgres, acceptor WebSocket em `localhost:6002`, sem credenciais reais — só nomes de env vars).
 3. Adicionar pacotes NuGet do Serilog: `Serilog.AspNetCore` ou `Serilog.Extensions.Hosting`, `Serilog.Sinks.Console`, `Serilog.Sinks.File` (versões fixadas).
 
 **Saída:** `dotnet run` inicia a aplicação, registra mensagens de startup e as sessões começam a tentar conectar.
@@ -857,6 +857,182 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
+## Fase 9 — Retransmissão opcional por cliente
+
+Depende de T-22 (acceptor FIX), T-25 (sequence number), T-27 (Timescale) e T-31 (host). Não altera o default: sem cadastro e sem pedido no dia, o comportamento continua GapFill / publicação no broker.
+
+- [ ] T-44 — Cadastro de cliente e escolha diária de retenção
+
+**Objetivo:** Identificar cada consumidor por UUID, independente do dispatcher, e guardar a escolha de retenção do dia UTC.
+
+**Entradas:** `requirements.md` (FR-RPL-01, FR-RPL-02, FR-RPL-04), `design.md` (Seção 3.4.3 e Seção 6 — `Clients`)
+
+**Passos:**
+1. Modelo `ReplayClient`: `ClientId` (UUID), `DispatcherId`, `FixSenderCompId` opcional.
+2. Estado em memória da escolha do dia, exposto como `TrySetDailyChoice(clientId, enabled)`. Desligada até a primeira declaração: Logon FIX com `9001=Y`, Logon WebSocket com `replay: true`, ou `POST` com `enabled: true`. Recusa mudança no mesmo dia. Zera na virada UTC. O Logon WebSocket chama o mesmo método; a sessão em si é a Fase 10.
+3. Cliente sem cadastro, ou cuja primeira declaração do dia pede retenção desligada, não entra na retenção.
+
+**Saída:** Dá para resolver um SenderCompID ou um UUID para a escolha do dia, e a segunda declaração do mesmo dia não altera a primeira.
+
+---
+
+- [ ] T-45 — Channel de replay e hypertable `client_replay_messages`
+
+**Objetivo:** Persistir no cold path só as mensagens dos clientes com retenção ligada naquele dia.
+
+**Entradas:** `requirements.md` (FR-RPL-05, FR-RPL-06), `design.md` (Seção 3.4.3)
+
+**Passos:**
+1. `ReplayRecord` e `Channel` bounded. `TryWrite` depois do handoff ao dispatcher. Channel cheio descarta e incrementa métrica.
+2. Hypertable no `init.sql` com `(client_id, trading_day, replay_seq)` e retenção de 1 dia. Writer em lote via `Npgsql`, no mesmo processo do audit, sem SQL no hot path.
+3. Quem grava informa os bytes e o `replay_seq`. FIX grava o frame reescrito e o `MsgSeqNum` da sessão. Broker grava o payload publicado e um contador próprio daquele `ClientId`, começando em 1 a partir do opt-in. WebSocket grava o frame já projetado e o `seq` do envelope.
+4. Nenhum cliente opted-in naquele dispatcher: não copiar o payload.
+
+**Saída:** Mensagem de um cliente com retenção ligada sobrevive no Timescale e é lida por `(client_id, dia, faixa de replay_seq)`. Cliente sem pedido não gera linha.
+
+---
+
+- [ ] T-46 — ResendRequest FIX com retransmissão do que foi retido
+
+**Objetivo:** Quando o cliente FIX pediu retenção, o ResendRequest reenvia os frames guardados daquela sessão em vez de um GapFill único sobre o intervalo inteiro.
+
+**Entradas:** `requirements.md` (FR-RPL-02, FR-RPL-03), `design.md` (Seção 3.3 e 3.4.3)
+
+**Passos:**
+1. No primeiro Logon do dia UTC, ler a tag `9001` e fixar a escolha em T-44.
+2. Ao enfileirar mensagem de aplicação para uma sessão com retenção ligada, publicar o frame já reescrito no channel de T-45 com o sequence number da sessão.
+3. No ResendRequest, ler o store daquele `ClientId` entre BeginSeqNo e EndSeqNo e reenviar esses bytes. Trecho sem linha no store recebe SequenceReset GapFill só desse trecho.
+4. Cliente sem retenção no dia mantém o GapFill atual, do BeginSeqNo até o próximo número da sessão.
+
+**Saída:** Cliente opted-in que perde a conexão recupera, pelo sequence number do ResendRequest, as mensagens retidas daquele dia. Cliente opted-out não recebe replay.
+
+---
+
+- [ ] T-47 — API de registro e recuperação para clientes de broker
+
+**Objetivo:** Kafka e RabbitMQ não identificam o assinante. A escolha e a recuperação passam por HTTP, sempre filtradas pelo `ClientId`.
+
+**Entradas:** `requirements.md` (FR-RPL-04, FR-RPL-07), `design.md` (Seção 3.4.3)
+
+**Passos:**
+1. `POST /v1/clients/{clientId}/replay` com `{ "enabled": true|false }`. Primeira chamada do dia UTC fixa a escolha. Token em `NEXUS_REPLAY_API_TOKEN`. UUID fora do cadastro responde 404.
+2. Com retenção ligada, o dispatcher de broker continua publicando no recurso e, além disso, alimenta T-45 com `replay_seq` daquele cliente.
+3. `GET /v1/clients/{clientId}/replay?fromSeq=&toSeq=` devolve só as linhas daquele UUID, em ordem de `replay_seq`.
+
+**Saída:** Um assinante de Kafka ou RabbitMQ liga a retenção pela API e busca o intervalo que perdeu, sem receber mensagens de outro `ClientId`.
+
+---
+
+- [ ] T-48 — Testes da retenção e da retransmissão
+
+**Objetivo:** Cobrir opt-in, opt-out, isolamento por UUID e o fato de o hot path não esperar o banco.
+
+**Entradas:** T-44, T-45, T-46, T-47
+
+**Passos:**
+1. Dois clientes FIX no mesmo acceptor: só quem mandou `9001=Y` no primeiro Logon do dia recebe os frames no ResendRequest. O outro recebe GapFill.
+2. Segundo Logon do mesmo dia com a tag oposta não muda a escolha.
+3. Dois UUIDs no mesmo dispatcher Kafka: o GET de um não devolve linhas do outro.
+4. Channel de replay cheio não impede o `TryEnqueue` do dispatcher.
+
+**Saída:** Testes automatizados demonstram retenção opcional, retransmissão pelo sequence number pedido e isolamento por `ClientId`.
+
+---
+
+## Fase 10 — Egress WebSocket
+
+Acceptor para aplicação web ou nativa. Depende de T-19 (`DispatcherBase`). O replay na sessão depende também de T-44 e T-45. A projeção não entra no router: o hot path continua entregando o `DispatchPayload` inteiro.
+
+- [ ] T-49 — Implementar o acceptor `WebSocketMessageDispatcher`
+
+**Objetivo:** Escutar, completar o upgrade WebSocket e manter N sessões vivas, cada uma com fila própria.
+
+**Entradas:** `requirements.md` (FR-EGR-12), `design.md` (Seção 3.3.1 — Upgrade e Liveness; Seção 6 — `Type: WebSocket`)
+
+**Passos:**
+1. Criar `src/NexusRouter.Egress/WebSocket/WebSocketMessageDispatcher.cs` estendendo `DispatcherBase<WebSocketDispatcherOptions>` e `WebSocketDispatcherOptions.cs` com os campos da Seção 6: escuta, `AllowedOrigins`, heartbeat, timeouts, limites de frame e de campos, capacidade da fila por sessão, diretório do sequence store, TLS de servidor opcional.
+2. `ConnectAsync` abre `TcpListener`. Com TLS ligado, o socket aceito passa pelo wrap de servidor já usado no acceptor FIX, antes do HTTP. Exigir `Upgrade: websocket` e subprotocolo `nexusrouter.v1`. `Origin` presente só passa se estiver em `AllowedOrigins`; lista vazia recusa qualquer `Origin`. Falha de upgrade responde HTTP e fecha o TCP, sem criar sessão. O socket aceito vira `WebSocket` por `WebSocket.CreateFromStream`.
+3. Cada conexão é uma `WebSocketAcceptedSession` com channel bounded próprio. Channel cheio descarta só aquela sessão e incrementa métrica. O loop de accept e as outras sessões seguem.
+4. Ping de protocolo a cada `HeartbeatIntervalSeconds`. Após `MissedHeartbeatLimit` pongs ausentes, encerrar a sessão. Frame `{ "type": "heartbeat" }` recebe eco.
+5. `StopAsync` completa o channel do dispatcher, fecha as sessões e drena.
+
+**Saída:** Um cliente completa o upgrade em `nexusrouter.v1`, permanece na sessão enquanto responde ao ping, e um cliente lento não impede o accept nem as outras sessões.
+
+---
+
+- [ ] T-50 — Logon WebSocket: identidade, encoding e filtro de campos
+
+**Objetivo:** O primeiro frame declara quem é o cliente e o que aquela conexão quer receber.
+
+**Entradas:** `requirements.md` (FR-EGR-12, NFR-SEC-04), `design.md` (Seção 3.3.1 — Logon)
+
+**Passos:**
+1. O primeiro frame de dados, dentro de `LogonTimeoutSeconds`, tem de ser texto JSON `logon`, no máximo `MaxControlFrameBytes`. Outro frame, ou silêncio até o timeout, fecha a sessão.
+2. `clientId` tem de estar cadastrado para este `DispatcherId`. O `token` é comparado em tempo constante com o valor da variável nomeada em `TokenEnvVar`. Token divergente ou cliente desconhecido devolve `{ "type": "reject", "reason": "unauthorized" }` e fecha. O valor do token não entra em log nem na URL.
+3. `encoding` é `json` ou `binary`. `fields` omitido ou vazio significa todas as propriedades de aplicação. Lista presente é de tags FIX, no máximo `MaxFields`, sem duplicata, na ordem pedida. As tags de sessão 8, 9, 10, 34, 35, 49, 52 e 56 saem da lista. Tag desconhecida no filtro é ignorada.
+4. `replay` ausente vale `false`. A chamada a `TrySetDailyChoice` (T-44) fixa ou relê a escolha do dia. O ack ecoa a escolha congelada.
+5. Um novo Logon do mesmo `ClientId` fecha o socket anterior e continua o `seq` carregado do `SequenceNumberStore` (`DispatcherId` + `ClientId`).
+6. Sucesso: texto `logonAck` com `replay`, `encoding`, `fields` (ausente quando a projeção é completa) e `nextSeq`. Até o ack, a sessão não recebe execução.
+
+**Saída:** Duas conexões no mesmo dispatcher podem pedir projeções diferentes. Conexão sem cadastro ou com token errado não recebe mensagem de ordem.
+
+---
+
+- [ ] T-51 — Projetar JSON ou binário por sessão, fora do hot path
+
+**Objetivo:** Entregar para cada sessão logada só o encoding e os campos pedidos no Logon dela.
+
+**Entradas:** `requirements.md` (FR-EGR-12, FR-HLP-01), `design.md` (Seção 3.3.1 — Projeção)
+
+**Passos:**
+1. Criar `WebSocketFrameEncoder`. No consume loop, sem sessão logada, descartar o payload sem tokenizar.
+2. Com ao menos uma sessão logada, tokenizar o body uma vez. Usar o `FixMessage` quando o ingresso veio em `Parse`. Em `PassThrough`, tokenizar o frame cru neste loop. Essa tokenização não roda na thread do router.
+3. Para cada sessão, gravar o envelope (`type=exec`, `seq`, `msgType`, `ts`) mais os campos selecionados. Valores permanecem a string ASCII do FIX, sem conversão numérica. Sem filtro, a ordem é a do wire. Com filtro, a ordem é a da lista.
+4. JSON sai em frame de texto, com as tags como chaves string. Binário sai em frame binário little-endian, no layout da Seção 3.3.1 (`u8 type`, `u64 seq`, `u64 ts`, `msgType`, `u16 fieldCount`, depois `u16 tag` + `u16 valueLen` + bytes).
+5. Reservar o `seq` em memória e fazer `TryWrite` dos bytes projetados na fila da sessão. A task da sessão é quem escreve no socket. Frame acima de `MaxOutboundFrameBytes` é descartado só naquela sessão.
+6. O sequence store é lido no Logon e gravado ao encerrar a sessão, no mesmo padrão do acceptor FIX.
+
+**Saída:** Um cliente `json` com `fields: [55, 54, 38]` recebe só essas tags em texto. Um cliente `binary` sem `fields` recebe o body de aplicação inteiro em binário. Nenhuma das duas projeções altera o fan-out dos outros dispatchers.
+
+---
+
+- [ ] T-52 — Replay opcional no Logon e pedido `replay` na sessão
+
+**Objetivo:** A retenção do dia segue a mesma regra do acceptor FIX, e a recuperação volta pelo próprio WebSocket.
+
+**Entradas:** `requirements.md` (FR-RPL-08, FR-RPL-05), `design.md` (Seção 3.3.1 — Replay; Seção 3.4.3 — Cliente WebSocket). Depende de T-44, T-45 e T-51.
+
+**Passos:**
+1. O primeiro Logon do dia UTC chama `TrySetDailyChoice`. Logon seguinte no mesmo dia não altera a escolha, mesmo que mande o booleano oposto. O `logonAck` mostra o valor congelado.
+2. Com a retenção ligada, o frame projetado que entrou na fila da sessão também faz `TryWrite` no channel de replay, com o `seq` do envelope. Channel cheio descarta o registro de replay e não impede a entrega ao vivo.
+3. Aceitar `{ "type": "replay", "fromSeq", "toSeq" }`. `toSeq` 0 significa até o último `seq` enviado. `fromSeq` e `toSeq` do pedido são inclusivos. Ler `client_replay_messages` daquele `ClientId` e daquele dia UTC e reenviar os bytes guardados na ordem do `seq`, no mesmo tipo de frame em que foram armazenados.
+4. `seq` sem linha vira `{ "type": "gap", "fromSeq", "toSeq" }`, com `fromSeq` inclusivo e `toSeq` exclusivo, cobrindo só o buraco. Sem retenção no dia, a resposta é um único `gap` sobre o intervalo pedido.
+5. Reconnect com outro `encoding` ou outro `fields` muda o tráfego novo. O replay de `seq` antigo devolve o frame guardado, sem projetar de novo. Linha de outro `ClientId` não sai nesta sessão.
+6. Frame de entrada que não seja `logon`, `heartbeat` ou `replay` encerra a sessão.
+
+**Saída:** Cliente que pediu retenção no primeiro Logon do dia recupera o intervalo pelo `seq`. Cliente que não pediu recebe um gap. O histórico não muda de formato quando o cliente reconecta com outro filtro.
+
+---
+
+- [ ] T-53 — Testes do acceptor WebSocket, da projeção e do replay
+
+**Objetivo:** Cobrir isolamento entre sessões, o contrato do Logon e a retransmissão do frame que foi enviado.
+
+**Entradas:** T-49, T-50, T-51, T-52
+
+**Passos:**
+1. Dois clientes no mesmo dispatcher: um `json` com `fields: [11, 55]`, outro `binary` sem filtro. Cada um recebe só a sua projeção da mesma ordem. Um terceiro com token errado recebe `reject` e nenhum `exec`.
+2. `Origin` fora de `AllowedOrigins` não completa o upgrade. Upgrade sem o subprotocolo `nexusrouter.v1` também não.
+3. Fila de uma sessão cheia não impede a outra sessão de receber o frame.
+4. Segundo Logon do mesmo dia com `replay` oposto mantém a primeira escolha. O ack mostra o valor congelado.
+5. Cliente com retenção ligada recebe, no pedido `replay`, os bytes que tinham sido enfileirados. Cliente sem retenção recebe um único `gap`.
+6. Reconnect do cliente opted-in com outra lista de campos: o `exec` novo segue a lista nova; o `seq` antigo volta no formato guardado.
+7. Sem sessão logada, o payload é descartado neste dispatcher.
+
+**Saída:** Testes automatizados demonstram projeção por Logon, isolamento de cliente lento e replay opcional pelo `seq` da sessão.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```
@@ -884,10 +1060,13 @@ T-01 (scaffold)
                           ├── T-19 (DispatcherBase)
                           │    ├── T-20 (Kafka)
                           │    ├── T-21 (RabbitMQ)
-                          │    └── T-22 (FixOutbound)
-                          │         ├── T-23 (Serializer)
-                          │         └── T-24 (TLS)
-                          │              └── T-25 (SeqNum Store)
+                          │    ├── T-22 (FixOutbound)
+                          │    │    ├── T-23 (Serializer)
+                          │    │    └── T-24 (TLS)
+                          │    │         └── T-25 (SeqNum Store)
+                          │    └── T-49 (WebSocket acceptor)
+                          │         └── T-50 (Logon WS)
+                          │              └── T-51 (projeção)
                           │
                           ├── T-26 (AuditChannel)
                           │    └── T-27 (AuditWriter + IAuditSink Serilog/Postgres)
@@ -902,4 +1081,13 @@ T-01 (scaffold)
                                               │         └── T-35 (Tracing)
                                               │              └── T-36 (Benchmarks)
                                               └── T-37..T-43 (Testes — podem começar após T-17/T-22/T-27)
+T-22 + T-25 + T-27 + T-31
+ └── T-44 (cadastro e escolha do dia)
+      └── T-45 (channel + hypertable)
+           ├── T-46 (ResendRequest FIX)
+           ├── T-47 (API dos brokers)
+           └── T-48 (testes de replay)
+T-51 + T-45
+ └── T-52 (replay na sessão WS)
+      └── T-53 (testes WS)
 ```
