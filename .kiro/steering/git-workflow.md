@@ -1,7 +1,7 @@
 ---
 inclusion: auto
 name: git-workflow
-description: Fluxo de trabalho Git e execução interativa de tasks do tasks.md, incluindo verificação de branch, commits confirmados pelo usuário, push e abertura de PR.
+description: Trunk-based development e execução interativa de tasks do tasks.md, incluindo branch curta a partir de main, commits confirmados pelo usuário, push e abertura de PR.
 ---
 
 # Git and Task Execution Workflow Guidelines
@@ -11,9 +11,14 @@ Você (Kiro ou Cursor) só deve iniciar ações e interações com o Git estrita
 Antes de executar qualquer ação, siga rigorosamente esta máquina de estados e regras:
 
 ## 1. Verificação Inicial de Branch
+
+O repositório usa **trunk-based development**. A única branch de longa duração é `main`. Não existe `develop` nem branch `release/*`. Release é uma tag semver criada em `main` (ver `README.md`).
+
 - ANTES de iniciar a execução da primeira task de `.kiro/specs/nexusrouter/tasks.md`, verifique a branch atual do repositório (`git branch --show-current`).
-- Confirme se a branch está em um padrão adequado (`feature/*`, `bugfix/*`, `release/*`, `chore/*`, etc.).
-- Se a branch atual for genérica ou incorreta (ex: `main`, `master`, `develop`), pause imediatamente, informe o usuário e pergunte se deseja criar ou mudar para uma branch apropriada antes de continuar.
+- O trabalho acontece em uma branch curta, criada a partir de `main` atualizada: `feature/*`, `bugfix/*` ou `chore/*`.
+- Se a branch atual for `main`, `master` ou `develop`, pause imediatamente, informe o usuário e pergunte se deseja criar uma branch curta antes de continuar.
+- Pull requests apontam sempre para `main`. Não abra PR para outra base e não crie branch de release.
+- Não crie nem faça push de tags (`vX.Y.Z`, `vX.Y.Z-rc.N`) a menos que o usuário peça. Promoção de ambiente é operação humana, documentada no `README.md`.
 
 ## 2. Execução das Tasks e Commits Interativos
 Para cada task executada de `.kiro/specs/nexusrouter/tasks.md`:
@@ -32,4 +37,4 @@ Para cada task executada de `.kiro/specs/nexusrouter/tasks.md`:
 - Logo após o sucesso do `git push`, pergunte ao usuário: *"Deseja que eu abra a Pull Request para esta branch? (S/N)"*.
 - Se confirmado:
   1. Crie um arquivo markdown temporário (ex: `.kiro/pull-request-context.md`) contendo um resumo estruturado da história/story, o propósito das alterações e os detalhes técnicos implementados com base no `tasks.md`.
-  2. Apresente o conteúdo do arquivo gerado ao usuário e utilize a ferramenta CLI correspondente (ou oriente o comando `gh pr create`) para abrir a PR utilizando o contexto do arquivo `.md`.
+  2. Apresente o conteúdo do arquivo gerado ao usuário e utilize a ferramenta CLI correspondente (ou oriente o comando `gh pr create`) para abrir a PR **contra `main`**, utilizando o contexto do arquivo `.md`.
