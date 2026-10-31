@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace NexusRouter.Egress.Fix;
 
 /// <summary>
-/// Guarda o último MsgSeqNum enviado por um dispatcher em um arquivo local.
+/// Guarda o último MsgSeqNum enviado por uma chave de sessão em um arquivo local.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -53,7 +53,7 @@ public sealed class SequenceNumberStore : IAsyncDisposable
     /// <summary>
     /// Lê o último número gravado e passa a persistir em background.
     /// </summary>
-    /// <param name="dispatcherId">Id do dispatcher. Vira o nome do arquivo. Só letras, dígitos, hífen e underscore.</param>
+    /// <param name="dispatcherId">Chave do arquivo. No acceptor FIX é o id do dispatcher mais o SenderCompID do cliente. Só letras, dígitos, hífen, underscore e ponto.</param>
     /// <param name="cancellationToken">Cancela a leitura inicial.</param>
     /// <returns>Tarefa concluída quando o contador em memória reflete o arquivo, ou zero se o arquivo ainda não existe.</returns>
     /// <exception cref="ArgumentException"><paramref name="dispatcherId"/> contém caractere fora do conjunto permitido.</exception>
@@ -115,6 +115,42 @@ public sealed class SequenceNumberStore : IAsyncDisposable
         }
 
         return Interlocked.Increment(ref _current);
+    }
+
+    /// <summary>
+    /// Próximo MsgSeqNum que <see cref="Next"/> vai devolver, sem reservá-lo.
+    /// </summary>
+    /// <returns>O valor atual mais um.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="LoadAsync"/> ainda não concluiu.</exception>
+    /// <remarks>Zero allocation. Sem I/O.</remarks>
+    public long NextExpected
+    {
+        get
+        {
+            if (Volatile.Read(ref _loaded) == 0)
+            {
+                throw new InvalidOperationException("O sequence number ainda não foi carregado.");
+            }
+
+            return Interlocked.Read(ref _current) + 1;
+        }
+    }
+
+    /// <summary>
+    /// Zera o contador e grava o arquivo. Usado quando o cliente manda ResetSeqNumFlag (tag 141=Y).
+    /// </summary>
+    /// <param name="cancellationToken">Cancela a gravação.</param>
+    /// <returns>Tarefa concluída quando o arquivo contém zero.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="LoadAsync"/> ainda não concluiu.</exception>
+    public async ValueTask ResetAsync(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _loaded) == 0)
+        {
+            throw new InvalidOperationException("O sequence number ainda não foi carregado.");
+        }
+
+        Interlocked.Exchange(ref _current, 0);
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -217,10 +253,10 @@ public sealed class SequenceNumberStore : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(dispatcherId);
         foreach (char ch in dispatcherId)
         {
-            if (ch is not ((>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '_'))
+            if (ch is not ((>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '_' or '.'))
             {
                 throw new ArgumentException(
-                    "O id do dispatcher só pode conter letras, dígitos, '-' e '_'.",
+                    "A chave do sequence number só pode conter letras, dígitos, '-', '_' e '.'.",
                     nameof(dispatcherId));
             }
         }

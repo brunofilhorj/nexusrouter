@@ -85,8 +85,8 @@ O NexusRouter é projetado em torno de uma única restrição fundamental: **o h
 │  │  │                    │  │                      │  │                  │ │   │
 │  │  │ Channel<Payload>   │  │ Channel<Payload>     │  │ Channel<Payload> │ │   │
 │  │  │ ↓                  │  │ ↓                    │  │ ↓                │ │   │
-│  │  │ Confluent.Kafka    │  │ RabbitMQ.Client      │  │ PipeWriter       │ │   │
-│  │  │ IProducer          │  │ IChannel             │  │ (outbound FIX)   │ │   │
+│  │  │ Confluent.Kafka    │  │ RabbitMQ.Client      │  │ TcpListener      │ │   │
+│  │  │ IProducer          │  │ IChannel             │  │ N sessões FIX    │ │   │
 │  │  └────────────────────┘  └──────────────────────┘  └──────────────────┘ │   │
 │  └──────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
@@ -141,7 +141,9 @@ Todos os dispatchers compartilham o mesmo padrão operacional:
 3. Erros são capturados, registrados no logger estruturado, e não são relançados de volta ao consume loop.
 4. Em `StopAsync`, o writer do `Channel` do dispatcher é completado e o consume loop drena os itens restantes antes de retornar.
 
-**`FixOutboundDispatcher`:** Mantém seu próprio `PipeWriter` outbound por cliente FIX downstream conectado. Gerencia seu próprio contador outbound `MsgSeqNum` (usando `Interlocked.Increment`). Em cenários `PassThrough`, o buffer reescrito é gravado diretamente no pipe outbound; no modo `Parse`, ele serializa o `FixMessage` de volta para o formato wire.
+**`FixOutboundDispatcher`:** Acceptor. Abre um `TcpListener` no endereço configurado e aceita N clientes (OMS, risco ou outro consumidor FIX). Não disca para esses clientes. Cada Logon vira uma sessão com `PipeWriter`, fila e `MsgSeqNum` próprios (`SequenceNumberStore`, um arquivo por `DispatcherId` + SenderCompID do cliente). O envio para uma sessão só enfileira; a lentidão de um socket não segura as outras. Em `PassThrough`, cada sessão recebe uma cópia do frame com a tag 34 e a tag 10 reescritas para o sequence number dela (FR-PTH-02: o restante do frame permanece). Em `Parse`, `FixMessageSerializer` grava o SenderCompID do acceptor e o TargetCompID do cliente. Sem sessão logada, o payload é descartado neste dispatcher. Sem retenção pedida naquele dia, um ResendRequest recebe SequenceReset GapFill até o próximo número da sessão. Com retenção (FR-RPL), o intervalo coberto pelo store é retransmitido e só o buraco sem frame vira GapFill.
+
+**`KafkaMessageDispatcher` e `RabbitMQMessageDispatcher`:** conectam no broker configurado e publicam. O NexusRouter é cliente desses recursos.
 
 **`KafkaMessageDispatcher`:** Encapsula um `Confluent.Kafka.IProducer<Null, byte[]>`. Payloads são publicados em um tópico configurado. A estratégia de chave de partição (ex.: por `ClOrdID`, `SenderCompID` ou round-robin) é uma `IKafkaPartitionStrategy` configurável injetada na construção.
 
@@ -205,6 +207,29 @@ drop_reason       text
 ```
 
 Hypertable em `ingress_ts`, `chunk_time_interval = 1 day`. Script de bootstrap em `docker/postgres/init.sql`.
+
+#### 3.4.3 Retransmissão opcional (`client_replay_messages`)
+
+A auditoria não serve de replay. `ingress_fix_messages` é por sessão de ingresso, pode estar em `MetadataOnly` ou `Sampled`, e não carrega o `MsgSeqNum` outbound de cada consumidor. Replay é outra escrita, só para quem pediu.
+
+**Por que relacional, e não um store de documentos ou cache:** o acesso é append do dia e leitura por intervalo (`client_id` + `replay_seq`). Timescale já é o PostgreSQL do processo, com chunk diário e retenção declarativa. Um banco não relacional acrescentaria outro sistema para a mesma consulta de faixa. Redis caberia em memória só para volume baixo e perderia o dia num restart. A hypertable guarda o payload em disco e descarta o chunk com política de 1 dia.
+
+O hot path não grava. Se nenhum cliente daquele dispatcher está com retenção ligada, não há cópia. Se há, o consumidor do dispatcher faz `TryWrite` num `Channel<ReplayRecord>` (capacidade própria, overflow drop + métrica). Um writer em background faz `COPY` em lote, no mesmo estilo do audit sink.
+
+```
+client_id      uuid        NOT NULL
+dispatcher_id  text        NOT NULL
+trading_day    date        NOT NULL   -- dia UTC da escolha
+replay_seq     bigint      NOT NULL   -- FIX: MsgSeqNum outbound; broker: contador do ClientId
+ingress_ts     timestamptz NOT NULL
+raw_payload    bytea       NOT NULL
+```
+
+Hypertable em `ingress_ts`. Índice `(client_id, trading_day, replay_seq)`. Retenção de 1 dia.
+
+**Cliente FIX.** O cadastro liga `FixSenderCompId` ao UUID. No primeiro Logon do dia UTC, `9001=Y` liga a retenção até a meia-noite UTC; sem a tag, ou com `N`, fica desligada. Cada mensagem de aplicação enfileirada para a sessão entra no channel com o sequence number que aquela sessão acabou de reservar. No ResendRequest, o servidor lê essa faixa e reenvia os bytes guardados. Sequence number ausente no store (opt-in ainda desligado na hora, ou drop do channel) recebe GapFill só nesse trecho.
+
+**Cliente de broker.** Kafka e RabbitMQ não identificam o assinante. O cadastro só tem `ClientId` + `DispatcherId`. A primeira chamada do dia UTC em `POST /v1/clients/{clientId}/replay` com `{ "enabled": true|false }` fixa a escolha. Mensagens publicadas depois disso, com retenção ligada, recebem `replay_seq` 1, 2, 3… daquele UUID. O assinante recupera com `GET /v1/clients/{clientId}/replay?fromSeq=&toSeq=`. O token da API é a variável `NEXUS_REPLAY_API_TOKEN`.
 
 ---
 
@@ -386,10 +411,12 @@ NexusRouter:
 
     - Id: "fix-out-client1"
       Type: FixOutbound
-      Host: "downstream-oms.internal"
-      Port: 6001
+      ListenAddress: "0.0.0.0"
+      ListenPort: 6001
       SenderCompId: "NEXUS"
-      TargetCompId: "OMS1"
+      BeginString: "FIX.4.4"
+      SequenceStoreDirectory: "/var/lib/nexusrouter/seq"
+      # AllowedSenderCompIds: ["OMS1", "RISK1"]  # omitido = qualquer SenderCompID cujo TargetCompID seja NEXUS
       ChannelCapacity: 8192
 
     - Id: "rabbitmq-dropcopy"
@@ -399,6 +426,20 @@ NexusRouter:
       Exchange: "dropcopy.fanout"
       RoutingKey: ""
       ChannelCapacity: 8192
+
+  # Cadastro opcional. Sem esta lista não há retenção.
+  # A escolha do dia não fica aqui: FIX manda 9001 no primeiro Logon; broker chama a API.
+  Clients:
+    - ClientId: "6f1e0b3a-9c2d-4a7e-8b15-2d4c0a9e7f31"
+      DispatcherId: "fix-out-client1"
+      FixSenderCompId: "OMS1"
+    - ClientId: "a4c8e2d1-1b6f-4e90-9a33-7c5d2e8b0146"
+      DispatcherId: "kafka-main"
+
+  Replay:
+    ChannelCapacity: 65536
+    BatchSize: 1000
+    FlushIntervalMs: 100
 
   Audit:
     ChannelCapacity: 65536
@@ -468,7 +509,8 @@ NexusRouter/
 │   │   ├── RabbitMQ/
 │   │   │   └── RabbitMQMessageDispatcher.cs
 │   │   └── Fix/
-│   │       └── FixOutboundDispatcher.cs
+│   │       ├── FixOutboundDispatcher.cs  # TcpListener; N sessões aceitas
+│   │       └── FixAcceptedSession.cs     # uma conexão, um MsgSeqNum
 │   │
 │   ├── NexusRouter.Audit/                # Log de auditoria do cold path
 │   │   ├── AuditWriterService.cs
@@ -547,7 +589,7 @@ NexusRouter/
         │
         ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message)
         ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body)
-        └─► FixOutboundDispatcher: PipeWriter.WriteAsync(frame reescrito)
+        └─► FixOutboundDispatcher: enfileira uma cópia por sessão aceita, cada uma com o próprio MsgSeqNum
 
 [AuditWriterService Consumer Task — thread do thread-pool em background]
         ├─► SerilogAuditSink (metadados, lote async)

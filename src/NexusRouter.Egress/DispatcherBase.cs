@@ -81,7 +81,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     protected ILogger Logger => _logger;
 
     /// <summary>
-    /// <see langword="true"/> depois de <see cref="StartAsync"/> conectar e antes de um erro fatal ou de <see cref="StopAsync"/>.
+    /// <see langword="true"/> depois de <see cref="StartAsync"/> preparar o destino e antes de um erro fatal ou de <see cref="StopAsync"/>.
     /// </summary>
     /// <remarks>Leitura sem lock, via <see cref="Volatile.Read(ref int)"/>.</remarks>
     public bool IsHealthy => Volatile.Read(ref _healthy) == 1;
@@ -92,7 +92,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     public event Action<string, Exception>? OnDispatchError;
 
     /// <summary>
-    /// Conecta o destino e passa a aceitar <see cref="TryEnqueue"/>.
+    /// Prepara o destino e passa a aceitar <see cref="TryEnqueue"/>. Broker conecta no recurso. FIX passa a escutar.
     /// </summary>
     /// <param name="cancellationToken">Cancela a conexão. Não encerra o loop depois que ele já começou.</param>
     /// <returns>Tarefa concluída quando o loop de consumo está ativo.</returns>
@@ -167,7 +167,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     }
 
     /// <summary>
-    /// Abre a conexão ou o cliente do destino antes do loop de consumo.
+    /// Abre o recurso de egress antes do loop de consumo. Broker conecta. O acceptor FIX começa a escutar.
     /// </summary>
     /// <param name="cancellationToken">Cancela a abertura.</param>
     /// <returns>Tarefa concluída quando o destino aceita envio.</returns>

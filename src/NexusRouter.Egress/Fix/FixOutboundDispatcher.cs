@@ -1,59 +1,50 @@
 using System.Buffers;
-using System.IO.Pipelines;
+using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
 
 using Microsoft.Extensions.Logging;
 
-using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Ingress.Sessions;
-using NexusRouter.Router;
 
 namespace NexusRouter.Egress.Fix;
 
 /// <summary>
-/// Sessão FIX cliente: Logon, heartbeat e reenvio do frame para um downstream.
+/// Acceptor FIX: escuta um endereço e mantém uma sessão independente por cliente conectado.
 /// </summary>
 /// <remarks>
 /// <para>
-/// No modo <see cref="DeliveryMode.PassThrough"/> o frame é copiado e o MsgSeqNum desta sessão
-/// é aplicado com <see cref="PassThroughRewriter"/>. A cópia evita alterar o buffer compartilhado pelo fan-out.
-/// No modo <see cref="DeliveryMode.Parse"/> o frame sai de <see cref="FixMessageSerializer"/>.
+/// OMS, risco e qualquer outro cliente conectam aqui. Cada Logon vira uma sessão com fila e MsgSeqNum próprios.
+/// Um cliente lento enche só a própria fila. Os outros clientes e os dispatchers de broker não esperam por ele.
 /// </para>
 /// <para>
-/// Erro de socket espera o backoff, faz Logon de novo e tenta o envio mais uma vez.
-/// O contador de sequência é o de <see cref="SequenceNumberStore"/> e não o da sessão inbound.
+/// No modo <see cref="NexusRouter.Domain.Enums.DeliveryMode.PassThrough"/> cada sessão recebe uma cópia do frame
+/// com o MsgSeqNum dela. No modo <see cref="NexusRouter.Domain.Enums.DeliveryMode.Parse"/> o frame sai de
+/// <see cref="FixMessageSerializer"/> com o SenderCompID deste acceptor e o TargetCompID do cliente.
+/// Sem sessão logada, a mensagem é descartada neste dispatcher.
 /// </para>
 /// </remarks>
 public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcherOptions>
 {
-    private const int AdminMessageBytes = 1024;
     private const int ReadBufferBytes = 64 * 1024;
-    private const byte Soh = 0x01;
 
-    private readonly SequenceNumberStore _sequenceStore;
-    private readonly ExponentialBackoffReconnectPolicy _reconnectPolicy;
-    private readonly SessionOptions _sessionOptions;
-    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly ExponentialBackoffReconnectPolicy _acceptRetry;
+    private readonly ConcurrentSessionTable _sessions = new();
+    private readonly SemaphoreSlim _adoptGate = new(1, 1);
 
-    private TcpClient? _tcp;
-    private Stream? _stream;
-    private Pipe? _pipe;
-    private CancellationTokenSource? _connectionCts;
-    private CancellationTokenSource? _heartbeatCts;
-    private Task? _pump;
-    private Task? _read;
-    private Task? _heartbeat;
-    private TaskCompletionSource<bool> _logon = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private int _storeReady;
-    private int _reconnectAttempts;
+    private TcpListener? _listener;
+    private CancellationTokenSource? _acceptCts;
+    private Task? _accept;
+    private int _stopping;
+    private int _acceptFailures;
 
     /// <summary>
-    /// Cria o dispatcher. O TCP e o Logon acontecem em <see cref="DispatcherBase{TOptions}.StartAsync"/>.
+    /// Cria o acceptor. O socket de escuta abre em <see cref="DispatcherBase{TOptions}.StartAsync"/>.
     /// </summary>
-    /// <param name="dispatcherId">Nome único na rota e no arquivo de sequence number.</param>
-    /// <param name="options">Host, comp IDs, TLS e diretório de sequência.</param>
-    /// <param name="logger">Log de conexão, Logon e reconexão.</param>
+    /// <param name="dispatcherId">Nome único na rota e prefixo do arquivo de sequence number.</param>
+    /// <param name="options">Endereço de escuta, comp ID local, TLS e diretório de sequência.</param>
+    /// <param name="logger">Log de accept, Logon e sessão.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/> é nulo.</exception>
     public FixOutboundDispatcher(
@@ -62,318 +53,356 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         ILogger<FixOutboundDispatcher> logger)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, logger)
     {
-        _sequenceStore = new SequenceNumberStore(options.SequenceStoreDirectory, logger);
-        _reconnectPolicy = new ExponentialBackoffReconnectPolicy(
-            options.ReconnectBaseDelay,
-            options.ReconnectMaxDelay,
-            options.ReconnectJitterFactor);
-        _sessionOptions = new SessionOptions
-        {
-            SessionId = dispatcherId,
-            Host = options.Host,
-            Port = options.Port,
-            SenderCompId = options.SenderCompId,
-            TargetCompId = options.TargetCompId,
-            BeginString = options.BeginString,
-            HeartBtInt = options.HeartBtInt,
-            LogonTimeout = options.LogonTimeout,
-        };
+        _acceptRetry = new ExponentialBackoffReconnectPolicy(
+            options.AcceptRetryBaseDelay,
+            options.AcceptRetryMaxDelay,
+            options.AcceptRetryJitterFactor);
     }
 
     /// <summary>
-    /// Drena a fila, envia Logout, grava o sequence number e fecha o socket.
+    /// Para de aceitar, drena a fila do dispatcher e encerra cada sessão com Logout.
     /// </summary>
-    /// <param name="cancellationToken">Abandona a espera do loop e a gravação do sequence number.</param>
-    /// <returns>Tarefa concluída quando a sessão outbound parou.</returns>
+    /// <param name="cancellationToken">Abandona a espera do loop e a gravação dos sequence numbers.</param>
+    /// <returns>Tarefa concluída quando o acceptor parou.</returns>
     public override async ValueTask StopAsync(CancellationToken cancellationToken)
     {
+        _acceptCts?.Cancel();
+        StopListener();
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        _heartbeatCts?.Cancel();
-        await SendLogoutQuietlyAsync().ConfigureAwait(false);
-        await _sequenceStore.StopAsync(cancellationToken).ConfigureAwait(false);
-        await CloseConnectionAsync().ConfigureAwait(false);
-    }
 
-    /// <inheritdoc />
-    protected override async ValueTask ConnectAsync(CancellationToken cancellationToken)
-    {
-        if (Interlocked.CompareExchange(ref _storeReady, 1, 0) == 0)
+        await _adoptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        FixAcceptedSession[] snapshot;
+        try
+        {
+            Volatile.Write(ref _stopping, 1);
+            snapshot = _sessions.Drain();
+        }
+        finally
+        {
+            _adoptGate.Release();
+        }
+
+        if (_accept is not null)
         {
             try
             {
-                await _sequenceStore.LoadAsync(DispatcherId, cancellationToken).ConfigureAwait(false);
+                await _accept.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
             {
-                Interlocked.Exchange(ref _storeReady, 0);
-                throw;
+                Logger.LogDebug(ex, "Dispatcher {DispatcherId} encerrou o accept.", DispatcherId);
             }
         }
 
-        await OpenSessionAsync(cancellationToken).ConfigureAwait(false);
-        _reconnectAttempts = 0;
+        foreach (FixAcceptedSession session in snapshot)
+        {
+            await session.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <inheritdoc />
-    protected override async ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
+    protected override ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            await WritePayloadAsync(payload, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (IsConnectionFailure(ex) && !cancellationToken.IsCancellationRequested)
-        {
-            Logger.LogWarning(ex, "Dispatcher {DispatcherId} perdeu a sessão FIX outbound e vai reconectar.", DispatcherId);
-            await ReconnectAsync(cancellationToken).ConfigureAwait(false);
-            await WritePayloadAsync(payload, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private async Task OpenSessionAsync(CancellationToken cancellationToken)
-    {
-        await CloseConnectionAsync().ConfigureAwait(false);
-
-        _tcp = new TcpClient();
-        try
-        {
-            _tcp.NoDelay = true;
-            await _tcp.ConnectAsync(Options.Host, Options.Port, cancellationToken).ConfigureAwait(false);
-            _stream = Options.TlsEnabled
-                ? await TlsSocketFactory.WrapAsync(_tcp, CreateTlsOptions(), cancellationToken).ConfigureAwait(false)
-                : _tcp.GetStream();
-
-            _pipe = new Pipe(new PipeOptions(useSynchronizationContext: false));
-            _logon = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _connectionCts = new CancellationTokenSource();
-            _pump = PumpAsync(_pipe.Reader, _stream, _connectionCts.Token);
-            _read = ReadLoopAsync(_stream, _connectionCts.Token);
-            await SendAdminAsync(OutboundAdmin.Logon, ReadOnlyMemory<byte>.Empty, cancellationToken).ConfigureAwait(false);
-            await _logon.Task.WaitAsync(Options.LogonTimeout, cancellationToken).ConfigureAwait(false);
-
-            _heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(_connectionCts.Token);
-            _heartbeat = HeartbeatLoopAsync(_heartbeatCts.Token);
-            Logger.LogInformation(
-                "Dispatcher {DispatcherId} fez Logon em {Host}:{Port}.",
-                DispatcherId,
-                Options.Host,
-                Options.Port);
-        }
-        catch
-        {
-            await CloseConnectionAsync().ConfigureAwait(false);
-            throw;
-        }
-    }
-
-    private async Task ReconnectAsync(CancellationToken cancellationToken)
-    {
-        int attempt = _reconnectAttempts;
-        if (_reconnectAttempts < int.MaxValue)
-        {
-            _reconnectAttempts++;
-        }
-
-        TimeSpan delay = _reconnectPolicy.ComputeDelay(attempt);
-        Logger.LogWarning(
-            "Dispatcher {DispatcherId} reconecta em {DelayMs} ms (tentativa {Attempt}).",
+        IPAddress address = IPAddress.Parse(Options.ListenAddress);
+        _listener = new TcpListener(address, Options.ListenPort);
+        _listener.Start();
+        _acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _accept = AcceptLoopAsync(_acceptCts.Token);
+        var bound = (IPEndPoint)_listener.LocalEndpoint;
+        Logger.LogInformation(
+            "Dispatcher {DispatcherId} escuta FIX em {Address}:{Port}.",
             DispatcherId,
-            delay.TotalMilliseconds,
-            attempt);
-        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-        await OpenSessionAsync(cancellationToken).ConfigureAwait(false);
-        _reconnectAttempts = 0;
+            bound.Address,
+            bound.Port);
+        return ValueTask.CompletedTask;
     }
 
-    private async ValueTask WritePayloadAsync(DispatchPayload payload, CancellationToken cancellationToken)
+    /// <inheritdoc />
+    protected override ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
     {
-        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        byte[]? rented = null;
-        try
+        FixAcceptedSession[] sessions = _sessions.Snapshot();
+        if (sessions.Length == 0)
         {
-            ReadOnlyMemory<byte> frame = PrepareFrame(payload, ref rented);
-            await WriteFrameUnderGateAsync(frame, cancellationToken).ConfigureAwait(false);
+            Logger.LogTrace(
+                "Dispatcher {DispatcherId} não tem sessão FIX logada. A mensagem foi descartada.",
+                DispatcherId);
+            return ValueTask.CompletedTask;
         }
-        finally
+
+        for (int i = 0; i < sessions.Length; i++)
         {
-            if (rented is not null)
+            FixAcceptedSession session = sessions[i];
+            try
             {
-                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
-            }
-
-            _writeGate.Release();
-        }
-    }
-
-    private ReadOnlyMemory<byte> PrepareFrame(DispatchPayload payload, ref byte[]? rented)
-    {
-        if (payload.RawBuffer is null)
-        {
-            throw new InvalidOperationException("O payload FIX outbound não tem buffer.");
-        }
-
-        long sequence = _sequenceStore.Next();
-        switch (payload.DeliveryMode)
-        {
-            case DeliveryMode.PassThrough:
-            {
-                ReadOnlyMemory<byte> source = payload.RawBuffer.Memory;
-                rented = ArrayPool<byte>.Shared.Rent(Math.Max(source.Length, 1));
-                source.CopyTo(rented);
-                if (!PassThroughRewriter.Rewrite(rented.AsSpan(0, source.Length), sequence))
+                if (!session.TryEnqueue(payload))
                 {
-                    throw new InvalidOperationException("O MsgSeqNum outbound não coube no campo 34.");
+                    Logger.LogWarning(
+                        "Sessão {SenderCompId} do dispatcher {DispatcherId} não enfileirou a mensagem.",
+                        session.SenderCompId,
+                        DispatcherId);
                 }
-
-                return rented.AsMemory(0, source.Length);
             }
-
-            case DeliveryMode.Parse:
+            catch (Exception ex) when (ex is InvalidOperationException or IOException)
             {
-                if (!payload.TryGetParsedMessage(out FixMessage message))
-                {
-                    throw new InvalidOperationException("O payload em modo Parse não tem mensagem tokenizada.");
-                }
-
-                int capacity = Math.Max(payload.RawBuffer.Memory.Length + 128, AdminMessageBytes);
-                rented = ArrayPool<byte>.Shared.Rent(capacity);
-                int written = FixMessageSerializer.Serialize(
-                    in message,
-                    rented,
-                    sequence,
-                    Options.SenderCompId,
-                    Options.TargetCompId);
-                return rented.AsMemory(0, written);
-            }
-
-            default:
-                throw new InvalidOperationException("Modo de entrega desconhecido.");
-        }
-    }
-
-    private async ValueTask SendAdminAsync(OutboundAdmin kind, ReadOnlyMemory<byte> testReqId, CancellationToken cancellationToken)
-    {
-        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
-        try
-        {
-            long sequence = _sequenceStore.Next();
-            int written = kind switch
-            {
-                OutboundAdmin.Logon => FixMessageBuilder.BuildLogon(rented, _sessionOptions, sequence).Length,
-                OutboundAdmin.Heartbeat => FixMessageBuilder.BuildHeartbeat(rented, _sessionOptions, sequence, testReqId.Span).Length,
-                OutboundAdmin.Logout => FixMessageBuilder.BuildLogout(rented, _sessionOptions, sequence).Length,
-                _ => throw new InvalidOperationException("Mensagem administrativa desconhecida."),
-            };
-            await WriteFrameUnderGateAsync(rented.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
-            _writeGate.Release();
-        }
-    }
-
-    private async ValueTask WriteFrameUnderGateAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
-    {
-        PipeWriter writer = _pipe?.Writer ?? throw new IOException("A sessão FIX outbound não está conectada.");
-        FlushResult result = await writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
-        if (result.IsCompleted || result.IsCanceled)
-        {
-            throw new IOException("O pipe outbound foi encerrado.");
-        }
-    }
-
-    private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
-    {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Options.HeartBtInt));
-        try
-        {
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-            {
-                await SendAdminAsync(OutboundAdmin.Heartbeat, ReadOnlyMemory<byte>.Empty, cancellationToken).ConfigureAwait(false);
+                Logger.LogWarning(
+                    ex,
+                    "Sessão {SenderCompId} do dispatcher {DispatcherId} não recebeu a mensagem.",
+                    session.SenderCompId,
+                    DispatcherId);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Dispatcher {DispatcherId} interrompeu o heartbeat outbound.", DispatcherId);
-        }
+
+        return ValueTask.CompletedTask;
     }
 
-    private async Task PumpAsync(PipeReader reader, Stream stream, CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
-        try
+        while (!cancellationToken.IsCancellationRequested)
         {
-            while (true)
+            TcpClient client;
+            try
             {
-                ReadResult result = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-                ReadOnlySequence<byte> buffer = result.Buffer;
-                foreach (ReadOnlyMemory<byte> segment in buffer)
-                {
-                    await stream.WriteAsync(segment, cancellationToken).ConfigureAwait(false);
-                }
-
-                if (!buffer.IsEmpty)
-                {
-                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                reader.AdvanceTo(buffer.End);
-                if (result.IsCompleted || result.IsCanceled)
+                TcpListener listener = _listener ?? throw new IOException("O acceptor FIX não está escutando.");
+                client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                _acceptFailures = 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or InvalidOperationException)
+            {
+                if (cancellationToken.IsCancellationRequested || Volatile.Read(ref _stopping) == 1)
                 {
                     break;
                 }
+
+                int attempt = _acceptFailures;
+                if (_acceptFailures < int.MaxValue)
+                {
+                    _acceptFailures++;
+                }
+
+                TimeSpan delay = _acceptRetry.ComputeDelay(attempt);
+                Logger.LogWarning(
+                    ex,
+                    "Dispatcher {DispatcherId} falhou no accept e tenta de novo em {DelayMs} ms.",
+                    DispatcherId,
+                    delay.TotalMilliseconds);
+                try
+                {
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                continue;
             }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logon.TrySetException(ex);
-        }
-        finally
-        {
-            await reader.CompleteAsync().ConfigureAwait(false);
+
+            client.NoDelay = true;
+            _ = HandleClientAsync(client, cancellationToken);
         }
     }
 
-    private async Task ReadLoopAsync(Stream stream, CancellationToken cancellationToken)
+    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
     {
+        Stream? stream = null;
+        FixAcceptedSession? session = null;
+        SequenceNumberStore? store = null;
+        bool ownsSocket = true;
+        try
+        {
+            stream = Options.TlsEnabled
+                ? await TlsSocketFactory.WrapServerAsync(
+                    client,
+                    CreateTlsOptions(),
+                    Options.TlsRequireClientCertificate,
+                    cancellationToken).ConfigureAwait(false)
+                : client.GetStream();
+
+            PendingLogon? logon = await TryReadLogonAsync(stream, cancellationToken).ConfigureAwait(false);
+            if (logon is null)
+            {
+                return;
+            }
+
+            store = new SequenceNumberStore(Options.SequenceStoreDirectory, Logger);
+            await store.LoadAsync(DispatcherId + "_" + logon.Value.SenderCompId, cancellationToken).ConfigureAwait(false);
+            if (logon.Value.ResetSequence)
+            {
+                await store.ResetAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var sessionOptions = new SessionOptions
+            {
+                SessionId = DispatcherId + "-" + logon.Value.SenderCompId,
+                Host = Options.ListenAddress,
+                Port = Options.ListenPort,
+                SenderCompId = Options.SenderCompId,
+                TargetCompId = logon.Value.SenderCompId,
+                BeginString = Options.BeginString,
+                HeartBtInt = Options.HeartBtInt,
+                LogonTimeout = Options.LogonTimeout,
+            };
+            session = new FixAcceptedSession(
+                logon.Value.SenderCompId,
+                client,
+                stream,
+                store,
+                sessionOptions,
+                Options.ChannelCapacity,
+                Options.HeartBtInt,
+                logon.Value.Prelude,
+                logon.Value.PreludeLength,
+                OnSessionClosed,
+                Logger);
+            ownsSocket = false;
+            store = null;
+            stream = null;
+            (bool adopted, FixAcceptedSession? replaced) = await AdoptAsync(session, cancellationToken).ConfigureAwait(false);
+            if (!adopted)
+            {
+                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                session = null;
+                return;
+            }
+
+            try
+            {
+                await session.StartAsync(cancellationToken).ConfigureAwait(false);
+                session = null;
+            }
+            finally
+            {
+                if (replaced is not null)
+                {
+                    await replaced.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            Logger.LogWarning(ex, "Dispatcher {DispatcherId} recusou uma conexão FIX.", DispatcherId);
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.LogDebug("Dispatcher {DispatcherId} cancelou o handshake FIX.", DispatcherId);
+        }
+        finally
+        {
+            if (session is not null)
+            {
+                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                if (store is not null)
+                {
+                    await store.DisposeAsync().ConfigureAwait(false);
+                }
+
+                if (stream is not null)
+                {
+                    await DisposeQuietlyAsync(stream, client).ConfigureAwait(false);
+                }
+                else if (ownsSocket)
+                {
+                    client.Dispose();
+                }
+            }
+        }
+    }
+
+    private async Task<(bool Adopted, FixAcceptedSession? Replaced)> AdoptAsync(
+        FixAcceptedSession session,
+        CancellationToken cancellationToken)
+    {
+        await _adoptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref _stopping) == 1)
+            {
+                return (false, null);
+            }
+
+            FixAcceptedSession? replaced = _sessions.Replace(session);
+            if (replaced is not null)
+            {
+                Logger.LogInformation(
+                    "Dispatcher {DispatcherId} substituiu a sessão anterior de {SenderCompId}.",
+                    DispatcherId,
+                    session.SenderCompId);
+            }
+
+            return (true, replaced);
+        }
+        finally
+        {
+            _adoptGate.Release();
+        }
+    }
+
+    private void OnSessionClosed(FixAcceptedSession session) => _sessions.RemoveIfSame(session);
+
+    private async Task<PendingLogon?> TryReadLogonAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(Options.LogonTimeout);
         byte[] buffer = ArrayPool<byte>.Shared.Rent(ReadBufferBytes);
         int count = 0;
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!timeout.IsCancellationRequested)
             {
-                if (count == buffer.Length)
+                if (FixWireFrame.TryTakeFrame(buffer.AsSpan(0, count), out int frameLength))
                 {
-                    throw new InvalidOperationException("A mensagem recebida na sessão outbound excedeu o buffer.");
+                    if (!TryAcceptLogon(buffer.AsSpan(0, frameLength), out string senderCompId, out bool resetSequence))
+                    {
+                        Logger.LogWarning(
+                            "Dispatcher {DispatcherId} recusou Logon. TargetCompID esperado {SenderCompId}.",
+                            DispatcherId,
+                            Options.SenderCompId);
+                        return null;
+                    }
+
+                    int preludeLength = count - frameLength;
+                    byte[] prelude = preludeLength == 0 ? [] : new byte[preludeLength];
+                    if (preludeLength > 0)
+                    {
+                        buffer.AsSpan(frameLength, preludeLength).CopyTo(prelude);
+                    }
+
+                    return new PendingLogon(senderCompId, resetSequence, prelude, preludeLength);
                 }
 
-                int read = await stream.ReadAsync(buffer.AsMemory(count), cancellationToken).ConfigureAwait(false);
+                if (count == buffer.Length)
+                {
+                    Logger.LogWarning("Dispatcher {DispatcherId} recebeu um Logon maior que o buffer.", DispatcherId);
+                    return null;
+                }
+
+                int read = await stream.ReadAsync(buffer.AsMemory(count), timeout.Token).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    throw new IOException("A sessão FIX outbound foi fechada pela contraparte.");
+                    Logger.LogWarning("Dispatcher {DispatcherId} fechou antes do Logon.", DispatcherId);
+                    return null;
                 }
 
                 count += read;
-                while (TryTakeFrame(buffer.AsSpan(0, count), out int frameLength))
-                {
-                    HandleFrame(buffer.AsSpan(0, frameLength), cancellationToken);
-                    int remaining = count - frameLength;
-                    if (remaining > 0)
-                    {
-                        Buffer.BlockCopy(buffer, frameLength, buffer, 0, remaining);
-                    }
-
-                    count = remaining;
-                }
             }
+
+            return null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logon.TrySetException(ex);
-            _pipe?.Writer.Complete(ex);
+            Logger.LogWarning("Dispatcher {DispatcherId} não recebeu Logon dentro do timeout.", DispatcherId);
+            return null;
         }
         finally
         {
@@ -381,122 +410,68 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
     }
 
-    private void HandleFrame(ReadOnlySpan<byte> frame, CancellationToken cancellationToken)
+    private bool TryAcceptLogon(ReadOnlySpan<byte> frame, out string senderCompId, out bool resetSequence)
     {
-        if (!TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType))
+        senderCompId = string.Empty;
+        resetSequence = false;
+        if (!FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType) || msgType.Length != 1 || msgType[0] != (byte)'A')
         {
-            return;
+            return false;
         }
 
-        if (msgType.Length == 1 && msgType[0] == (byte)'A')
+        if (!FixWireFrame.TryReadTag(frame, 8, out ReadOnlySpan<byte> beginString)
+            || !FixWireFrame.EqualsAscii(beginString, Options.BeginString))
         {
-            _logon.TrySetResult(true);
-            return;
+            return false;
         }
 
-        if (msgType.Length == 1 && msgType[0] == (byte)'5')
+        if (!FixWireFrame.TryReadTag(frame, 56, out ReadOnlySpan<byte> target)
+            || !FixWireFrame.EqualsAscii(target, Options.SenderCompId))
         {
-            throw new IOException("A contraparte enviou Logout.");
+            return false;
         }
 
-        if (msgType.Length == 1 && msgType[0] == (byte)'1' && TryReadTag(frame, 112, out ReadOnlySpan<byte> testReqId))
+        if (!FixWireFrame.TryReadTag(frame, 49, out ReadOnlySpan<byte> sender)
+            || !FixWireFrame.TryDecodeSessionKey(sender, out senderCompId)
+            || !IsAllowed(senderCompId))
         {
-            QueueTestRequestReply(testReqId, cancellationToken);
+            senderCompId = string.Empty;
+            return false;
         }
+
+        resetSequence = FixWireFrame.TryReadTag(frame, 141, out ReadOnlySpan<byte> reset) && reset.Length == 1 && reset[0] == (byte)'Y';
+        return true;
     }
 
-    private void QueueTestRequestReply(ReadOnlySpan<byte> testReqId, CancellationToken cancellationToken)
+    private bool IsAllowed(string senderCompId)
     {
-        byte[] copy = testReqId.ToArray();
-        Task reply = SendAdminAsync(OutboundAdmin.Heartbeat, copy, cancellationToken).AsTask();
-        _ = reply.ContinueWith(
-            completed =>
+        IReadOnlyList<string> allowed = Options.AllowedSenderCompIds;
+        if (allowed.Count == 0)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < allowed.Count; i++)
+        {
+            if (string.Equals(allowed[i], senderCompId, StringComparison.Ordinal))
             {
-                if (completed.Exception is not null)
-                {
-                    Logger.LogWarning(completed.Exception, "Dispatcher {DispatcherId} não respondeu ao TestRequest.", DispatcherId);
-                }
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default);
-    }
-
-    private async Task SendLogoutQuietlyAsync()
-    {
-        if (_pipe is null || _stream is null)
-        {
-            return;
+                return true;
+            }
         }
 
+        return false;
+    }
+
+    private void StopListener()
+    {
         try
         {
-            await SendAdminAsync(OutboundAdmin.Logout, ReadOnlyMemory<byte>.Empty, CancellationToken.None)
-                .AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(2))
-                .ConfigureAwait(false);
+            _listener?.Stop();
         }
-        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or TimeoutException or InvalidOperationException or OperationCanceledException)
+        catch (SocketException ex)
         {
-            Logger.LogDebug(ex, "Dispatcher {DispatcherId} não enviou Logout.", DispatcherId);
+            Logger.LogDebug(ex, "Dispatcher {DispatcherId} já tinha fechado o listener.", DispatcherId);
         }
-    }
-
-    private async Task CloseConnectionAsync()
-    {
-        _heartbeatCts?.Cancel();
-        try
-        {
-            _pipe?.Writer.Complete();
-        }
-        catch (InvalidOperationException)
-        {
-            // A leitura já completou o pipe ao detectar o fim da sessão.
-        }
-
-        if (_pump is not null)
-        {
-            try
-            {
-                await _pump.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or IOException)
-            {
-                Logger.LogDebug(ex, "Dispatcher {DispatcherId} encerrou a escrita outbound.", DispatcherId);
-            }
-        }
-
-        _connectionCts?.Cancel();
-        Task[] pending = Collect(_read, _heartbeat);
-        if (pending.Length > 0)
-        {
-            try
-            {
-                await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or IOException or AggregateException)
-            {
-                Logger.LogDebug(ex, "Dispatcher {DispatcherId} encerrou a leitura outbound.", DispatcherId);
-            }
-        }
-
-        _pump = null;
-        _read = null;
-        _heartbeat = null;
-
-        if (_stream is not null)
-        {
-            await _stream.DisposeAsync().ConfigureAwait(false);
-            _stream = null;
-        }
-
-        _tcp?.Dispose();
-        _tcp = null;
-        _pipe = null;
-        _connectionCts?.Dispose();
-        _connectionCts = null;
-        _heartbeatCts?.Dispose();
-        _heartbeatCts = null;
     }
 
     private TlsOptions CreateTlsOptions() =>
@@ -505,113 +480,20 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             Enabled = true,
             CertificatePath = Options.TlsCertificatePath,
             CertificatePasswordEnvVar = Options.TlsCertificatePasswordEnvVar,
-            TargetHost = Options.Host,
+            TargetHost = Options.ListenAddress,
         };
 
-    private static bool TryTakeFrame(ReadOnlySpan<byte> buffer, out int frameLength)
+    private static async Task DisposeQuietlyAsync(Stream stream, TcpClient client)
     {
-        ReadOnlySpan<byte> marker = "10="u8;
-        int searchFrom = 0;
-        while (searchFrom < buffer.Length)
+        try
         {
-            int relative = buffer[searchFrom..].IndexOf(marker);
-            if (relative < 0)
-            {
-                break;
-            }
-
-            int at = searchFrom + relative;
-            bool boundary = at == 0 || buffer[at - 1] == Soh;
-            if (boundary
-                && at + 6 < buffer.Length
-                && IsDigit(buffer[at + 3])
-                && IsDigit(buffer[at + 4])
-                && IsDigit(buffer[at + 5])
-                && buffer[at + 6] == Soh)
-            {
-                frameLength = at + 7;
-                return true;
-            }
-
-            searchFrom = at + 3;
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
         }
 
-        frameLength = 0;
-        return false;
-    }
-
-    private static bool TryReadTag(ReadOnlySpan<byte> frame, int tag, out ReadOnlySpan<byte> value)
-    {
-        int index = 0;
-        while (index < frame.Length)
-        {
-            int parsed = 0;
-            bool any = false;
-            while (index < frame.Length && IsDigit(frame[index]))
-            {
-                any = true;
-                parsed = (parsed * 10) + (frame[index] - (byte)'0');
-                index++;
-            }
-
-            if (!any || index >= frame.Length || frame[index] != (byte)'=')
-            {
-                break;
-            }
-
-            index++;
-            int valueStart = index;
-            int end = frame[index..].IndexOf(Soh);
-            if (end < 0)
-            {
-                break;
-            }
-
-            if (parsed == tag)
-            {
-                value = frame.Slice(valueStart, end);
-                return true;
-            }
-
-            index = valueStart + end + 1;
-        }
-
-        value = default;
-        return false;
-    }
-
-    private static bool IsDigit(byte value) => value is >= (byte)'0' and <= (byte)'9';
-
-    private static bool IsConnectionFailure(Exception exception) =>
-        exception is IOException or SocketException or ObjectDisposedException or TimeoutException;
-
-    private static Task[] Collect(params Task?[] tasks)
-    {
-        int count = 0;
-        for (int i = 0; i < tasks.Length; i++)
-        {
-            if (tasks[i] is not null)
-            {
-                count++;
-            }
-        }
-
-        if (count == 0)
-        {
-            return [];
-        }
-
-        var pending = new Task[count];
-        int index = 0;
-        for (int i = 0; i < tasks.Length; i++)
-        {
-            if (tasks[i] is Task task)
-            {
-                pending[index++] = task;
-            }
-        }
-
-        return pending;
+        client.Dispose();
     }
 
     private static FixOutboundDispatcherOptions Validate(FixOutboundDispatcherOptions options)
@@ -621,10 +503,78 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         return options;
     }
 
-    private enum OutboundAdmin
+    private readonly struct PendingLogon
     {
-        Logon,
-        Heartbeat,
-        Logout,
+        internal PendingLogon(string senderCompId, bool resetSequence, byte[] prelude, int preludeLength)
+        {
+            SenderCompId = senderCompId;
+            ResetSequence = resetSequence;
+            Prelude = prelude;
+            PreludeLength = preludeLength;
+        }
+
+        internal string SenderCompId { get; }
+
+        internal bool ResetSequence { get; }
+
+        internal byte[] Prelude { get; }
+
+        internal int PreludeLength { get; }
+    }
+
+    /// <summary>
+    /// Tabela das sessões logadas. A troca de uma sessão acontece fora do caminho de envio.
+    /// </summary>
+    private sealed class ConcurrentSessionTable
+    {
+        private readonly ConcurrentDictionary<string, FixAcceptedSession> _sessions = new(StringComparer.Ordinal);
+
+        internal FixAcceptedSession? Replace(FixAcceptedSession session)
+        {
+            _sessions.TryRemove(session.SenderCompId, out FixAcceptedSession? previous);
+            _sessions[session.SenderCompId] = session;
+            return previous;
+        }
+
+        internal void RemoveIfSame(FixAcceptedSession session)
+        {
+            _sessions.TryRemove(new KeyValuePair<string, FixAcceptedSession>(session.SenderCompId, session));
+        }
+
+        internal FixAcceptedSession[] Snapshot()
+        {
+            int count = _sessions.Count;
+            if (count == 0)
+            {
+                return [];
+            }
+
+            var copy = new FixAcceptedSession[count];
+            int index = 0;
+            foreach (FixAcceptedSession session in _sessions.Values)
+            {
+                if (index == copy.Length)
+                {
+                    Array.Resize(ref copy, copy.Length + 4);
+                }
+
+                copy[index++] = session;
+            }
+
+            if (index == copy.Length)
+            {
+                return copy;
+            }
+
+            Array.Resize(ref copy, index);
+            return copy;
+        }
+
+        internal FixAcceptedSession[] Drain()
+        {
+            FixAcceptedSession[] snapshot = Snapshot();
+            _sessions.Clear();
+            return snapshot;
+        }
     }
 }

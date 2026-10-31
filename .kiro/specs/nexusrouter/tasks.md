@@ -24,6 +24,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 6 | Host, Wiring de DI e Configuração | T-29 → T-32 |
 | Fase 7 | Observabilidade e Benchmarks | T-33 → T-36 |
 | Fase 8 | Testes | T-37 → T-43 |
+| Fase 9 | Retransmissão opcional por cliente | T-44 → T-48 |
 
 ---
 
@@ -473,22 +474,20 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [x] T-22 — Implementar `FixOutboundDispatcher` — Sessão TCP para Cliente FIX Downstream
+- [x] T-22 — Implementar `FixOutboundDispatcher` — Acceptor FIX para Clientes Downstream
 
-**Objetivo:** Dispatcher FIX outbound que re-emite mensagens para um consumidor FIX downstream.
+**Objetivo:** Dispatcher FIX que escuta e re-emite mensagens para cada cliente FIX conectado, com sequence number próprio.
 
 **Entradas:** `requirements.md` (FR-EGR-03), `design.md` (Seção 3.3)
 
 **Passos:**
 1. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcher.cs` estendendo `DispatcherBase<FixOutboundDispatcherOptions>`:
-   - `ConnectAsync`: abre conexão TCP para o host/porta downstream configurado. Opcionalmente encapsula em `SslStream`. Cria um `Pipe` para escritas outbound. Realiza handshake de Logon FIX usando `FixMessageBuilder` (de T-11). Mantém contador `long _outboundSeqNum`.
-   - `SendAsync`:
-     - Payload `PassThrough`: o buffer já foi reescrito com o SeqNum inbound pelo `PassThroughRewriter`. Para outbound, chamar `PassThroughRewriter.Rewrite(buffer, Interlocked.Increment(ref _outboundSeqNum))` novamente para aplicar o próprio SeqNum da sessão outbound.
-     - Payload `Parse`: serializar `FixMessage` de volta para formato wire, injetando `_outboundSeqNum`. Usar utilitários de serialização do `FixMessageBuilder`.
-   - Reconectar em erro de socket: exponential backoff (usar `ExponentialBackoffReconnectPolicy`), re-Logon na reconexão.
-2. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcherOptions.cs`.
+   - `ConnectAsync`: abre `TcpListener` em `ListenAddress`/`ListenPort`. Não conecta em cliente. Opcionalmente encapsula cada socket aceito em TLS de servidor.
+   - Aceita N clientes. O primeiro frame de cada um é Logon. TargetCompID (tag 56) tem de ser o `SenderCompId` do acceptor. Cada Logon aceito vira uma `FixAcceptedSession` com fila e MsgSeqNum próprios.
+   - `SendAsync`: para cada sessão logada, copia o frame e aplica o MsgSeqNum daquela sessão. `PassThrough` usa `PassThroughRewriter`. `Parse` usa `FixMessageSerializer` com o SenderCompID do acceptor e o TargetCompID do cliente. Falha ou fila cheia de uma sessão não bloqueia as outras. Sem sessão logada, descarta o payload neste dispatcher.
+2. Criar `src/NexusRouter.Egress/Fix/FixOutboundDispatcherOptions.cs` com endereço de escuta, não host de destino.
 
-**Saída:** `FixOutboundDispatcher` mantém uma sessão FIX ativa para um cliente downstream e encaminha mensagens com sequence numbers outbound corretos.
+**Saída:** `FixOutboundDispatcher` escuta e mantém uma sessão FIX independente por cliente conectado, cada uma com sequence number outbound próprio.
 
 ---
 
@@ -523,7 +522,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
      - Se `options.Enabled == false`: retornar `client.GetStream()` diretamente.
      - Se habilitado: carregar `X509Certificate2` de `options.CertificatePath` usando `options.CertificatePasswordEnvVar` como nome da variável de ambiente para a senha.
      - Criar `SslStream`, chamar `AuthenticateAsClientAsync` com `SslClientAuthenticationOptions` (TLS 1.2 mínimo).
-2. Usar `TlsSocketFactory.WrapAsync` em `FixSession.ConnectAsync` e `FixOutboundDispatcher.ConnectAsync` quando TLS estiver configurado.
+2. Usar `TlsSocketFactory.WrapAsync` em `FixSession.ConnectAsync` quando TLS estiver configurado. No `FixOutboundDispatcher`, usar `TlsSocketFactory.WrapServerAsync` em cada socket aceito.
 3. NÃO registrar em log nem expor material de chave privada de certificado.
 
 **Saída:** Sessões conectam com sucesso via TLS quando configurado. O caminho plaintext não é alterado.
@@ -532,18 +531,18 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 - [x] T-25 — Implementar Gerenciamento de Sequence Number por Dispatcher
 
-**Objetivo:** Garantir que cada `FixOutboundDispatcher` rastreie seu próprio contador independente de `MsgSeqNum` outbound, com persistência para recuperação de crash.
+**Objetivo:** Garantir que cada sessão aceita pelo `FixOutboundDispatcher` rastreie seu próprio contador de `MsgSeqNum` outbound, com persistência para recuperação de crash. O contador é independente da sessão inbound e das outras sessões aceitas.
 
 **Entradas:** `requirements.md` (FR-EGR-03), restrições de design (sem I/O síncrono no hot path; seqnum persistido de forma async)
 
 **Passos:**
 1. Criar `src/NexusRouter.Egress/Fix/SequenceNumberStore.cs`:
-   - Lê o último sequence number conhecido de um arquivo flat local (um arquivo por ID de dispatcher, armazenado em diretório configurável) durante `LoadAsync(string dispatcherId)` na inicialização.
+   - Lê o último sequence number conhecido de um arquivo flat local (um arquivo por chave de sessão — id do dispatcher mais o SenderCompID do cliente —, armazenado em diretório configurável) durante `LoadAsync(string dispatcherId)` no Logon.
    - Persiste o sequence number atual no arquivo de forma assíncrona via `PeriodicTimer` em background (ex.: a cada 5 segundos) e em `StopAsync`.
    - O contador em memória (`long`) é acessado exclusivamente via `Interlocked.Increment` no hot path; a persistência é somente cold-path.
-2. Integrar `SequenceNumberStore` em `FixOutboundDispatcher.ConnectAsync` e `StopAsync`.
+2. Integrar `SequenceNumberStore` em cada `FixAcceptedSession`: carregar no Logon e gravar ao encerrar a sessão. `FixOutboundDispatcher.StopAsync` encerra todas as sessões aceitas.
 
-**Saída:** Sequence numbers outbound sobrevivem a reinicializações do processo sem perda.
+**Saída:** Sequence numbers outbound de cada cliente sobrevivem a reinicializações do processo sem perda.
 
 ---
 
@@ -857,6 +856,88 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
+## Fase 9 — Retransmissão opcional por cliente
+
+Depende de T-22 (acceptor FIX), T-25 (sequence number), T-27 (Timescale) e T-31 (host). Não altera o default: sem cadastro e sem pedido no dia, o comportamento continua GapFill / publicação no broker.
+
+- [ ] T-44 — Cadastro de cliente e escolha diária de retenção
+
+**Objetivo:** Identificar cada consumidor por UUID, independente do dispatcher, e guardar a escolha de retenção do dia UTC.
+
+**Entradas:** `requirements.md` (FR-RPL-01, FR-RPL-02, FR-RPL-04), `design.md` (Seção 3.4.3 e Seção 6 — `Clients`)
+
+**Passos:**
+1. Modelo `ReplayClient`: `ClientId` (UUID), `DispatcherId`, `FixSenderCompId` opcional.
+2. Estado em memória da escolha do dia: desligada até o primeiro Logon com `9001=Y` ou o primeiro `POST` com `enabled: true`. Recusa mudança no mesmo dia. Zera na virada UTC.
+3. Cliente FIX sem cadastro, ou com `9001` ausente/`N` no primeiro Logon, não entra na retenção.
+
+**Saída:** Dá para resolver um SenderCompID ou um UUID para a escolha do dia, e a segunda declaração do mesmo dia não altera a primeira.
+
+---
+
+- [ ] T-45 — Channel de replay e hypertable `client_replay_messages`
+
+**Objetivo:** Persistir no cold path só as mensagens dos clientes com retenção ligada naquele dia.
+
+**Entradas:** `requirements.md` (FR-RPL-05, FR-RPL-06), `design.md` (Seção 3.4.3)
+
+**Passos:**
+1. `ReplayRecord` e `Channel` bounded. `TryWrite` depois do handoff ao dispatcher. Channel cheio descarta e incrementa métrica.
+2. Hypertable no `init.sql` com `(client_id, trading_day, replay_seq)` e retenção de 1 dia. Writer em lote via `Npgsql`, no mesmo processo do audit, sem SQL no hot path.
+3. FIX grava o `MsgSeqNum` outbound já reservado para a sessão. Broker grava um contador próprio daquele `ClientId`, começando em 1 a partir do opt-in.
+4. Nenhum cliente opted-in naquele dispatcher: não copiar o payload.
+
+**Saída:** Mensagem de um cliente com retenção ligada sobrevive no Timescale e é lida por `(client_id, dia, faixa de replay_seq)`. Cliente sem pedido não gera linha.
+
+---
+
+- [ ] T-46 — ResendRequest FIX com retransmissão do que foi retido
+
+**Objetivo:** Quando o cliente FIX pediu retenção, o ResendRequest reenvia os frames guardados daquela sessão em vez de um GapFill único sobre o intervalo inteiro.
+
+**Entradas:** `requirements.md` (FR-RPL-02, FR-RPL-03), `design.md` (Seção 3.3 e 3.4.3)
+
+**Passos:**
+1. No primeiro Logon do dia UTC, ler a tag `9001` e fixar a escolha em T-44.
+2. Ao enfileirar mensagem de aplicação para uma sessão com retenção ligada, publicar o frame já reescrito no channel de T-45 com o sequence number da sessão.
+3. No ResendRequest, ler o store daquele `ClientId` entre BeginSeqNo e EndSeqNo e reenviar esses bytes. Trecho sem linha no store recebe SequenceReset GapFill só desse trecho.
+4. Cliente sem retenção no dia mantém o GapFill atual, do BeginSeqNo até o próximo número da sessão.
+
+**Saída:** Cliente opted-in que perde a conexão recupera, pelo sequence number do ResendRequest, as mensagens retidas daquele dia. Cliente opted-out não recebe replay.
+
+---
+
+- [ ] T-47 — API de registro e recuperação para clientes de broker
+
+**Objetivo:** Kafka e RabbitMQ não identificam o assinante. A escolha e a recuperação passam por HTTP, sempre filtradas pelo `ClientId`.
+
+**Entradas:** `requirements.md` (FR-RPL-04, FR-RPL-07), `design.md` (Seção 3.4.3)
+
+**Passos:**
+1. `POST /v1/clients/{clientId}/replay` com `{ "enabled": true|false }`. Primeira chamada do dia UTC fixa a escolha. Token em `NEXUS_REPLAY_API_TOKEN`. UUID fora do cadastro responde 404.
+2. Com retenção ligada, o dispatcher de broker continua publicando no recurso e, além disso, alimenta T-45 com `replay_seq` daquele cliente.
+3. `GET /v1/clients/{clientId}/replay?fromSeq=&toSeq=` devolve só as linhas daquele UUID, em ordem de `replay_seq`.
+
+**Saída:** Um assinante de Kafka ou RabbitMQ liga a retenção pela API e busca o intervalo que perdeu, sem receber mensagens de outro `ClientId`.
+
+---
+
+- [ ] T-48 — Testes da retenção e da retransmissão
+
+**Objetivo:** Cobrir opt-in, opt-out, isolamento por UUID e o fato de o hot path não esperar o banco.
+
+**Entradas:** T-44, T-45, T-46, T-47
+
+**Passos:**
+1. Dois clientes FIX no mesmo acceptor: só quem mandou `9001=Y` no primeiro Logon do dia recebe os frames no ResendRequest. O outro recebe GapFill.
+2. Segundo Logon do mesmo dia com a tag oposta não muda a escolha.
+3. Dois UUIDs no mesmo dispatcher Kafka: o GET de um não devolve linhas do outro.
+4. Channel de replay cheio não impede o `TryEnqueue` do dispatcher.
+
+**Saída:** Testes automatizados demonstram retenção opcional, retransmissão pelo sequence number pedido e isolamento por `ClientId`.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```
@@ -902,4 +983,10 @@ T-01 (scaffold)
                                               │         └── T-35 (Tracing)
                                               │              └── T-36 (Benchmarks)
                                               └── T-37..T-43 (Testes — podem começar após T-17/T-22/T-27)
+T-22 + T-25 + T-27 + T-31
+ └── T-44 (cadastro e escolha do dia)
+      └── T-45 (channel + hypertable)
+           ├── T-46 (ResendRequest FIX)
+           └── T-47 (API dos brokers)
+                └── T-48 (testes de replay)
 ```

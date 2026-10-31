@@ -1,29 +1,27 @@
+using System.Net;
+
 namespace NexusRouter.Egress.Fix;
 
 /// <summary>
-/// Destino FIX de um dispatcher outbound. Credencial de TLS, quando existe, é só o nome da variável.
+/// Acceptor FIX de um dispatcher. O NexusRouter escuta; os clientes conectam aqui.
 /// </summary>
+/// <remarks>Credencial de TLS, quando existe, é só o nome da variável.</remarks>
 public sealed class FixOutboundDispatcherOptions
 {
     /// <summary>
-    /// Host do cliente downstream.
+    /// Endereço IP em que o acceptor escuta. Exemplo: <c>0.0.0.0</c> ou <c>127.0.0.1</c>.
     /// </summary>
-    public required string Host { get; init; }
+    public required string ListenAddress { get; init; }
 
     /// <summary>
-    /// Porta TCP do cliente downstream.
+    /// Porta TCP em que o acceptor escuta.
     /// </summary>
-    public required int Port { get; init; }
+    public required int ListenPort { get; init; }
 
     /// <summary>
-    /// SenderCompID (tag 49) desta sessão outbound.
+    /// SenderCompID (tag 49) das mensagens que o NexusRouter envia. O Logon do cliente traz este valor na tag 56.
     /// </summary>
     public required string SenderCompId { get; init; }
-
-    /// <summary>
-    /// TargetCompID (tag 56) do cliente downstream.
-    /// </summary>
-    public required string TargetCompId { get; init; }
 
     /// <summary>
     /// BeginString (tag 8), por exemplo <c>FIX.4.4</c>.
@@ -31,32 +29,37 @@ public sealed class FixOutboundDispatcherOptions
     public required string BeginString { get; init; }
 
     /// <summary>
-    /// Diretório do arquivo de MsgSeqNum deste dispatcher.
+    /// Diretório dos arquivos de MsgSeqNum. Um arquivo por sessão aceita.
     /// </summary>
     public required string SequenceStoreDirectory { get; init; }
 
     /// <summary>
-    /// HeartBtInt (tag 108), em segundos.
+    /// SenderCompID (tag 49) aceitos no Logon do cliente. Lista vazia aceita qualquer um cujo TargetCompID seja <see cref="SenderCompId"/>.
+    /// </summary>
+    public IReadOnlyList<string> AllowedSenderCompIds { get; init; } = [];
+
+    /// <summary>
+    /// HeartBtInt (tag 108) anunciado no Logon de resposta, em segundos.
     /// </summary>
     public int HeartBtInt { get; init; } = 20;
 
     /// <summary>
-    /// Tempo máximo de espera pela resposta de Logon.
+    /// Tempo máximo para o primeiro Logon depois do TCP aceito.
     /// </summary>
     public TimeSpan LogonTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// Capacidade do channel de entrada deste dispatcher.
+    /// Capacidade do channel do dispatcher e da fila de cada sessão aceita.
     /// </summary>
     public int ChannelCapacity { get; init; } = 8192;
 
     /// <summary>
-    /// Quando <see langword="true"/>, o socket passa por TLS antes do Logon.
+    /// Quando <see langword="true"/>, o socket aceito passa por TLS antes do Logon.
     /// </summary>
     public bool TlsEnabled { get; init; }
 
     /// <summary>
-    /// Caminho do certificado cliente PKCS#12. Nulo quando o TLS não usa certificado de cliente.
+    /// Caminho do certificado servidor PKCS#12. Obrigatório quando <see cref="TlsEnabled"/> é <see langword="true"/>.
     /// </summary>
     public string? TlsCertificatePath { get; init; }
 
@@ -66,35 +69,54 @@ public sealed class FixOutboundDispatcherOptions
     public string? TlsCertificatePasswordEnvVar { get; init; }
 
     /// <summary>
-    /// Atraso base da reconexão.
+    /// Quando <see langword="true"/> e o TLS está ligado, o handshake exige certificado do cliente.
     /// </summary>
-    public TimeSpan ReconnectBaseDelay { get; init; } = TimeSpan.FromMilliseconds(500);
+    public bool TlsRequireClientCertificate { get; init; }
 
     /// <summary>
-    /// Teto do atraso de reconexão, aplicado antes do jitter.
+    /// Atraso base antes de o loop de accept tentar de novo depois de um erro de socket.
     /// </summary>
-    public TimeSpan ReconnectMaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan AcceptRetryBaseDelay { get; init; } = TimeSpan.FromMilliseconds(500);
 
     /// <summary>
-    /// Fração de jitter da política de reconexão.
+    /// Teto do atraso de retry do accept, aplicado antes do jitter.
     /// </summary>
-    public double ReconnectJitterFactor { get; init; } = 0.2;
+    public TimeSpan AcceptRetryMaxDelay { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Rejeita host, porta, comp IDs ou tempos inválidos.
+    /// Fração de jitter do retry do accept.
     /// </summary>
-    /// <exception cref="ArgumentException">Host, BeginString, comp ID ou diretório é inválido.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">Porta, HeartBtInt, timeout ou atraso de reconexão é inválido.</exception>
+    public double AcceptRetryJitterFactor { get; init; } = 0.2;
+
+    /// <summary>
+    /// Rejeita endereço, porta, comp ID ou tempos inválidos.
+    /// </summary>
+    /// <exception cref="ArgumentException">Endereço, BeginString, comp ID ou diretório é inválido.</exception>
+    /// <exception cref="ArgumentNullException"><see cref="AllowedSenderCompIds"/> é nulo.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Porta, HeartBtInt, timeout ou atraso de retry é inválido.</exception>
+    /// <exception cref="InvalidOperationException">TLS está ligado sem certificado de servidor.</exception>
     public void EnsureValid()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(Host);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ListenAddress);
+        if (!IPAddress.TryParse(ListenAddress, out _))
+        {
+            throw new ArgumentException("ListenAddress deve ser um endereço IP.", nameof(ListenAddress));
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(SenderCompId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(TargetCompId);
         ArgumentException.ThrowIfNullOrWhiteSpace(BeginString);
         ArgumentException.ThrowIfNullOrWhiteSpace(SequenceStoreDirectory);
-        if (Port is < 1 or > 65535)
+        ValidateToken(SenderCompId, nameof(SenderCompId));
+        ValidateToken(BeginString, nameof(BeginString));
+        ArgumentNullException.ThrowIfNull(AllowedSenderCompIds);
+        foreach (string sender in AllowedSenderCompIds)
         {
-            throw new ArgumentOutOfRangeException(nameof(Port), Port, "A porta deve estar entre 1 e 65535.");
+            ValidateToken(sender, nameof(AllowedSenderCompIds));
+        }
+
+        if (ListenPort is < 1 or > 65535)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ListenPort), ListenPort, "A porta deve estar entre 1 e 65535.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(HeartBtInt);
@@ -104,14 +126,34 @@ public sealed class FixOutboundDispatcherOptions
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ChannelCapacity);
-        if (ReconnectBaseDelay < TimeSpan.Zero || ReconnectMaxDelay < TimeSpan.Zero)
+        if (AcceptRetryBaseDelay < TimeSpan.Zero || AcceptRetryMaxDelay < TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(ReconnectBaseDelay), "O atraso de reconexão não pode ser negativo.");
+            throw new ArgumentOutOfRangeException(nameof(AcceptRetryBaseDelay), "O atraso de retry do accept não pode ser negativo.");
         }
 
-        if (!double.IsFinite(ReconnectJitterFactor) || ReconnectJitterFactor < 0d)
+        if (!double.IsFinite(AcceptRetryJitterFactor) || AcceptRetryJitterFactor < 0d)
         {
-            throw new ArgumentOutOfRangeException(nameof(ReconnectJitterFactor), ReconnectJitterFactor, "O jitter deve ser finito e não negativo.");
+            throw new ArgumentOutOfRangeException(
+                nameof(AcceptRetryJitterFactor),
+                AcceptRetryJitterFactor,
+                "O jitter deve ser finito e não negativo.");
+        }
+
+        if (TlsEnabled && string.IsNullOrWhiteSpace(TlsCertificatePath))
+        {
+            throw new InvalidOperationException("O TLS do acceptor FIX exige TlsCertificatePath.");
+        }
+    }
+
+    private static void ValidateToken(string value, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        foreach (char ch in value)
+        {
+            if (ch > 127 || ch == '=' || ch == '\u0001')
+            {
+                throw new ArgumentException("O valor deve ser ASCII e não pode conter SOH nem '='.", name);
+            }
         }
     }
 }

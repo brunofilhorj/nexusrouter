@@ -59,6 +59,51 @@ public static class TlsSocketFactory
         }
     }
 
+    /// <summary>
+    /// Encapsula o socket aceito em TLS 1.2 ou 1.3 quando o acceptor FIX pede.
+    /// </summary>
+    /// <param name="client">Socket já aceito.</param>
+    /// <param name="options">Liga ou desliga o handshake e aponta o certificado do servidor.</param>
+    /// <param name="requireClientCertificate">Quando <see langword="true"/>, o handshake exige certificado do cliente.</param>
+    /// <param name="cancellationToken">Cancela o handshake.</param>
+    /// <returns>Stream para leitura e escrita. Com TLS, o certificado do servidor vive até o descarte do stream.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="client"/> ou <paramref name="options"/> é nulo.</exception>
+    /// <exception cref="InvalidOperationException">TLS está ligado e o certificado do servidor não foi informado.</exception>
+    public static async ValueTask<Stream> WrapServerAsync(
+        TcpClient client,
+        TlsOptions options,
+        bool requireClientCertificate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!options.Enabled)
+        {
+            return client.GetStream();
+        }
+
+        X509Certificate2 certificate = LoadCertificate(options)
+            ?? throw new InvalidOperationException("O TLS do acceptor FIX exige um certificado de servidor.");
+        var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
+        try
+        {
+            var authentication = new SslServerAuthenticationOptions
+            {
+                ServerCertificate = certificate,
+                ClientCertificateRequired = requireClientCertificate,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+            };
+            await ssl.AuthenticateAsServerAsync(authentication, cancellationToken).ConfigureAwait(false);
+            return new TlsStream(ssl, certificate);
+        }
+        catch
+        {
+            await ssl.DisposeAsync().ConfigureAwait(false);
+            certificate.Dispose();
+            throw;
+        }
+    }
+
     private static X509Certificate2? LoadCertificate(TlsOptions options)
     {
         if (string.IsNullOrWhiteSpace(options.CertificatePath))
