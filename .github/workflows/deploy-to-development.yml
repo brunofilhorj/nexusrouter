@@ -3,9 +3,6 @@ name: Deploy to Development
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
   group: deploy-development-${{ github.ref }}
   cancel-in-progress: false
