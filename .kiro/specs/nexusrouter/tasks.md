@@ -289,7 +289,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 3 — Core Router / Hot Path
 
-- [ ] T-13 — Implementar `PassThroughRewriter`
+- [x] T-13 — Implementar `PassThroughRewriter`
 
 **Objetivo:** Reescrita in-place de `MsgSeqNum (34)` e `CheckSum (10)` em um `Span<byte>` sem alocação.
 
@@ -309,7 +309,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-14 — Implementar `FixTokenizer`
+- [x] T-14 — Implementar `FixTokenizer`
 
 **Objetivo:** Tokenizador de campos FIX zero-allocation para o modo de entrega `Parse`.
 
@@ -329,7 +329,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-15 — Implementar `RouteResolver`
+- [x] T-15 — Implementar `RouteResolver`
 
 **Objetivo:** Construir a tabela de roteamento imutável a partir da configuração e expor lookup O(1) lock-free.
 
@@ -347,7 +347,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-16 — Implementar `FanOutEngine`
+- [x] T-16 — Implementar `FanOutEngine`
 
 **Objetivo:** Despachar um `DispatchPayload` para todos os dispatchers registrados em uma rota, de forma não bloqueante.
 
@@ -366,7 +366,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-17 — Implementar `RouterEngine`
+- [x] T-17 — Implementar `RouterEngine`
 
 **Objetivo:** Compor o pipeline de roteamento do hot path em um único ponto de entrada.
 
@@ -389,7 +389,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-18 — Implementar a Interface `IMessageRouter` e Conectar Session ↔ Router
+- [x] T-18 — Implementar a Interface `IMessageRouter` e Conectar Session ↔ Router
 
 **Objetivo:** Desacoplar `FixSession` do `RouterEngine` concreto via interface.
 
