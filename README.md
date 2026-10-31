@@ -46,9 +46,9 @@ nexusrouter/
 ├── docker/postgres/init.sql          — hypertable de mensagens FIX
 ├── .github/workflows/
 │   ├── build-and-test.yml            — CI em pull request e push para main
-│   ├── deploy-development.yml        — deploy manual (workflow_dispatch)
-│   ├── deploy-staging.yml            — deploy em tag vX.Y.Z-rc.N
-│   └── deploy-production.yml         — deploy em tag vX.Y.Z
+│   ├── deploy-to-development.yml     — deploy manual (workflow_dispatch)
+│   ├── deploy-to-staging.yml         — deploy em tag vX.Y.Z-rc.N
+│   └── deploy-to-production.yml      — deploy em tag vX.Y.Z
 ├── .env.example
 ├── README.md
 └── (src/, tests/, NexusRouter.slnx — criados na Fase 1, Tarefa T-01)
@@ -164,9 +164,9 @@ Cada ambiente tem o seu workflow e o seu trigger. Crie os GitHub Environments `d
 | Ambiente | Workflow | Trigger |
 |----------|----------|---------|
 | CI | `build-and-test.yml` | pull request e push em `main` |
-| Development | `deploy-development.yml` | manual (`workflow_dispatch`) |
-| Staging | `deploy-staging.yml` | tag `vX.Y.Z-rc.N` |
-| Production | `deploy-production.yml` | tag `vX.Y.Z` |
+| Development | `deploy-to-development.yml` | manual (`workflow_dispatch`) |
+| Staging | `deploy-to-staging.yml` | tag `vX.Y.Z-rc.N` |
+| Production | `deploy-to-production.yml` | tag `vX.Y.Z` |
 
 O filtro de production é `v[0-9]+.[0-9]+.[0-9]+`. Uma tag `v1.0.0-rc.1` não entra nesse workflow. O filtro `v*` pegaria as duas e publicaria o release candidate em production.
 
