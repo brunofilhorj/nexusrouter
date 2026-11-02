@@ -566,7 +566,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-27 — Implementar `AuditWriterService`
+- [x] T-27 — Implementar `AuditWriterService`
 
 **Objetivo:** Serviço hosted de background que drena o channel de auditoria e persiste os registros.
 
