@@ -591,7 +591,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
+- [x] T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
 
 **Objetivo:** Conectar `IMessageDispatcher.OnDispatchError` e eventos de overflow de channel cheio ao channel de auditoria.
 
