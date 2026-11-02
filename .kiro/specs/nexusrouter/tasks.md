@@ -549,7 +549,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 5 — Auditoria / Cold Path
 
-- [ ] T-26 — Implementar `AuditChannelSingleton`
+- [x] T-26 — Implementar `AuditChannelSingleton`
 
 **Objetivo:** Criar o `Channel<AuditRecord>` compartilhado usado em todo o sistema como mecanismo de desacoplamento entre hot path e audit writer.
 
@@ -566,7 +566,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-27 — Implementar `AuditWriterService`
+- [x] T-27 — Implementar `AuditWriterService`
 
 **Objetivo:** Serviço hosted de background que drena o channel de auditoria e persiste os registros.
 
@@ -591,7 +591,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
+- [x] T-28 — Implementar a Integração de Auditoria de Erros dos Dispatchers
 
 **Objetivo:** Conectar `IMessageDispatcher.OnDispatchError` e eventos de overflow de channel cheio ao channel de auditoria.
 
