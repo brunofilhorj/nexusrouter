@@ -549,7 +549,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 5 — Auditoria / Cold Path
 
-- [ ] T-26 — Implementar `AuditChannelSingleton`
+- [x] T-26 — Implementar `AuditChannelSingleton`
 
 **Objetivo:** Criar o `Channel<AuditRecord>` compartilhado usado em todo o sistema como mecanismo de desacoplamento entre hot path e audit writer.
 
