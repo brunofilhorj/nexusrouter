@@ -610,7 +610,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 6 — Host, Wiring de DI e Configuração
 
-- [ ] T-29 — Implementar as Classes de Options de Configuração
+- [x] T-29 — Implementar as Classes de Options de Configuração
 
 **Objetivo:** Definir POCOs de configuração fortemente tipados para todo o sistema.
 

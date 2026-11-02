@@ -12,6 +12,7 @@
     <Project Path="tests/NexusRouter.Audit.Tests/NexusRouter.Audit.Tests.csproj" />
     <Project Path="tests/NexusRouter.Domain.Tests/NexusRouter.Domain.Tests.csproj" />
     <Project Path="tests/NexusRouter.Egress.Tests/NexusRouter.Egress.Tests.csproj" />
+    <Project Path="tests/NexusRouter.Host.Tests/NexusRouter.Host.Tests.csproj" />
     <Project Path="tests/NexusRouter.Ingress.Tests/NexusRouter.Ingress.Tests.csproj" />
     <Project Path="tests/NexusRouter.Router.Tests/NexusRouter.Router.Tests.csproj" />
   </Folder>
