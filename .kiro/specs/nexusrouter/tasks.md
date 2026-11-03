@@ -633,7 +633,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-30 — Implementar as Extensions de Registro de DI
+- [x] T-30 — Implementar as Extensions de Registro de DI
 
 **Objetivo:** Conectar todos os serviços ao `IServiceCollection` de forma limpa e organizada.
 
