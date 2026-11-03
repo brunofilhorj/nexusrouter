@@ -689,7 +689,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 7 — Observabilidade e Benchmarks
 
-- [ ] T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
+- [x] T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
 
 **Objetivo:** Adicionar métricas de runtime para throughput, latência e profundidade de fila.
 
@@ -709,7 +709,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
+- [x] T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
 
 **Objetivo:** Expor métricas no formato de scrape Prometheus.
 
@@ -725,7 +725,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
+- [x] T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
 
 **Objetivo:** Adicionar spans de rastreamento distribuído nas fronteiras chave do hot path.
 
@@ -742,7 +742,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
+- [x] T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
 
 **Objetivo:** Fornecer benchmarks de latência reproduzíveis para os componentes do hot path.
 

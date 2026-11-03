@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Threading.Channels;
 
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,7 @@ namespace NexusRouter.Router;
 /// deixaria o array preso no pool.
 /// Cada <see cref="IMessageDispatcher.TryEnqueue"/> que retorna <see langword="false"/> libera uma referência
 /// e grava um <see cref="AuditRecord"/> de overflow. Isso não lança exceção.
+/// Zero allocation. Safe to call on the hot path.
 /// </remarks>
 public sealed class FanOutEngine
 {
@@ -29,26 +31,31 @@ public sealed class FanOutEngine
     private readonly ChannelWriter<AuditRecord> _auditWriter;
     private readonly DispatchPayloadPool _payloadPool;
     private readonly ILogger<FanOutEngine> _logger;
+    private readonly NexusRouterMetrics _metrics;
 
     /// <summary>
-    /// Cria o fan-out com o channel de auditoria e o pool de envelopes.
+    /// Cria o fan-out com o channel de auditoria, o pool de envelopes e a instrumentação.
     /// </summary>
     /// <param name="auditChannel">Channel não bloqueante do cold path.</param>
     /// <param name="payloadPool">Pool usado para os envelopes além do primeiro dispatcher.</param>
     /// <param name="logger">Log de channel cheio.</param>
+    /// <param name="metrics">Instrumentação de métricas do hot path.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     public FanOutEngine(
         Channel<AuditRecord> auditChannel,
         DispatchPayloadPool payloadPool,
-        ILogger<FanOutEngine> logger)
+        ILogger<FanOutEngine> logger,
+        NexusRouterMetrics metrics)
     {
         ArgumentNullException.ThrowIfNull(auditChannel);
         ArgumentNullException.ThrowIfNull(payloadPool);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(metrics);
 
         _auditWriter = auditChannel.Writer;
         _payloadPool = payloadPool;
         _logger = logger;
+        _metrics = metrics;
     }
 
     /// <summary>
@@ -132,6 +139,9 @@ public sealed class FanOutEngine
     {
         if (dispatcher is not null && dispatcher.TryEnqueue(payload))
         {
+            // Contabiliza despacho com sucesso — TagList é struct, sem alocação.
+            TagList tags = new TagList { { "dispatcher_id", dispatcher.DispatcherId } };
+            _metrics.MessagesDispatched.Add(1, tags);
             return true;
         }
 
@@ -147,6 +157,14 @@ public sealed class FanOutEngine
             "Dispatcher {DispatcherId} recusou mensagem da sessão {SessionId}. O channel está cheio.",
             dispatcherId,
             payload.SessionId.Value);
+
+        // Contabiliza descarte — TagList é struct, sem alocação.
+        TagList droppedTags = new TagList
+        {
+            { "dispatcher_id", dispatcherId },
+            { "reason", "channel_full" },
+        };
+        _metrics.MessagesDropped.Add(1, droppedTags);
 
         var record = new AuditRecord
         {

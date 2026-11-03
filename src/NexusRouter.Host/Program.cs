@@ -1,6 +1,13 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Host.Extensions;
+using NexusRouter.Router;
+
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 using Serilog;
 
@@ -10,6 +17,8 @@ namespace NexusRouter.Host;
 /// Entry point do processo NexusRouter.
 /// </summary>
 /// <remarks>
+/// Usa <see cref="WebApplication"/> para expor o endpoint <c>/metrics</c> (scrape Prometheus)
+/// enquanto mantém o pipeline FIX intacto via Generic Host.
 /// A ordem de registro dos tiers define a ordem inversa de shutdown:
 /// Ingress para primeiro → Egress drena → Audit writer drena por último.
 /// </remarks>
@@ -17,8 +26,7 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        // Bootstrap do Serilog via arquivo de configuração, antes do host ser construído,
-        // para que erros de inicialização (falha de validação, exceções de DI) também sejam capturados.
+        // Bootstrap do Serilog antes do host, para capturar erros de inicialização (DI, validação).
         Log.Logger = new LoggerConfiguration()
             .WriteTo.Console()
             .CreateBootstrapLogger();
@@ -27,8 +35,8 @@ internal static class Program
 
         try
         {
-            IHost host = BuildHost(args);
-            await host.RunAsync().ConfigureAwait(false);
+            WebApplication app = BuildWebApplication(args);
+            await app.RunAsync().ConfigureAwait(false);
             return 0;
         }
         catch (Exception ex)
@@ -43,25 +51,73 @@ internal static class Program
         }
     }
 
-    private static IHost BuildHost(string[] args) =>
-        Microsoft.Extensions.Hosting.Host
-            .CreateDefaultBuilder(args)
-            .UseSerilog((context, services, configuration) =>
-                configuration.ReadFrom.Configuration(context.Configuration))
-            .ConfigureServices((context, services) =>
+    private static WebApplication BuildWebApplication(string[] args)
+    {
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+        // Serilog: lê configuração do appsettings.json.
+        builder.Host.UseSerilog((context, services, configuration) =>
+            configuration.ReadFrom.Configuration(context.Configuration));
+
+        // OTLP endpoint — somente configurado quando a seção existe no appsettings.json.
+        string? otlpEndpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
+
+        // OpenTelemetry: métricas e tracing.
+        var otelBuilder = builder.Services
+            .AddOpenTelemetry()
+            .ConfigureResource(r => r.AddService("NexusRouter"))
+            .WithMetrics(metrics =>
             {
-                // A ordem de chamada define a ordem de registro de IHostedService.
-                // O Generic Host para os IHostedServices na ordem inversa ao registro,
-                // portanto: Audit último a registrar → primeiro a parar no shutdown.
-                // Sequência de shutdown: Ingress → Egress → Audit.
-                services
-                    .AddNexusRouterAudit(context.Configuration)
-                    .AddNexusRouterEgress(context.Configuration)
-                    .AddNexusRouterRouter(context.Configuration)
-                    .AddNexusRouterIngress(context.Configuration);
+                metrics
+                    .AddMeter(NexusRouterMetrics.MeterName)
+                    .AddPrometheusExporter();
             })
-            .UseConsoleLifetime()
-            .Build();
+            .WithTracing(tracing =>
+            {
+                // Registra o ActivitySource do hot path.
+                tracing.AddSource(NexusRouterTracing.SourceName);
+
+                // Sampling configurável: padrão 0% (nenhum span criado), para zero overhead em produção.
+                // Ative via appsettings.json: "OpenTelemetry:SamplingRatio": 1.0
+                double samplingRatio = builder.Configuration.GetValue("OpenTelemetry:SamplingRatio", defaultValue: 0.0);
+                if (samplingRatio > 0.0)
+                {
+                    tracing.SetSampler(new TraceIdRatioBasedSampler(samplingRatio));
+                }
+                else
+                {
+                    // AlwaysOffSampler garante que HasListeners() retorne false e o hot path não aloque.
+                    tracing.SetSampler(new AlwaysOffSampler());
+                }
+
+                // Exporter OTLP: só adicionado quando configurado, para não gerar overhead nem dependência
+                // em runtime quando o campo não está presente (NFR-OBS-04).
+                if (!string.IsNullOrEmpty(otlpEndpoint))
+                {
+                    tracing.AddOtlpExporter(opts =>
+                    {
+                        opts.Endpoint = new Uri(otlpEndpoint);
+                    });
+                }
+            });
+
+        _ = otelBuilder; // referência explícita para suprimir CS0219 se o compilador otimizar.
+
+        // Tiers do NexusRouter — ordem define sequência inversa de shutdown.
+        // Sequência de shutdown: Ingress → Egress → Audit (Audit último a registrar, primeiro a parar).
+        builder.Services
+            .AddNexusRouterAudit(builder.Configuration)
+            .AddNexusRouterEgress(builder.Configuration)
+            .AddNexusRouterRouter(builder.Configuration)
+            .AddNexusRouterIngress(builder.Configuration);
+
+        WebApplication app = builder.Build();
+
+        // Endpoint de scrape Prometheus — não interfere no hot path FIX.
+        app.MapPrometheusScrapingEndpoint("/metrics");
+
+        return app;
+    }
 
     /// <summary>
     /// Captura exceções não tratadas de threads de background e de pool de threads.

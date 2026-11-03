@@ -27,6 +27,7 @@ using EgressFixOptions = NexusRouter.Egress.Fix.FixOutboundDispatcherOptions;
 using AuditSerilogOptions = NexusRouter.Audit.SerilogAuditSinkOptions;
 using AuditPostgresOptions = NexusRouter.Audit.PostgresAuditSinkOptions;
 using AuditCoreOptions = NexusRouter.Audit.AuditOptions;
+using DomainRouteContext = NexusRouter.Domain.Models.RouteContext;
 
 namespace NexusRouter.Host.Extensions;
 
@@ -135,6 +136,7 @@ public static class ServiceCollectionExtensions
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
         services.AddSingleton<DispatchPayloadPool>();
+        services.AddSingleton<NexusRouterMetrics>();
 
         // FanOutEngine recebe Channel<AuditRecord> diretamente via AuditChannelSingleton.
         services.AddSingleton<FanOutEngine>(sp =>
@@ -142,7 +144,8 @@ public static class ServiceCollectionExtensions
             AuditChannelSingleton auditSingleton = sp.GetRequiredService<AuditChannelSingleton>();
             DispatchPayloadPool pool = sp.GetRequiredService<DispatchPayloadPool>();
             ILogger<FanOutEngine> logger = sp.GetRequiredService<ILogger<FanOutEngine>>();
-            return new FanOutEngine(auditSingleton.Instance, pool, logger);
+            NexusRouterMetrics metrics = sp.GetRequiredService<NexusRouterMetrics>();
+            return new FanOutEngine(auditSingleton.Instance, pool, logger, metrics);
         });
 
         // RouteResolver: monta a tabela de roteamento congelada resolvendo dispatchers pelo Id.
@@ -157,7 +160,7 @@ public static class ServiceCollectionExtensions
 
             ILogger<RouteResolver> logger = sp.GetRequiredService<ILogger<RouteResolver>>();
 
-            List<RouteContext> routes = [];
+            List<DomainRouteContext> routes = [];
             foreach (HostSessionOptions sessionOpts in options.Sessions)
             {
                 var sessionId = new SessionId(sessionOpts.SessionId);
@@ -180,13 +183,21 @@ public static class ServiceCollectionExtensions
                     }
                 }
 
-                routes.Add(new RouteContext(sessionId, sessionOpts.DeliveryMode, builders.ToImmutable()));
+                routes.Add(new DomainRouteContext(sessionId, sessionOpts.DeliveryMode, builders.ToImmutable()));
             }
 
             return new RouteResolver(routes, logger);
         });
 
-        services.AddSingleton<RouterEngine>();
+        services.AddSingleton<RouterEngine>(sp =>
+        {
+            RouteResolver resolver = sp.GetRequiredService<RouteResolver>();
+            FanOutEngine fanOut = sp.GetRequiredService<FanOutEngine>();
+            DispatchPayloadPool pool = sp.GetRequiredService<DispatchPayloadPool>();
+            ILogger<RouterEngine> logger = sp.GetRequiredService<ILogger<RouterEngine>>();
+            NexusRouterMetrics metrics = sp.GetRequiredService<NexusRouterMetrics>();
+            return new RouterEngine(resolver, fanOut, pool, logger, metrics);
+        });
         services.AddSingleton<IMessageRouter>(sp => sp.GetRequiredService<RouterEngine>());
 
         return services;
