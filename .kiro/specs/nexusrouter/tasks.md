@@ -651,7 +651,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-31 — Implementar `Program.cs` e o Entry Point da Aplicação
+- [x] T-31 — Implementar `Program.cs` e o Entry Point da Aplicação
 
 **Objetivo:** Inicializar o Generic Host com todos os serviços registrados e configurar Serilog.
 
@@ -670,7 +670,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-32 — Implementar a Sequência de Shutdown Gracioso
+- [x] T-32 — Implementar a Sequência de Shutdown Gracioso
 
 **Objetivo:** Impor a sequência de shutdown definida em NFR-REL-04.
 
