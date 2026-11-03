@@ -828,7 +828,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
+- [x] T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
 
 **Objetivo:** Testar a lógica de reconexão da sessão e o comportamento de heartbeat sem uma bolsa real.
 
