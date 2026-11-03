@@ -792,7 +792,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-39 — Testes Unitários: `FixSessionStateMachine`
+- [x] T-39 — Testes Unitários: `FixSessionStateMachine`
 
 **Objetivo:** Verificar transições de estado, rejeição de transições ilegais e detecção de staleness de heartbeat.
 
