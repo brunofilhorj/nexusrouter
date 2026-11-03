@@ -1,6 +1,11 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NexusRouter.Domain\NexusRouter.Domain.csproj" />
     <ProjectReference Include="..\..\src\NexusRouter.Router\NexusRouter.Router.csproj" />
   </ItemGroup>
 
@@ -9,6 +14,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Benchmarks devem sempre rodar em Release. -->
+    <Optimize>true</Optimize>
   </PropertyGroup>
 
 </Project>

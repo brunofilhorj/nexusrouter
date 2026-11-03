@@ -742,7 +742,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
+- [x] T-36 — Implementar Benchmarks BenchmarkDotNet do Hot Path
 
 **Objetivo:** Fornecer benchmarks de latência reproduzíveis para os componentes do hot path.
 
