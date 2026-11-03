@@ -3,6 +3,7 @@
   <!-- Microsoft.Extensions.* e ASP.NET Core são transitivos via Microsoft.NET.Sdk.Web -->
   <ItemGroup>
     <PackageReference Include="OpenTelemetry" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
     <PackageReference Include="Serilog.Extensions.Hosting" />

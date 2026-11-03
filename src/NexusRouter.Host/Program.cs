@@ -1,11 +1,13 @@
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Host.Extensions;
+using NexusRouter.Router;
 
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 using Serilog;
 
@@ -57,16 +59,49 @@ internal static class Program
         builder.Host.UseSerilog((context, services, configuration) =>
             configuration.ReadFrom.Configuration(context.Configuration));
 
-        // OpenTelemetry: registra o SDK com o exporter Prometheus.
-        // O SDK coleta métricas do Meter "NexusRouter" (NexusRouterMetrics).
-        builder.Services
+        // OTLP endpoint — somente configurado quando a seção existe no appsettings.json.
+        string? otlpEndpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
+
+        // OpenTelemetry: métricas e tracing.
+        var otelBuilder = builder.Services
             .AddOpenTelemetry()
+            .ConfigureResource(r => r.AddService("NexusRouter"))
             .WithMetrics(metrics =>
             {
                 metrics
-                    .AddMeter("NexusRouter")
+                    .AddMeter(NexusRouterMetrics.MeterName)
                     .AddPrometheusExporter();
+            })
+            .WithTracing(tracing =>
+            {
+                // Registra o ActivitySource do hot path.
+                tracing.AddSource(NexusRouterTracing.SourceName);
+
+                // Sampling configurável: padrão 0% (nenhum span criado), para zero overhead em produção.
+                // Ative via appsettings.json: "OpenTelemetry:SamplingRatio": 1.0
+                double samplingRatio = builder.Configuration.GetValue("OpenTelemetry:SamplingRatio", defaultValue: 0.0);
+                if (samplingRatio > 0.0)
+                {
+                    tracing.SetSampler(new TraceIdRatioBasedSampler(samplingRatio));
+                }
+                else
+                {
+                    // AlwaysOffSampler garante que HasListeners() retorne false e o hot path não aloque.
+                    tracing.SetSampler(new AlwaysOffSampler());
+                }
+
+                // Exporter OTLP: só adicionado quando configurado, para não gerar overhead nem dependência
+                // em runtime quando o campo não está presente (NFR-OBS-04).
+                if (!string.IsNullOrEmpty(otlpEndpoint))
+                {
+                    tracing.AddOtlpExporter(opts =>
+                    {
+                        opts.Endpoint = new Uri(otlpEndpoint);
+                    });
+                }
             });
+
+        _ = otelBuilder; // referência explícita para suprimir CS0219 se o compilador otimizar.
 
         // Tiers do NexusRouter — ordem define sequência inversa de shutdown.
         // Sequência de shutdown: Ingress → Egress → Audit (Audit último a registrar, primeiro a parar).

@@ -725,7 +725,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
+- [x] T-35 — Adicionar Instrumentação de Tracing com `ActivitySource`
 
 **Objetivo:** Adicionar spans de rastreamento distribuído nas fronteiras chave do hot path.
 

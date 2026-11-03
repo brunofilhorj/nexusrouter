@@ -76,6 +76,9 @@ public sealed class RouterEngine : IMessageRouter
     /// </remarks>
     public void Route(in IngressFrame frame)
     {
+        // Span de tracing: só iniciado quando há sampler ativo; retorna null com zero overhead caso contrário.
+        using Activity? traceActivity = NexusRouterTracing.TryStartRouteActivity(frame.SessionId.Value);
+
         // Contabiliza recebimento por sessão — TagList é uma struct, sem alocação.
         TagList receivedTags = new TagList { { "session_id", frame.SessionId.Value } };
         _metrics.MessagesReceived.Add(1, receivedTags);
