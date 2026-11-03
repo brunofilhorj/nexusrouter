@@ -20,7 +20,7 @@ public sealed class AuditRecord
     public SessionId SessionId { get; set; }
 
     /// <summary>
-    /// Instante de ingresso, em ticks do relógio usado pela sessão.
+    /// Instante de ingresso, em ticks de <see cref="System.Diagnostics.Stopwatch"/>.
     /// </summary>
     public long IngressTimestampTicks { get; set; }
 
@@ -50,7 +50,7 @@ public sealed class AuditRecord
     public string[] DispatcherIds { get; set; } = [];
 
     /// <summary>
-    /// Instante de egresso, em ticks do mesmo relógio de <see cref="IngressTimestampTicks"/>.
+    /// Instante de egresso, em ticks de <see cref="System.Diagnostics.Stopwatch"/>.
     /// </summary>
     public long EgressTimestampTicks { get; set; }
 

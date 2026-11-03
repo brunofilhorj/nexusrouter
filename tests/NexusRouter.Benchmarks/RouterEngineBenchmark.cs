@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Threading.Channels;
 
 using BenchmarkDotNet.Attributes;
@@ -82,7 +83,7 @@ public class RouterEngineBenchmark
         _frameLength = Fix44Frame.Length;
         for (int i = 0; i < 8; i++)
         {
-            var warmupFrame = new IngressFrame(_sessionId, _frameSequence, Environment.TickCount64, _frameLength);
+            var warmupFrame = new IngressFrame(_sessionId, _frameSequence, Stopwatch.GetTimestamp(), _frameLength);
             _engine.Route(in warmupFrame);
         }
     }
@@ -94,7 +95,7 @@ public class RouterEngineBenchmark
     public void Route()
     {
         // IngressFrame é ref struct: deve ser criado na stack, não pode ser campo da classe.
-        var frame = new IngressFrame(_sessionId, _frameSequence, Environment.TickCount64, _frameLength);
+        var frame = new IngressFrame(_sessionId, _frameSequence, Stopwatch.GetTimestamp(), _frameLength);
         _engine.Route(in frame);
     }
 

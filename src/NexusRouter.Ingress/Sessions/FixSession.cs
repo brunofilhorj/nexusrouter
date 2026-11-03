@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Text;
@@ -832,7 +833,7 @@ public sealed class FixSession : IHostedService
         bool wrote = _auditChannel.TryWrite(new AuditRecord
         {
             SessionId = _sessionId,
-            IngressTimestampTicks = Environment.TickCount64,
+            IngressTimestampTicks = Stopwatch.GetTimestamp(),
             WasDropped = true,
             DropReason = exception.Message,
         });

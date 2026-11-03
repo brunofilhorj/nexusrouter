@@ -1,8 +1,12 @@
+using System.Diagnostics;
+
 using NexusRouter.Audit;
 using NexusRouter.Audit.Sinks;
 using NexusRouter.Domain.Models;
 
 using Serilog;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace NexusRouter.Audit.Tests;
 
@@ -46,5 +50,34 @@ public sealed class SerilogAuditSinkTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task WriteBatchAsync_ConvertsStopwatchTimestampsToMicroseconds()
+    {
+        var capturingSink = new CapturingSink();
+        using var logger = new LoggerConfiguration().WriteTo.Sink(capturingSink).CreateLogger();
+        var sink = new SerilogAuditSink(logger);
+        AuditRecord[] batch =
+        [
+            new AuditRecord
+            {
+                IngressTimestampTicks = Stopwatch.Frequency,
+                EgressTimestampTicks = Stopwatch.Frequency * 2,
+            },
+        ];
+
+        await sink.WriteBatchAsync(batch, CancellationToken.None);
+
+        LogEvent logEvent = Assert.IsType<LogEvent>(capturingSink.LogEvent);
+        Assert.Equal(1_000_000L, Assert.IsType<long>(Assert.IsType<ScalarValue>(logEvent.Properties["IngressTimestampMicroseconds"]).Value));
+        Assert.Equal(2_000_000L, Assert.IsType<long>(Assert.IsType<ScalarValue>(logEvent.Properties["EgressTimestampMicroseconds"]).Value));
+    }
+
+    private sealed class CapturingSink : ILogEventSink
+    {
+        public LogEvent? LogEvent { get; private set; }
+
+        public void Emit(LogEvent logEvent) => LogEvent = logEvent;
     }
 }

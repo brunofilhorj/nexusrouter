@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 
 using NexusRouter.Domain.Models;
 
@@ -61,7 +62,7 @@ internal static class FixFrameScanner
                     }
 
                     var raw = buffer.Slice(beginStart, frameLength);
-                    frame = new IngressFrame(default, raw, Environment.TickCount64, (int)frameLength);
+                    frame = new IngressFrame(default, raw, Stopwatch.GetTimestamp(), (int)frameLength);
                     buffer = buffer.Slice(beginStart + frameLength);
                     return true;
                 }

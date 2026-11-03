@@ -18,10 +18,7 @@ public sealed class RouterEngine : IMessageRouter
 {
     private const int StackFieldCapacity = 64;
     private const int FallbackFieldCapacity = 128;
-
-    // Fator de conversão: ticks de Environment.TickCount64 são em ms; a latência é registrada em µs.
-    // TickCount64 usa resolução de ~1 ms. Para sub-ms use Stopwatch.GetTimestamp() se disponível.
-    private const double TicksToMicroseconds = 1_000.0; // ms → µs
+    private static readonly double MicrosecondsPerTick = 1_000_000.0 / Stopwatch.Frequency;
 
     private readonly RouteResolver _routeResolver;
     private readonly FanOutEngine _fanOutEngine;
@@ -76,6 +73,8 @@ public sealed class RouterEngine : IMessageRouter
     /// </remarks>
     public void Route(in IngressFrame frame)
     {
+        long ingressTicks = frame.IngressTimestampTicks;
+
         // Span de tracing: só iniciado quando há sampler ativo; retorna null com zero overhead caso contrário.
         using Activity? traceActivity = NexusRouterTracing.TryStartRouteActivity(frame.SessionId.Value);
 
@@ -132,12 +131,11 @@ public sealed class RouterEngine : IMessageRouter
                 return;
         }
 
-        payload.EgressTimestampTicks = Environment.TickCount64;
+        payload.EgressTimestampTicks = Stopwatch.GetTimestamp();
         _fanOutEngine.Dispatch(ref route, payload);
 
-        // Histograma de latência: TickCount64 é em ms; convertemos para µs.
-        double latencyMicroseconds =
-            (payload.EgressTimestampTicks - frame.IngressTimestampTicks) * TicksToMicroseconds;
+        long endTicks = Stopwatch.GetTimestamp();
+        double latencyMicroseconds = (endTicks - ingressTicks) * MicrosecondsPerTick;
         _metrics.HotPathLatencyMicroseconds.Record(latencyMicroseconds, receivedTags);
     }
 

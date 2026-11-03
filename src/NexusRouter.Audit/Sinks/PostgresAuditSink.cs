@@ -178,8 +178,8 @@ public sealed class PostgresAuditSink : IAuditSink
     }
 
     /// <summary>
-    /// Evento de ciclo de vida já tem instante UTC. Mensagem de mercado guarda TickCount64,
-    /// que não cabe em timestamptz, então a coluna recebe o relógio do writer.
+    /// Evento de ciclo de vida já tem instante UTC. Timestamps de roteamento são ticks monotônicos,
+    /// então a coluna recebe o relógio UTC do writer.
     /// </summary>
     private static DateTime ResolveIngressTime(AuditRecord record)
     {

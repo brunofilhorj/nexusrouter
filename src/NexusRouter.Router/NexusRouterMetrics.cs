@@ -38,7 +38,7 @@ public sealed class NexusRouterMetrics : IDisposable
     /// </summary>
     /// <remarks>
     /// Instrumentado em <see cref="RouterEngine.Route"/>. Calculado como
-    /// <c>(EgressTimestampTicks - IngressTimestampTicks) * TicksToMicroseconds</c>.
+    /// a diferença entre dois timestamps de <see cref="System.Diagnostics.Stopwatch"/> convertida para microssegundos.
     /// </remarks>
     public Histogram<double> HotPathLatencyMicroseconds { get; }
 
