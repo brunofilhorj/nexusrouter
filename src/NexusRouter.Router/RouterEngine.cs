@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 
 using Microsoft.Extensions.Logging;
 
@@ -17,10 +19,15 @@ public sealed class RouterEngine : IMessageRouter
     private const int StackFieldCapacity = 64;
     private const int FallbackFieldCapacity = 128;
 
+    // Fator de conversão: ticks de Environment.TickCount64 são em ms; a latência é registrada em µs.
+    // TickCount64 usa resolução de ~1 ms. Para sub-ms use Stopwatch.GetTimestamp() se disponível.
+    private const double TicksToMicroseconds = 1_000.0; // ms → µs
+
     private readonly RouteResolver _routeResolver;
     private readonly FanOutEngine _fanOutEngine;
     private readonly DispatchPayloadPool _payloadPool;
     private readonly ILogger<RouterEngine> _logger;
+    private readonly NexusRouterMetrics _metrics;
     private long _routingSequence;
 
     /// <summary>
@@ -30,22 +37,26 @@ public sealed class RouterEngine : IMessageRouter
     /// <param name="fanOutEngine">Entrega aos dispatchers.</param>
     /// <param name="payloadPool">Pool de envelopes.</param>
     /// <param name="logger">Avisos de rota ausente e de reescrita recusada.</param>
+    /// <param name="metrics">Instrumentação de métricas do hot path.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     public RouterEngine(
         RouteResolver routeResolver,
         FanOutEngine fanOutEngine,
         DispatchPayloadPool payloadPool,
-        ILogger<RouterEngine> logger)
+        ILogger<RouterEngine> logger,
+        NexusRouterMetrics metrics)
     {
         ArgumentNullException.ThrowIfNull(routeResolver);
         ArgumentNullException.ThrowIfNull(fanOutEngine);
         ArgumentNullException.ThrowIfNull(payloadPool);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(metrics);
 
         _routeResolver = routeResolver;
         _fanOutEngine = fanOutEngine;
         _payloadPool = payloadPool;
         _logger = logger;
+        _metrics = metrics;
     }
 
     /// <summary>
@@ -61,12 +72,23 @@ public sealed class RouterEngine : IMessageRouter
     /// o tipo contém <see cref="ReadOnlyMemory{T}"/> e não pode ser alocado na stack.
     /// No modo <see cref="DeliveryMode.PassThrough"/>, a tag 34 é reescrita com o MsgSeqNum inbound
     /// já presente no frame. O dispatcher FIX outbound aplica o sequence number da própria sessão depois.
+    /// Zero allocation. Safe to call on the hot path.
     /// </remarks>
     public void Route(in IngressFrame frame)
     {
+        // Contabiliza recebimento por sessão — TagList é uma struct, sem alocação.
+        TagList receivedTags = new TagList { { "session_id", frame.SessionId.Value } };
+        _metrics.MessagesReceived.Add(1, receivedTags);
+
         if (!_routeResolver.TryResolve(frame.SessionId, out RouteContext route))
         {
             _logger.LogWarning("Sessão {SessionId} não tem rota.", frame.SessionId.Value);
+            TagList droppedTags = new TagList
+            {
+                { "session_id", frame.SessionId.Value },
+                { "reason", "no_route" },
+            };
+            _metrics.MessagesDropped.Add(1, droppedTags);
             return;
         }
 
@@ -109,6 +131,11 @@ public sealed class RouterEngine : IMessageRouter
 
         payload.EgressTimestampTicks = Environment.TickCount64;
         _fanOutEngine.Dispatch(ref route, payload);
+
+        // Histograma de latência: TickCount64 é em ms; convertemos para µs.
+        double latencyMicroseconds =
+            (payload.EgressTimestampTicks - frame.IngressTimestampTicks) * TicksToMicroseconds;
+        _metrics.HotPathLatencyMicroseconds.Record(latencyMicroseconds, receivedTags);
     }
 
     private ArrayPoolMemoryOwner<byte>? RentFrame(in IngressFrame frame)

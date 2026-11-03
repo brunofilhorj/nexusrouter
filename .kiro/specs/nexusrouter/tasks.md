@@ -689,7 +689,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 7 — Observabilidade e Benchmarks
 
-- [ ] T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
+- [x] T-33 — Implementar Instrumentação com `System.Diagnostics.Metrics`
 
 **Objetivo:** Adicionar métricas de runtime para throughput, latência e profundidade de fila.
 

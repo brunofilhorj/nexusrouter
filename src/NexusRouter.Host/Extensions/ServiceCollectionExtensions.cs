@@ -135,6 +135,7 @@ public static class ServiceCollectionExtensions
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
         services.AddSingleton<DispatchPayloadPool>();
+        services.AddSingleton<NexusRouterMetrics>();
 
         // FanOutEngine recebe Channel<AuditRecord> diretamente via AuditChannelSingleton.
         services.AddSingleton<FanOutEngine>(sp =>
@@ -142,7 +143,8 @@ public static class ServiceCollectionExtensions
             AuditChannelSingleton auditSingleton = sp.GetRequiredService<AuditChannelSingleton>();
             DispatchPayloadPool pool = sp.GetRequiredService<DispatchPayloadPool>();
             ILogger<FanOutEngine> logger = sp.GetRequiredService<ILogger<FanOutEngine>>();
-            return new FanOutEngine(auditSingleton.Instance, pool, logger);
+            NexusRouterMetrics metrics = sp.GetRequiredService<NexusRouterMetrics>();
+            return new FanOutEngine(auditSingleton.Instance, pool, logger, metrics);
         });
 
         // RouteResolver: monta a tabela de roteamento congelada resolvendo dispatchers pelo Id.
@@ -186,7 +188,15 @@ public static class ServiceCollectionExtensions
             return new RouteResolver(routes, logger);
         });
 
-        services.AddSingleton<RouterEngine>();
+        services.AddSingleton<RouterEngine>(sp =>
+        {
+            RouteResolver resolver = sp.GetRequiredService<RouteResolver>();
+            FanOutEngine fanOut = sp.GetRequiredService<FanOutEngine>();
+            DispatchPayloadPool pool = sp.GetRequiredService<DispatchPayloadPool>();
+            ILogger<RouterEngine> logger = sp.GetRequiredService<ILogger<RouterEngine>>();
+            NexusRouterMetrics metrics = sp.GetRequiredService<NexusRouterMetrics>();
+            return new RouterEngine(resolver, fanOut, pool, logger, metrics);
+        });
         services.AddSingleton<IMessageRouter>(sp => sp.GetRequiredService<RouterEngine>());
 
         return services;
