@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Pooling;
 using NexusRouter.Ingress.Sessions;
 
 namespace NexusRouter.Egress.Fix;
@@ -50,8 +51,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     public FixOutboundDispatcher(
         string dispatcherId,
         FixOutboundDispatcherOptions options,
-        ILogger<FixOutboundDispatcher> logger)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, logger)
+        ILogger<FixOutboundDispatcher> logger,
+        DispatchPayloadPool payloadPool)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
         _acceptRetry = new ExponentialBackoffReconnectPolicy(
             options.AcceptRetryBaseDelay,

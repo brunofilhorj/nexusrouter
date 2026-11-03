@@ -3,6 +3,7 @@ using System.Threading.Channels;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -135,7 +136,7 @@ public static class ServiceCollectionExtensions
 
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
-        services.AddSingleton<DispatchPayloadPool>();
+        services.TryAddSingleton<DispatchPayloadPool>();
         services.AddSingleton<NexusRouterMetrics>();
 
         // FanOutEngine recebe Channel<AuditRecord> diretamente via AuditChannelSingleton.
@@ -221,6 +222,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        services.TryAddSingleton<DispatchPayloadPool>();
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
         foreach (DispatcherOptions dispatcherOptions in options.Dispatchers)
@@ -402,7 +404,8 @@ public static class ServiceCollectionExtensions
                 PartitionCount = config.PartitionCount,
             };
             ILogger<KafkaMessageDispatcher> logger = sp.GetRequiredService<ILogger<KafkaMessageDispatcher>>();
-            return new KafkaMessageDispatcher(config.Id, opts, logger);
+            DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
+            return new KafkaMessageDispatcher(config.Id, opts, logger, payloadPool);
         });
 
         // Expõe como IMessageDispatcher para que o RouteResolver e o DispatcherAuditObserver resolvam.
@@ -428,7 +431,8 @@ public static class ServiceCollectionExtensions
                 PrefetchCount = config.PrefetchCount,
             };
             ILogger<RabbitMQMessageDispatcher> logger = sp.GetRequiredService<ILogger<RabbitMQMessageDispatcher>>();
-            return new RabbitMQMessageDispatcher(config.Id, opts, logger);
+            DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
+            return new RabbitMQMessageDispatcher(config.Id, opts, logger, payloadPool);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<RabbitMQMessageDispatcher>());
@@ -460,7 +464,8 @@ public static class ServiceCollectionExtensions
                 AcceptRetryJitterFactor = config.AcceptRetryJitterFactor,
             };
             ILogger<FixOutboundDispatcher> logger = sp.GetRequiredService<ILogger<FixOutboundDispatcher>>();
-            return new FixOutboundDispatcher(config.Id, opts, logger);
+            DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
+            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());
@@ -517,4 +522,3 @@ public static class ServiceCollectionExtensions
             _ => Npgsql.SslMode.Disable,
         };
 }
-

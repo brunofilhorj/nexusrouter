@@ -4,6 +4,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Pooling;
 
 namespace NexusRouter.Egress.RabbitMQ;
 
@@ -32,8 +33,9 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
     public RabbitMQMessageDispatcher(
         string dispatcherId,
         RabbitMQDispatcherOptions options,
-        ILogger<RabbitMQMessageDispatcher> logger)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, logger)
+        ILogger<RabbitMQMessageDispatcher> logger,
+        DispatchPayloadPool payloadPool)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
     }
 
