@@ -816,7 +816,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
+- [x] T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
 
 **Objetivo:** Teste de roteamento end-to-end com stubs de dispatcher em memória.
 
