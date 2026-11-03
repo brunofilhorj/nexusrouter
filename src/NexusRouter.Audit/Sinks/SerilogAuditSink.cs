@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using NexusRouter.Domain.Models;
 
 using Serilog;
@@ -16,8 +18,9 @@ namespace NexusRouter.Audit.Sinks;
 public sealed class SerilogAuditSink : IAuditSink
 {
     private const string Template =
-        "Auditoria {SessionId} {IngressTimestampTicks} {MsgType} {ClOrdId} {MsgSeqNum} {DeliveryMode} {@DispatcherIds} {EgressTimestampTicks} {WasDropped} {DropReason} {RawFixLength} {LifecycleState} {LifecycleDetail} {LifecycleTimestamp}";
+        "Auditoria {SessionId} {IngressTimestampMicroseconds} {MsgType} {ClOrdId} {MsgSeqNum} {DeliveryMode} {@DispatcherIds} {EgressTimestampMicroseconds} {WasDropped} {DropReason} {RawFixLength} {LifecycleState} {LifecycleDetail} {LifecycleTimestamp}";
 
+    private static readonly double MicrosecondsPerTick = 1_000_000.0 / Stopwatch.Frequency;
     private readonly SerilogAuditSinkOptions? _options;
     private readonly ILogger _logger;
     private Logger? _owned;
@@ -81,13 +84,13 @@ public sealed class SerilogAuditSink : IAuditSink
                 level,
                 Template,
                 record.SessionId.Value,
-                record.IngressTimestampTicks,
+                ToMicroseconds(record.IngressTimestampTicks),
                 record.MsgType,
                 record.ClOrdId,
                 record.MsgSeqNum,
                 record.DeliveryMode,
                 record.DispatcherIds,
-                record.EgressTimestampTicks,
+                ToMicroseconds(record.EgressTimestampTicks),
                 record.WasDropped,
                 record.DropReason,
                 record.RawFix?.Length ?? 0,
@@ -98,6 +101,8 @@ public sealed class SerilogAuditSink : IAuditSink
 
         return ValueTask.CompletedTask;
     }
+
+    private static long ToMicroseconds(long stopwatchTicks) => (long)(stopwatchTicks * MicrosecondsPerTick);
 
     /// <inheritdoc />
     public ValueTask StopAsync(CancellationToken cancellationToken)

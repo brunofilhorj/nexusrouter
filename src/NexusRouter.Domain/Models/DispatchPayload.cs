@@ -42,7 +42,7 @@ public sealed class DispatchPayload
     public IMemoryOwner<byte>? RawBuffer { get; set; }
 
     /// <summary>
-    /// Instante de ingresso, em ticks do relógio usado pela sessão.
+    /// Instante de ingresso, em ticks de <see cref="System.Diagnostics.Stopwatch"/>.
     /// </summary>
     public long IngressTimestampTicks { get; set; }
 
@@ -52,7 +52,7 @@ public sealed class DispatchPayload
     public long RoutingSequence { get; set; }
 
     /// <summary>
-    /// Instante em que o router concluiu o fan-out, em ticks do mesmo relógio de ingresso.
+    /// Instante antes do fan-out, em ticks de <see cref="System.Diagnostics.Stopwatch"/>.
     /// </summary>
     public long EgressTimestampTicks { get; set; }
 

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -95,7 +97,7 @@ public sealed class DispatcherAuditObserver : IHostedService
             WasDropped = true,
             DropReason = exception.Message,
             DispatcherIds = string.IsNullOrEmpty(dispatcherId) ? [] : [dispatcherId],
-            IngressTimestampTicks = Environment.TickCount64,
+            IngressTimestampTicks = Stopwatch.GetTimestamp(),
         };
 
         if (_writer.TryWrite(record))

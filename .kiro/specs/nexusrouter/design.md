@@ -364,7 +364,7 @@ ISessionFrameDecoder
 IngressFrame (ref struct)
 ├── SessionId        : SessionId           // Value type — sem alocação heap
 ├── RawBuffer        : ReadOnlySequence<byte>  // Slice no buffer do PipeReader
-├── IngressTimestamp : long                // Environment.TickCount64 ou timestamp RDTSC
+├── IngressTimestamp : long                // Stopwatch.GetTimestamp ticks; Serilog publica µs
 └── FrameLength      : int
 ```
 
@@ -376,7 +376,8 @@ DispatchPayload
 ├── DeliveryMode     : DeliveryMode        // PassThrough | Parse
 ├── RawBuffer        : IMemoryOwner<byte>  // Alugado do ArrayPool; dispatcher responsável pelo dispose
 ├── ParsedMessage    : FixMessage?         // Não nulo apenas quando DeliveryMode == Parse
-├── IngressTimestamp : long
+├── IngressTimestamp : long                // Stopwatch.GetTimestamp ticks; Serilog publica µs
+├── EgressTimestamp  : long                // Stopwatch.GetTimestamp ticks; Serilog publica µs
 └── RoutingSequence  : long               // Sequência interna para ordenação/dedup
 ```
 

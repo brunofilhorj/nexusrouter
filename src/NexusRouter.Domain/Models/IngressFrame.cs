@@ -16,7 +16,7 @@ public readonly ref struct IngressFrame
     /// </summary>
     /// <param name="sessionId">Sessão que recebeu os bytes.</param>
     /// <param name="rawBuffer">Fatia do buffer do pipe que contém o frame.</param>
-    /// <param name="ingressTimestampTicks">Instante de ingresso, em ticks de <see cref="Environment.TickCount64"/> ou de um relógio equivalente.</param>
+    /// <param name="ingressTimestampTicks">Instante de ingresso retornado por <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/>.</param>
     /// <param name="frameLength">Comprimento do frame em bytes.</param>
     public IngressFrame(SessionId sessionId, ReadOnlySequence<byte> rawBuffer, long ingressTimestampTicks, int frameLength)
     {
@@ -37,7 +37,7 @@ public readonly ref struct IngressFrame
     public ReadOnlySequence<byte> RawBuffer { get; }
 
     /// <summary>
-    /// Instante de ingresso, em ticks do relógio usado pela sessão.
+    /// Instante de ingresso, em ticks de <see cref="System.Diagnostics.Stopwatch"/>.
     /// </summary>
     public long IngressTimestampTicks { get; }
 
