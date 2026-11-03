@@ -764,7 +764,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 8 — Testes
 
-- [ ] T-37 — Testes Unitários: Camada de Domínio
+- [x] T-37 — Testes Unitários: Camada de Domínio
 
 **Objetivo:** Testar todos os value types de domínio, utilitários de pooling e enumerações.
 
