@@ -709,7 +709,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
+- [x] T-34 — Implementar Endpoint de Métricas OpenTelemetry / Prometheus
 
 **Objetivo:** Expor métricas no formato de scrape Prometheus.
 

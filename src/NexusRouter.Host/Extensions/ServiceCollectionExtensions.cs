@@ -27,6 +27,7 @@ using EgressFixOptions = NexusRouter.Egress.Fix.FixOutboundDispatcherOptions;
 using AuditSerilogOptions = NexusRouter.Audit.SerilogAuditSinkOptions;
 using AuditPostgresOptions = NexusRouter.Audit.PostgresAuditSinkOptions;
 using AuditCoreOptions = NexusRouter.Audit.AuditOptions;
+using DomainRouteContext = NexusRouter.Domain.Models.RouteContext;
 
 namespace NexusRouter.Host.Extensions;
 
@@ -159,7 +160,7 @@ public static class ServiceCollectionExtensions
 
             ILogger<RouteResolver> logger = sp.GetRequiredService<ILogger<RouteResolver>>();
 
-            List<RouteContext> routes = [];
+            List<DomainRouteContext> routes = [];
             foreach (HostSessionOptions sessionOpts in options.Sessions)
             {
                 var sessionId = new SessionId(sessionOpts.SessionId);
@@ -182,7 +183,7 @@ public static class ServiceCollectionExtensions
                     }
                 }
 
-                routes.Add(new RouteContext(sessionId, sessionOpts.DeliveryMode, builders.ToImmutable()));
+                routes.Add(new DomainRouteContext(sessionId, sessionOpts.DeliveryMode, builders.ToImmutable()));
             }
 
             return new RouteResolver(routes, logger);

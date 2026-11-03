@@ -1,6 +1,11 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Host.Extensions;
+
+using OpenTelemetry.Metrics;
 
 using Serilog;
 
@@ -10,6 +15,8 @@ namespace NexusRouter.Host;
 /// Entry point do processo NexusRouter.
 /// </summary>
 /// <remarks>
+/// Usa <see cref="WebApplication"/> para expor o endpoint <c>/metrics</c> (scrape Prometheus)
+/// enquanto mantém o pipeline FIX intacto via Generic Host.
 /// A ordem de registro dos tiers define a ordem inversa de shutdown:
 /// Ingress para primeiro → Egress drena → Audit writer drena por último.
 /// </remarks>
@@ -17,8 +24,7 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        // Bootstrap do Serilog via arquivo de configuração, antes do host ser construído,
-        // para que erros de inicialização (falha de validação, exceções de DI) também sejam capturados.
+        // Bootstrap do Serilog antes do host, para capturar erros de inicialização (DI, validação).
         Log.Logger = new LoggerConfiguration()
             .WriteTo.Console()
             .CreateBootstrapLogger();
@@ -27,8 +33,8 @@ internal static class Program
 
         try
         {
-            IHost host = BuildHost(args);
-            await host.RunAsync().ConfigureAwait(false);
+            WebApplication app = BuildWebApplication(args);
+            await app.RunAsync().ConfigureAwait(false);
             return 0;
         }
         catch (Exception ex)
@@ -43,25 +49,40 @@ internal static class Program
         }
     }
 
-    private static IHost BuildHost(string[] args) =>
-        Microsoft.Extensions.Hosting.Host
-            .CreateDefaultBuilder(args)
-            .UseSerilog((context, services, configuration) =>
-                configuration.ReadFrom.Configuration(context.Configuration))
-            .ConfigureServices((context, services) =>
+    private static WebApplication BuildWebApplication(string[] args)
+    {
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+        // Serilog: lê configuração do appsettings.json.
+        builder.Host.UseSerilog((context, services, configuration) =>
+            configuration.ReadFrom.Configuration(context.Configuration));
+
+        // OpenTelemetry: registra o SDK com o exporter Prometheus.
+        // O SDK coleta métricas do Meter "NexusRouter" (NexusRouterMetrics).
+        builder.Services
+            .AddOpenTelemetry()
+            .WithMetrics(metrics =>
             {
-                // A ordem de chamada define a ordem de registro de IHostedService.
-                // O Generic Host para os IHostedServices na ordem inversa ao registro,
-                // portanto: Audit último a registrar → primeiro a parar no shutdown.
-                // Sequência de shutdown: Ingress → Egress → Audit.
-                services
-                    .AddNexusRouterAudit(context.Configuration)
-                    .AddNexusRouterEgress(context.Configuration)
-                    .AddNexusRouterRouter(context.Configuration)
-                    .AddNexusRouterIngress(context.Configuration);
-            })
-            .UseConsoleLifetime()
-            .Build();
+                metrics
+                    .AddMeter("NexusRouter")
+                    .AddPrometheusExporter();
+            });
+
+        // Tiers do NexusRouter — ordem define sequência inversa de shutdown.
+        // Sequência de shutdown: Ingress → Egress → Audit (Audit último a registrar, primeiro a parar).
+        builder.Services
+            .AddNexusRouterAudit(builder.Configuration)
+            .AddNexusRouterEgress(builder.Configuration)
+            .AddNexusRouterRouter(builder.Configuration)
+            .AddNexusRouterIngress(builder.Configuration);
+
+        WebApplication app = builder.Build();
+
+        // Endpoint de scrape Prometheus — não interfere no hot path FIX.
+        app.MapPrometheusScrapingEndpoint("/metrics");
+
+        return app;
+    }
 
     /// <summary>
     /// Captura exceções não tratadas de threads de background e de pool de threads.
