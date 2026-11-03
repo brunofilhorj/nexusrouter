@@ -50,6 +50,12 @@ public sealed class SessionOptions : IValidateOptions<SessionOptions>
     public FrameDecoderKind FrameDecoder { get; init; } = FrameDecoderKind.Fix44;
 
     /// <summary>
+    /// Tempo máximo aguardando o encerramento da sessão no shutdown, em segundos.
+    /// Após esse prazo o host cancela a espera e segue o shutdown.
+    /// </summary>
+    public int ShutdownTimeoutSeconds { get; init; } = 5;
+
+    /// <summary>
     /// TLS do socket de ingresso. Desligado por omissão.
     /// </summary>
     public TlsOptions Tls { get; init; } = new();

@@ -3,6 +3,7 @@ using System.Threading.Channels;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Audit;
@@ -94,6 +95,7 @@ public static class ServiceCollectionExtensions
                     TlsEnabled = captured.Tls.Enabled,
                     TlsCertificatePath = captured.Tls.CertificatePath,
                     TlsCertificatePasswordEnvVar = captured.Tls.CertificatePasswordEnvVar,
+                    ShutdownTimeoutSeconds = captured.ShutdownTimeoutSeconds,
                 };
 
                 IMessageRouter router = sp.GetRequiredService<IMessageRouter>();
@@ -232,6 +234,10 @@ public static class ServiceCollectionExtensions
             }
         }
 
+        // Registra o serviço que gerencia o ciclo de vida (Start/Stop) de todos os dispatchers.
+        // Está no tier de Egress para parar antes do Audit writer no shutdown.
+        services.AddSingleton<IHostedService, DispatcherLifetimeService>();
+
         return services;
     }
 
@@ -318,7 +324,7 @@ public static class ServiceCollectionExtensions
             return new AuditWriterService(singleton.Instance, sinks, logger, core);
         });
 
-        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+        services.AddSingleton<IHostedService>(
             sp => sp.GetRequiredService<AuditWriterService>());
 
         // DispatcherAuditObserver assina os erros de dispatch de todos os dispatchers.
@@ -330,7 +336,7 @@ public static class ServiceCollectionExtensions
             return new DispatcherAuditObserver(writer, dispatchers, logger);
         });
 
-        services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(
+        services.AddSingleton<IHostedService>(
             sp => sp.GetRequiredService<DispatcherAuditObserver>());
 
         return services;
