@@ -127,7 +127,8 @@ public sealed class FixOutboundDispatcherTests
                 HeartBtInt = 30,
                 LogonTimeout = TimeSpan.FromSeconds(2),
             },
-            NullLogger<FixOutboundDispatcher>.Instance);
+            NullLogger<FixOutboundDispatcher>.Instance,
+            new DispatchPayloadPool());
         await dispatcher.StartAsync(CancellationToken.None);
         Assert.True(dispatcher.IsHealthy);
         return dispatcher;

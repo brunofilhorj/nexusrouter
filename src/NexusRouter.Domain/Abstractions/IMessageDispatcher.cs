@@ -37,11 +37,12 @@ public interface IMessageDispatcher
     /// <summary>
     /// Tenta enfileirar um payload sem bloquear a thread chamadora.
     /// </summary>
-    /// <param name="payload">Mensagem já preparada pelo router. O dispatcher passa a ser responsável pelo buffer quando o retorno é <see langword="true"/>.</param>
+    /// <param name="payload">Mensagem já preparada pelo router. O dispatcher assume o payload e o buffer quando o retorno é <see langword="true"/>.</param>
     /// <returns><see langword="true"/> quando o payload foi aceito; <see langword="false"/> quando o channel está cheio ou o dispatcher recusou a mensagem.</returns>
     /// <remarks>
     /// Não bloqueia e não aloca. Seguro para chamada no hot path.
     /// Channel cheio ou dispatcher indisponível retorna <see langword="false"/>; essa recusa não é comunicada por exceção.
+    /// Quando o retorno é <see langword="true"/>, o dispatcher mantém o payload até terminar de usá-lo e então libera seus recursos.
     /// Quando o retorno é <see langword="false"/>, o chamador continua dono do payload e do buffer.
     /// </remarks>
     bool TryEnqueue(DispatchPayload payload);

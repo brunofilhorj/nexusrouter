@@ -45,7 +45,8 @@ public class RouterEngineBenchmark
     public void GlobalSetup()
     {
         _sessionId = new SessionId("BENCH-SESSION");
-        var dispatcher = new DiscardingDispatcher("bench-dispatcher");
+        var payloadPool = new DispatchPayloadPool();
+        var dispatcher = new DiscardingDispatcher("bench-dispatcher", payloadPool);
 
         var routes = new List<RouteContext>
         {
@@ -56,8 +57,6 @@ public class RouterEngineBenchmark
         };
 
         var resolver = new RouteResolver(routes, NullLogger<RouteResolver>.Instance);
-        var payloadPool = new DispatchPayloadPool();
-
         // Channel de auditoria com capacidade mínima (descarta overflow silenciosamente).
         var auditChannel = Channel.CreateBounded<AuditRecord>(new BoundedChannelOptions(64)
         {
@@ -109,7 +108,13 @@ public class RouterEngineBenchmark
     /// </summary>
     private sealed class DiscardingDispatcher : IMessageDispatcher
     {
-        public DiscardingDispatcher(string id) => DispatcherId = id;
+        private readonly DispatchPayloadPool _payloadPool;
+
+        public DiscardingDispatcher(string id, DispatchPayloadPool payloadPool)
+        {
+            DispatcherId = id;
+            _payloadPool = payloadPool;
+        }
 
         public string DispatcherId { get; }
         public bool IsHealthy => true;
@@ -126,6 +131,7 @@ public class RouterEngineBenchmark
             // Libera o buffer imediatamente para manter o pool operante durante o benchmark.
             payload.RawBuffer?.Dispose();
             payload.RawBuffer = null;
+            _payloadPool.Return(payload);
             return true;
         }
     }

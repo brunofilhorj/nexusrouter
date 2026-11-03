@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Pooling;
 
 namespace NexusRouter.Egress;
 
@@ -15,7 +16,8 @@ namespace NexusRouter.Egress;
 /// <remarks>
 /// <para>
 /// <see cref="TryEnqueue"/> só escreve no channel. A publicação acontece na task de consumo.
-/// Uma falha de envio é registrada e o loop segue. O buffer do payload é sempre liberado.
+/// Uma falha de envio é registrada e o loop segue. Depois do envio ou descarte, o buffer é liberado
+/// e o payload é devolvido ao pool compartilhado.
 /// </para>
 /// <para>
 /// A continuação do channel não roda na thread que chamou <see cref="TryEnqueue"/>.
@@ -27,6 +29,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly Channel<DispatchPayload> _channel;
+    private readonly DispatchPayloadPool _payloadPool;
     private readonly ILogger _logger;
     private int _healthy;
     private CancellationTokenSource? _consumeCts;
@@ -40,19 +43,27 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     /// <param name="dispatcherId">Nome único, usado na rota e na auditoria.</param>
     /// <param name="options">Options já validadas pela implementação.</param>
     /// <param name="channelCapacity">Quantidade máxima de payloads no channel.</param>
+    /// <param name="payloadPool">Pool compartilhado de envelopes.</param>
     /// <param name="logger">Log do loop de consumo.</param>
     /// <exception cref="ArgumentException"><paramref name="dispatcherId"/> é vazio.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="options"/> ou <paramref name="logger"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="channelCapacity"/> não é positivo.</exception>
-    protected DispatcherBase(string dispatcherId, TOptions options, int channelCapacity, ILogger logger)
+    protected DispatcherBase(
+        string dispatcherId,
+        TOptions options,
+        int channelCapacity,
+        DispatchPayloadPool payloadPool,
+        ILogger logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dispatcherId);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(payloadPool);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(channelCapacity);
 
         DispatcherId = dispatcherId;
         Options = options;
+        _payloadPool = payloadPool;
         _logger = logger;
         _channel = Channel.CreateBounded<DispatchPayload>(new BoundedChannelOptions(channelCapacity)
         {
@@ -232,6 +243,8 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
                     ReleasePayload(payload);
                 }
             }
+
+            ReleasePending();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -257,11 +270,11 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
         }
     }
 
-    private static void ReleasePayload(DispatchPayload payload)
+    private void ReleasePayload(DispatchPayload payload)
     {
         IMemoryOwner<byte>? buffer = payload.RawBuffer;
         payload.RawBuffer = null;
         buffer?.Dispose();
-        payload.Reset();
+        _payloadPool.Return(payload);
     }
 }

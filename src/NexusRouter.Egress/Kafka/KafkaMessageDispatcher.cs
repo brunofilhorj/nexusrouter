@@ -3,6 +3,7 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Pooling;
 
 namespace NexusRouter.Egress.Kafka;
 
@@ -35,8 +36,9 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         string dispatcherId,
         KafkaDispatcherOptions options,
         ILogger<KafkaMessageDispatcher> logger,
+        DispatchPayloadPool payloadPool,
         IKafkaPartitionStrategy? partitionStrategy = null)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, logger)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
         _partitionStrategy = partitionStrategy ?? CreateStrategy(options);
     }
