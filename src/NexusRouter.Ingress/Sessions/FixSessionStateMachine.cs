@@ -21,8 +21,19 @@ public sealed class FixSessionStateMachine
     private static readonly byte[] SequenceResetReply = "35=4\x01"u8.ToArray();
     private static readonly byte[] LogoutReply = "35=5\x01"u8.ToArray();
 
+    private readonly TimeProvider _timeProvider;
     private int _state = (int)SessionState.Disconnected;
-    private long _lastHeartbeatReceivedTicks = Environment.TickCount64;
+    private long _lastHeartbeatReceivedTicks;
+
+    /// <summary>
+    /// Cria a máquina de estados usando o provedor de tempo informado ou o relógio do sistema.
+    /// </summary>
+    /// <param name="timeProvider">Relógio monotônico usado para medir o silêncio da sessão.</param>
+    public FixSessionStateMachine(TimeProvider? timeProvider = null)
+    {
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _lastHeartbeatReceivedTicks = _timeProvider.GetTimestamp();
+    }
 
     /// <summary>
     /// Estado atual da sessão.
@@ -101,7 +112,7 @@ public sealed class FixSessionStateMachine
     /// <remarks>
     /// A leitura do relógio não usa <c>lock</c>. O limite é
     /// <c>missedHeartbeatThreshold × heartbeatIntervalSeconds</c> segundos, medido com
-    /// <see cref="Environment.TickCount64"/>.
+    /// <see cref="TimeProvider.GetTimestamp"/> e <see cref="TimeProvider.GetElapsedTime(long)"/>.
     /// </remarks>
     public bool IsHeartbeatStale(int missedHeartbeatThreshold, int heartbeatIntervalSeconds)
     {
@@ -109,13 +120,13 @@ public sealed class FixSessionStateMachine
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(heartbeatIntervalSeconds);
 
         var lastTicks = Volatile.Read(ref _lastHeartbeatReceivedTicks);
-        var elapsedMilliseconds = Environment.TickCount64 - lastTicks;
-        if (elapsedMilliseconds < 0L)
+        double elapsedMilliseconds = _timeProvider.GetElapsedTime(lastTicks).TotalMilliseconds;
+        if (elapsedMilliseconds < 0d)
         {
             return false;
         }
 
-        var limitMilliseconds = (long)missedHeartbeatThreshold * heartbeatIntervalSeconds * 1000L;
+        double limitMilliseconds = (double)missedHeartbeatThreshold * heartbeatIntervalSeconds * 1000d;
         return elapsedMilliseconds >= limitMilliseconds;
     }
 
@@ -126,7 +137,7 @@ public sealed class FixSessionStateMachine
     /// A spec FIX trata qualquer mensagem recebida como evidência de vida da sessão, inclusive mensagens de aplicação.
     /// </remarks>
     public void RecordInboundMessage() =>
-        Interlocked.Exchange(ref _lastHeartbeatReceivedTicks, Environment.TickCount64);
+        Interlocked.Exchange(ref _lastHeartbeatReceivedTicks, _timeProvider.GetTimestamp());
 
     /// <summary>
     /// Registra um Heartbeat recebido. Não há resposta de protocolo.

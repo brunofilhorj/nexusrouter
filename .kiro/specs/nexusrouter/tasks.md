@@ -764,7 +764,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ## Fase 8 — Testes
 
-- [ ] T-37 — Testes Unitários: Camada de Domínio
+- [x] T-37 — Testes Unitários: Camada de Domínio
 
 **Objetivo:** Testar todos os value types de domínio, utilitários de pooling e enumerações.
 
@@ -776,7 +776,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
+- [x] T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
 
 **Objetivo:** Verificar a corretude dos dois algoritmos centrais de processamento do hot path.
 
@@ -792,7 +792,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-39 — Testes Unitários: `FixSessionStateMachine`
+- [x] T-39 — Testes Unitários: `FixSessionStateMachine`
 
 **Objetivo:** Verificar transições de estado, rejeição de transições ilegais e detecção de staleness de heartbeat.
 
@@ -804,7 +804,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-40 — Testes Unitários: `ExponentialBackoffReconnectPolicy`
+- [x] T-40 — Testes Unitários: `ExponentialBackoffReconnectPolicy`
 
 **Objetivo:** Verificar a corretude do cálculo de delay.
 
@@ -816,7 +816,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
+- [x] T-41 — Testes Unitários: `RouterEngine` com Dispatchers Stub
 
 **Objetivo:** Teste de roteamento end-to-end com stubs de dispatcher em memória.
 
@@ -828,7 +828,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
+- [x] T-42 — Testes de Integração: Reconexão e Heartbeat do `FixSession`
 
 **Objetivo:** Testar a lógica de reconexão da sessão e o comportamento de heartbeat sem uma bolsa real.
 

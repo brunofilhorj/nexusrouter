@@ -14,6 +14,7 @@ using NexusRouter.Router;
 
 namespace NexusRouter.Router.Tests;
 
+[Collection("Router engine metrics")]
 public sealed class RouterEngineTests
 {
     private const int IterationCount = 32;
