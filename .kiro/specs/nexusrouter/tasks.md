@@ -776,7 +776,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
+- [x] T-38 — Testes Unitários: `PassThroughRewriter` e `FixTokenizer`
 
 **Objetivo:** Verificar a corretude dos dois algoritmos centrais de processamento do hot path.
 
