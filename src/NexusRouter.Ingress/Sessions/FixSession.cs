@@ -26,7 +26,6 @@ public sealed class FixSession : IHostedService
     private const byte Soh = 0x01;
     private const int MinimumReceiveBytes = 4096;
     private const int AdminMessageBytes = 1024;
-    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly SessionOptions _options;
     private readonly ISessionFrameDecoder _frameDecoder;
@@ -141,7 +140,7 @@ public sealed class FixSession : IHostedService
     /// Pede Logout, cancela o ciclo e espera a thread de longa duração.
     /// </summary>
     /// <param name="cancellationToken">Abandona a espera. O ciclo já foi cancelado.</param>
-    /// <returns>Tarefa concluída quando o ciclo termina ou quando <see cref="StopTimeout"/> expira.</returns>
+    /// <returns>Tarefa concluída quando o ciclo termina ou quando <see cref="SessionOptions.ShutdownTimeoutSeconds"/> expira.</returns>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _logoutRequested, 1);
@@ -153,16 +152,18 @@ public sealed class FixSession : IHostedService
             return;
         }
 
+        TimeSpan stopTimeout = TimeSpan.FromSeconds(_options.ShutdownTimeoutSeconds);
+
         try
         {
-            await runTask.WaitAsync(StopTimeout, cancellationToken).ConfigureAwait(false);
+            await runTask.WaitAsync(stopTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             _logger.LogWarning(
                 "Sessão {SessionId} não encerrou em {TimeoutSeconds}s",
                 _sessionId.Value,
-                StopTimeout.TotalSeconds);
+                stopTimeout.TotalSeconds);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -234,7 +235,7 @@ public sealed class FixSession : IHostedService
     {
         using var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
         socket.NoDelay = true;
-        socket.SendTimeout = (int)StopTimeout.TotalMilliseconds;
+        socket.SendTimeout = (int)TimeSpan.FromSeconds(_options.ShutdownTimeoutSeconds).TotalMilliseconds;
         await socket.ConnectAsync(_options.Host, _options.Port, cancellationToken).ConfigureAwait(false);
 
         TcpClient? tlsClient = null;

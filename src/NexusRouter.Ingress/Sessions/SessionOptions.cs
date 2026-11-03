@@ -54,6 +54,11 @@ public sealed class SessionOptions
     public TimeSpan LogonTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Tempo máximo aguardando o encerramento da sessão no shutdown do host, em segundos.
+    /// </summary>
+    public int ShutdownTimeoutSeconds { get; init; } = 5;
+
+    /// <summary>
     /// Quando <see langword="true"/>, o socket é encapsulado em TLS antes do pipe.
     /// </summary>
     public bool TlsEnabled { get; init; }
