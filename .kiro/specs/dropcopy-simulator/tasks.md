@@ -97,7 +97,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-05 — Implementar `B3FixMessageWriter` (BodyLength + CheckSum)
+- [x] T-05 — Implementar `B3FixMessageWriter` (BodyLength + CheckSum)
 
 **Objetivo:** Escrever campos FIX em um buffer e finalizar `BodyLength (9)` e `CheckSum (10)` conforme a regra B3.
 
