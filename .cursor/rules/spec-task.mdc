@@ -1,18 +1,14 @@
 ---
-description: Fluxo de execução de uma task de qualquer spec em .kiro/specs/
+description: Executar uma task de uma spec
 alwaysApply: false
 ---
-O prompt informa a spec (pasta em .kiro/specs/<spec>/) e o ID da task.
-Os IDs se repetem entre specs: nunca assuma a spec, e se ela não vier no prompt, pergunte.
+Execute a task informada no prompt (spec + ID) seguindo o AGENTS.md.
+Se a spec ou o ID faltarem, pergunte. Nunca assuma a spec.
 
-1. Obtenha a task com `./scripts/task.sh <spec> <ID>`. Não abra o tasks.md inteiro.
-2. Leia apenas os arquivos listados em "Entradas", e só as seções citadas
-   (ex.: §15, Seção 3.2). Localize a seção com grep pelo título, sem abrir o arquivo inteiro.
-   Não leia arquivos de outras specs.
-3. Para tasks que dependem de outras, consulte o código já existente
-   (grep/assinaturas), não a spec das tasks anteriores.
-4. Implemente só os Passos da task. Não antecipe tasks seguintes nem refatore o que não foi pedido.
-5. Rode o build e os testes do projeto afetado e corrija até passar.
-6. Marque `- [x]` da task no tasks.md DESSA spec.
-7. Commit conforme .kiro/specs/<spec>/git-workflow.md, se existir. Sem push.
-8. Resposta final em até 5 linhas: arquivos tocados, resultado de build/testes, desvios da spec.
+Ao final:
+1. Marque `- [x]` da task no tasks.md da spec.
+2. Rode build e testes do projeto afetado até passar, com zero avisos.
+3. Responda em até 5 linhas: arquivos tocados, resultado de build/testes e desvios da spec.
+4. Inclua a mensagem de commit sugerida em pt-BR, no formato do git-workflow.
+
+Não faça commit nem push até eu pedir. Quando eu pedir, siga `.kiro/steering/git-workflow.md`.
