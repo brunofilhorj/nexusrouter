@@ -131,7 +131,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 3 — Acceptor FIX 4.4
 
-- [ ] T-07 — Implementar `FixSessionFsm` (lado acceptor)
+- [x] T-07 — Implementar `FixSessionFsm` (lado acceptor)
 
 **Objetivo:** Máquina de estados de sessão do lado servidor (Logon recebido/respondido).
 
