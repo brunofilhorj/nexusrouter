@@ -24,8 +24,20 @@ public static class FixTags
     /// <summary>MsgSeqNum (tag 34).</summary>
     public const int MsgSeqNum = 34;
 
+    /// <summary>NewSeqNo (tag 36).</summary>
+    public const int NewSeqNo = 36;
+
     /// <summary>MsgType (tag 35).</summary>
     public const int MsgType = 35;
+
+    /// <summary>BeginSeqNo (tag 7).</summary>
+    public const int BeginSeqNo = 7;
+
+    /// <summary>EndSeqNo (tag 16).</summary>
+    public const int EndSeqNo = 16;
+
+    /// <summary>GapFillFlag (tag 123).</summary>
+    public const int GapFillFlag = 123;
 
     /// <summary>SenderCompID (tag 49).</summary>
     public const int SenderCompId = 49;

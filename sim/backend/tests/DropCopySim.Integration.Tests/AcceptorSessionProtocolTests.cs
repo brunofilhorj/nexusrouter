@@ -77,6 +77,80 @@ public sealed class AcceptorSessionProtocolTests
         }
     }
 
+    [Fact]
+    public async Task RunAsync_ResendRequest_SendsGapFillAndAdvancesOutboundSequence()
+    {
+        int port = GetAvailablePort();
+        var service = CreateService(port, heartBtIntSeconds: 20);
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            NetworkStream stream = client.GetStream();
+
+            await stream.WriteAsync(BuildClientFrame("A", 1, (FixTags.HeartBtInt, "20")));
+            string logonAck = await ReadFrameAsync(stream);
+            Assert.Equal("1", GetField(logonAck, FixTags.MsgSeqNum));
+
+            await stream.WriteAsync(BuildClientFrame(
+                "2",
+                2,
+                (FixTags.BeginSeqNo, "2"),
+                (FixTags.EndSeqNo, "4")));
+
+            string gapFill = await ReadFrameAsync(stream);
+            Assert.Equal("4", GetField(gapFill, FixTags.MsgType));
+            Assert.Equal("2", GetField(gapFill, FixTags.MsgSeqNum));
+            Assert.Equal("Y", GetField(gapFill, FixTags.GapFillFlag));
+            Assert.Equal("5", GetField(gapFill, FixTags.NewSeqNo));
+
+            await stream.WriteAsync(BuildClientFrame("1", 3, (FixTags.TestReqId, "after-gap-fill")));
+            string heartbeat = await ReadFrameAsync(stream);
+            Assert.Equal("0", GetField(heartbeat, FixTags.MsgType));
+            Assert.Equal("5", GetField(heartbeat, FixTags.MsgSeqNum));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_AbsoluteSequenceReset_UpdatesExpectedInboundSequence()
+    {
+        int port = GetAvailablePort();
+        var service = CreateService(port, heartBtIntSeconds: 20);
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            NetworkStream stream = client.GetStream();
+
+            await stream.WriteAsync(BuildClientFrame("A", 1, (FixTags.HeartBtInt, "20")));
+            await ReadFrameAsync(stream);
+
+            await stream.WriteAsync(BuildClientFrame(
+                "4",
+                2,
+                (FixTags.GapFillFlag, "N"),
+                (FixTags.NewSeqNo, "10")));
+            await WaitForConditionAsync(() => service.ActiveSession?.NextExpectedInboundMsgSeqNum == 10);
+
+            await stream.WriteAsync(BuildClientFrame("1", 10, (FixTags.TestReqId, "after-reset")));
+            string heartbeat = await ReadFrameAsync(stream);
+            Assert.Equal("0", GetField(heartbeat, FixTags.MsgType));
+            Assert.Equal("after-reset", GetField(heartbeat, FixTags.TestReqId));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static FixAcceptorService CreateService(int port, int heartBtIntSeconds) =>
         new(
             Options.Create(new AcceptorOptions

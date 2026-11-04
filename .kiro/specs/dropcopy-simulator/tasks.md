@@ -201,7 +201,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-11 — Implementar `ResendRequest`/`SequenceReset` (gap-fill básico)
+- [x] T-11 — Implementar `ResendRequest`/`SequenceReset` (gap-fill básico)
 
 **Objetivo:** Recuperação de sequência de nível de sessão FIX.
 

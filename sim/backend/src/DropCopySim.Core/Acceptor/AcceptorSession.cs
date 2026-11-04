@@ -31,6 +31,7 @@ public sealed class AcceptorSession : IAsyncDisposable
     private readonly FixSessionFsm _fsm = new();
     private readonly TaskCompletionSource _logonAccepted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _outboundSeqNum;
+    private long _nextExpectedInboundMsgSeqNum = 1;
     private long _lastOutboundTimestamp;
     private long _lastActivityUtcTicks;
     private string _peerCompId = string.Empty;
@@ -69,6 +70,9 @@ public sealed class AcceptorSession : IAsyncDisposable
     /// Next outbound MsgSeqNum (tag 34). The first allocation returns 1.
     /// </summary>
     public long NextOutboundMsgSeqNum => Volatile.Read(ref _outboundSeqNum) + 1;
+
+    /// <summary>Next inbound MsgSeqNum expected after the most recently received message or SequenceReset.</summary>
+    public long NextExpectedInboundMsgSeqNum => Volatile.Read(ref _nextExpectedInboundMsgSeqNum);
 
     /// <summary>
     /// Raised after this session changes <see cref="Fsm"/> state, for control-plane telemetry.
@@ -247,6 +251,14 @@ public sealed class AcceptorSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         byte[] bytes = frame.ToArray();
+        if (TryGetField(bytes, FixTags.MsgSeqNum, out string inboundSequenceValue)
+            && long.TryParse(inboundSequenceValue, NumberStyles.None, CultureInfo.InvariantCulture, out long inboundSequence)
+            && inboundSequence > 0
+            && inboundSequence < long.MaxValue)
+        {
+            Volatile.Write(ref _nextExpectedInboundMsgSeqNum, inboundSequence + 1);
+        }
+
         bool hasMsgType = TryGetField(bytes, FixTags.MsgType, out string msgType);
 
         if (_fsm.State == AcceptorSessionState.Connected)
@@ -344,6 +356,34 @@ public sealed class AcceptorSession : IAsyncDisposable
                     null,
                     cancellationToken).ConfigureAwait(false);
                 return true;
+            case "2":
+                if (!TryGetSequenceRange(bytes, out long beginSeqNo, out long endSeqNo))
+                {
+                    await SendRejectAsync(_peerCompId, "ResendRequest requires a valid BeginSeqNo and EndSeqNo.", cancellationToken)
+                        .ConfigureAwait(false);
+                    return false;
+                }
+
+                long nextOutboundSeqNo = NextOutboundMsgSeqNum;
+                long newSeqNo = endSeqNo == 0
+                    ? Math.Max(nextOutboundSeqNo, beginSeqNo + 1)
+                    : endSeqNo + 1;
+                await SendSequenceResetAsync(beginSeqNo, newSeqNo, cancellationToken).ConfigureAwait(false);
+                AdvanceOutboundMsgSeqNum(newSeqNo);
+                return true;
+            case "4":
+                if (!TryGetField(bytes, FixTags.NewSeqNo, out string newSeqNoValue)
+                    || !long.TryParse(newSeqNoValue, NumberStyles.None, CultureInfo.InvariantCulture, out long inboundNewSeqNo)
+                    || inboundNewSeqNo <= 0
+                    || !IsValidGapFillFlag(bytes))
+                {
+                    await SendRejectAsync(_peerCompId, "SequenceReset requires a valid NewSeqNo and GapFillFlag.", cancellationToken)
+                        .ConfigureAwait(false);
+                    return false;
+                }
+
+                Volatile.Write(ref _nextExpectedInboundMsgSeqNum, inboundNewSeqNo);
+                return true;
             case "5":
                 await SendAdministrativeMessageAsync(
                     "5",
@@ -362,6 +402,67 @@ public sealed class AcceptorSession : IAsyncDisposable
 
     private ValueTask SendRejectAsync(string targetCompId, string text, CancellationToken cancellationToken) =>
         SendAdministrativeMessageAsync("3", targetCompId, null, null, text, cancellationToken);
+
+    private async ValueTask SendSequenceResetAsync(
+        long beginSeqNo,
+        long newSeqNo,
+        CancellationToken cancellationToken)
+    {
+        int capacity = checked(128 + Options.SenderCompId.Length + _peerCompId.Length);
+        byte[] buffer = new byte[capacity];
+        var messageWriter = new B3FixMessageWriter(buffer);
+        messageWriter.WriteB3Header(
+            "4",
+            Options.SenderCompId,
+            _peerCompId,
+            beginSeqNo,
+            DateTime.UtcNow,
+            beginSeqNo);
+        messageWriter.WriteField(FixTags.GapFillFlag, "Y");
+        messageWriter.WriteField(FixTags.NewSeqNo, newSeqNo);
+
+        int length = messageWriter.Finish();
+        await SendOutbound(buffer.AsSpan(0, length), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool TryGetSequenceRange(ReadOnlySpan<byte> frame, out long beginSeqNo, out long endSeqNo)
+    {
+        beginSeqNo = 0;
+        endSeqNo = 0;
+        if (!TryGetField(frame, FixTags.BeginSeqNo, out string beginValue)
+            || !long.TryParse(beginValue, NumberStyles.None, CultureInfo.InvariantCulture, out beginSeqNo)
+            || beginSeqNo <= 0
+            || beginSeqNo == long.MaxValue
+            || !TryGetField(frame, FixTags.EndSeqNo, out string endValue)
+            || !long.TryParse(endValue, NumberStyles.None, CultureInfo.InvariantCulture, out endSeqNo)
+            || endSeqNo < 0
+            || (endSeqNo != 0 && (endSeqNo < beginSeqNo || endSeqNo == long.MaxValue)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsValidGapFillFlag(ReadOnlySpan<byte> frame) =>
+        !TryGetField(frame, FixTags.GapFillFlag, out string gapFillFlag)
+        || string.Equals(gapFillFlag, "Y", StringComparison.Ordinal)
+        || string.Equals(gapFillFlag, "N", StringComparison.Ordinal);
+
+    private void AdvanceOutboundMsgSeqNum(long nextSequenceNumber)
+    {
+        long target = nextSequenceNumber - 1;
+        long current;
+        do
+        {
+            current = Volatile.Read(ref _outboundSeqNum);
+            if (current >= target)
+            {
+                return;
+            }
+        }
+        while (Interlocked.CompareExchange(ref _outboundSeqNum, target, current) != current);
+    }
 
     private async ValueTask SendAdministrativeMessageAsync(
         string msgType,
