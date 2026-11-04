@@ -1,0 +1,7 @@
+---
+description: Convenções C#/.NET
+globs: ["**/*.cs"]
+alwaysApply: false
+---
+- Evitar alocações em hot paths; preferir `Span<T>`/pooling quando medido.
+- Nullable habilitado; async até o fim, sem `.Result`.

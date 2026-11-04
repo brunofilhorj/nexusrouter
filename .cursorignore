@@ -1,0 +1,43 @@
+# Dependências e builds
+node_modules/
+dist/
+build/
+coverage/
+.next/
+bin/
+obj/
+packages/
+
+# Lockfiles (enormes e inúteis para o modelo)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Logs, dumps e dados
+*.log
+*.dump
+*.sql
+*.csv
+data/
+logs/
+benchmarks/results/
+
+# Binários e mídia
+*.dll
+*.pdb
+*.zip
+*.png
+*.jpg
+*.pdf
+
+# Arquivos gerados
+*.min.js
+*.map
+**/generated/
+**/*.g.cs
+**/Migrations/*.Designer.cs
+
+# Segredos
+.env*
+*.pfx
+secrets/

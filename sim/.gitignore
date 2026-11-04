@@ -1,0 +1,13 @@
+# .NET build outputs (belt-and-suspenders under sim/)
+[Bb]in/
+[Oo]bj/
+
+# Frontend (Vite / Node)
+node_modules/
+dist/
+.vite/
+*.local
+
+# Logs / coverage
+*.log
+coverage/

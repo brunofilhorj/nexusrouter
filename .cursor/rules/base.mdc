@@ -1,0 +1,9 @@
+---
+description: Convenções gerais do projeto
+alwaysApply: true
+---
+- Responda em português; código e comentários em inglês.
+- Mudanças mínimas: não refatore código que eu não pedi.
+- Não crie arquivos de documentação ou testes extras sem eu pedir.
+- Antes de editar mais de 3 arquivos, liste o plano e aguarde.
+- Respostas curtas: sem recapitular o que foi feito.

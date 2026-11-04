@@ -1,0 +1,16 @@
+---
+description: Fluxo de execução de uma task do NexusRouter
+alwaysApply: false
+---
+Specs em .kiro/specs/nexusrouter/ (requirements.md, design.md, tasks.md, git-workflow.md).
+
+1. Obtenha a task com `./scripts/task.sh <ID>`. Não abra o tasks.md inteiro.
+2. Leia apenas as seções de requirements.md e design.md citadas em "Entradas".
+3. Para tasks que dependem de outras, consulte o código já existente
+   (grep/assinaturas), não a spec das tasks anteriores.
+4. Implemente só os Passos da task. Não antecipe tasks seguintes nem refatore o que não foi pedido.
+5. Rode `dotnet build NexusRouter.slnx` e os testes do projeto afetado.
+   Corrija até zero avisos (TreatWarningsAsErrors).
+6. Marque `- [x]` da task no tasks.md.
+7. Commit conforme git-workflow.md. Sem push.
+8. Resposta final em até 5 linhas: arquivos tocados, resultado de build/testes, desvios da spec.

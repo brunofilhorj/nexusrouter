@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DropCopySim.Core/DropCopySim.Core.csproj" />
+    <Project Path="src/DropCopySim.Host/DropCopySim.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DropCopySim.Core.Tests/DropCopySim.Core.Tests.csproj" />
+    <Project Path="tests/DropCopySim.Integration.Tests/DropCopySim.Integration.Tests.csproj" />
+  </Folder>
+</Solution>
