@@ -82,7 +82,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 2 — Núcleo FIX
 
-- [ ] T-04 — Implementar `FixTags` e `Fix44FrameScanner`
+- [x] T-04 — Implementar `FixTags` e `Fix44FrameScanner`
 
 **Objetivo:** Constantes de tags B3 e detecção de limite de frame FIX 4.4.
 
@@ -97,7 +97,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-05 — Implementar `B3FixMessageWriter` (BodyLength + CheckSum)
+- [x] T-05 — Implementar `B3FixMessageWriter` (BodyLength + CheckSum)
 
 **Objetivo:** Escrever campos FIX em um buffer e finalizar `BodyLength (9)` e `CheckSum (10)` conforme a regra B3.
 
@@ -114,7 +114,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-06 — Implementar helpers de header B3 e `Parties`
+- [x] T-06 — Implementar helpers de header B3 e `Parties`
 
 **Objetivo:** Centralizar a escrita do header FIX + campos B3 proprietários e do componente `Parties`.
 
