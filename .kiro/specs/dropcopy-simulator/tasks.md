@@ -164,7 +164,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-09 — Implementar `FixAcceptorService` — `TcpListener` e aceitação
+- [x] T-09 — Implementar `FixAcceptorService` — `TcpListener` e aceitação
 
 **Objetivo:** `IHostedService` que escuta e cria `AcceptorSession` por conexão.
 
