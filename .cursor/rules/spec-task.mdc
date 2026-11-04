@@ -6,7 +6,8 @@ O prompt informa a spec (pasta em .kiro/specs/<spec>/) e o ID da task.
 Os IDs se repetem entre specs: nunca assuma a spec, e se ela não vier no prompt, pergunte.
 
 1. Obtenha a task com `./scripts/task.sh <spec> <ID>`. Não abra o tasks.md inteiro.
-2. Leia apenas as seções de requirements.md e design.md DESSA spec citadas em "Entradas".
+2. Leia apenas os arquivos listados em "Entradas", e só as seções citadas
+   (ex.: §15, Seção 3.2). Localize a seção com grep pelo título, sem abrir o arquivo inteiro.
    Não leia arquivos de outras specs.
 3. Para tasks que dependem de outras, consulte o código já existente
    (grep/assinaturas), não a spec das tasks anteriores.
