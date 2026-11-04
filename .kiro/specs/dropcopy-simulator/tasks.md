@@ -82,7 +82,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 2 — Núcleo FIX
 
-- [ ] T-04 — Implementar `FixTags` e `Fix44FrameScanner`
+- [x] T-04 — Implementar `FixTags` e `Fix44FrameScanner`
 
 **Objetivo:** Constantes de tags B3 e detecção de limite de frame FIX 4.4.
 
