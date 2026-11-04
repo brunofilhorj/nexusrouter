@@ -1,0 +1,7 @@
+---
+description: Convenções TypeScript/NestJS
+globs: ["src/**/*.ts"]
+alwaysApply: false
+---
+- Strict mode; sem `any`.
+- Services recebem dependências por construtor; DTOs validados com class-validator.
