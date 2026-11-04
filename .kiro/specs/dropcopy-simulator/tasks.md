@@ -29,7 +29,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 1 — Scaffold do Backend (`sim/backend`) Isolado
 
-- [ ] T-01 — Inicializar a Solução `DropCopySimulator` e os Projetos .NET 10
+- [x] T-01 — Inicializar a Solução `DropCopySimulator` e os Projetos .NET 10
 
 **Objetivo:** Criar a solução separada do simulador e os projetos esqueleto.
 
@@ -48,7 +48,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-02 — Definir `SimulationConfig`, `AcceptorOptions` e enums de controle
+- [x] T-02 — Definir `SimulationConfig`, `AcceptorOptions` e enums de controle
 
 **Objetivo:** POCOs de configuração fortemente tipados do SimCore.
 
@@ -64,7 +64,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-03 — Definir os tipos de estado e telemetria
+- [x] T-03 — Definir os tipos de estado e telemetria
 
 **Objetivo:** Tipos compartilhados de estado da simulação e eventos de telemetria.
 

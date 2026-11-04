@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>DropCopySim.Host</RootNamespace>
+    <AssemblyName>DropCopySim.Host</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <Description>DropCopy simulator host — Minimal API control plane and FIX acceptor process.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DropCopySim.Core\DropCopySim.Core.csproj" />
+  </ItemGroup>
+
+</Project>
