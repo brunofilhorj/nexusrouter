@@ -1,0 +1,17 @@
+---
+description: Fluxo de execução de uma task de qualquer spec em .kiro/specs/
+alwaysApply: false
+---
+O prompt informa a spec (pasta em .kiro/specs/<spec>/) e o ID da task.
+Os IDs se repetem entre specs: nunca assuma a spec, e se ela não vier no prompt, pergunte.
+
+1. Obtenha a task com `./scripts/task.sh <spec> <ID>`. Não abra o tasks.md inteiro.
+2. Leia apenas as seções de requirements.md e design.md DESSA spec citadas em "Entradas".
+   Não leia arquivos de outras specs.
+3. Para tasks que dependem de outras, consulte o código já existente
+   (grep/assinaturas), não a spec das tasks anteriores.
+4. Implemente só os Passos da task. Não antecipe tasks seguintes nem refatore o que não foi pedido.
+5. Rode o build e os testes do projeto afetado e corrija até passar.
+6. Marque `- [x]` da task no tasks.md DESSA spec.
+7. Commit conforme .kiro/specs/<spec>/git-workflow.md, se existir. Sem push.
+8. Resposta final em até 5 linhas: arquivos tocados, resultado de build/testes, desvios da spec.
