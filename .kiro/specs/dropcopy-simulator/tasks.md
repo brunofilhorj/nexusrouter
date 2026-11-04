@@ -146,7 +146,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-08 — Implementar `AcceptorSession` — socket, leitura e writer outbound
+- [x] T-08 — Implementar `AcceptorSession` — socket, leitura e writer outbound
 
 **Objetivo:** Representar uma conexão aceita com leitura via Pipelines e envio de frames.
 
