@@ -114,7 +114,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-06 — Implementar helpers de header B3 e `Parties`
+- [x] T-06 — Implementar helpers de header B3 e `Parties`
 
 **Objetivo:** Centralizar a escrita do header FIX + campos B3 proprietários e do componente `Parties`.
 

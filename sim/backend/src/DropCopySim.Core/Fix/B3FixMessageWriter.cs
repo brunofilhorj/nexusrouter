@@ -7,6 +7,21 @@ namespace DropCopySim.Core.Fix;
 /// </summary>
 /// <remarks>
 /// <para>
+/// The constructor writes BeginString and a reserved BodyLength. <see cref="WriteB3Header"/>
+/// continues the header in <c>docs/FIX44Entrypoint.xml</c> order: MsgType, SenderCompID,
+/// TargetCompID, MsgSeqNum, SendingTime, and B3 <c>BusinessSeqNum (10016)</c>
+/// (<c>.kiro/steering/b3-guidelines.md</c> §2). Optional header fields such as
+/// AdministrativeMessage (35020) and ProducerID (35036) are written with
+/// <see cref="WriteField(int, string)"/> immediately after the header, before the body.
+/// </para>
+/// <para>
+/// <see cref="WriteMinimumParties(ReadOnlySpan{byte}, ReadOnlySpan{byte}, byte)"/> writes the
+/// <c>Parties</c> component (<c>.kiro/steering/b3-guidelines.md</c> §9) with Clearing Firm
+/// (<c>PartyRole=4</c>) and Client ID (<c>PartyRole=3</c>). Each repeating entry is
+/// PartyID (448), PartyIDSource (447), PartyRole (452), matching
+/// <c>docs/FIX44Entrypoint.xml</c>.
+/// </para>
+/// <para>
 /// CheckSum (tag 10) follows the B3 rule in <c>.kiro/steering/b3-guidelines.md</c> §15:
 /// the sum of every byte from offset 0 up to, but not including, <c>10=</c>, modulo 256,
 /// formatted as exactly three ASCII digits with leading zeros.
@@ -170,6 +185,168 @@ public ref struct B3FixMessageWriter
     }
 
     /// <summary>
+    /// Writes the standard header fields and B3 <c>BusinessSeqNum (10016)</c>.
+    /// BeginString and BodyLength are already written by the constructor.
+    /// </summary>
+    /// <param name="msgType">MsgType (tag 35), for example <c>8</c> or <c>j</c>.</param>
+    /// <param name="senderCompId">SenderCompID (tag 49).</param>
+    /// <param name="targetCompId">TargetCompID (tag 56).</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34). Must be positive.</param>
+    /// <param name="sendingTime">SendingTime (tag 52), formatted as UTC <c>YYYYMMDD-HH:MM:SS.sss</c>.</param>
+    /// <param name="businessSeqNum">BusinessSeqNum (tag 10016). Must be positive.</param>
+    /// <exception cref="ArgumentException">An identifier is empty or not ASCII.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A sequence number is not positive.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteB3Header(
+        string msgType,
+        string senderCompId,
+        string targetCompId,
+        long msgSeqNum,
+        DateTime sendingTime,
+        long businessSeqNum)
+    {
+        ValidateAsciiString(msgType, nameof(msgType));
+        ValidateAsciiString(senderCompId, nameof(senderCompId));
+        ValidateAsciiString(targetCompId, nameof(targetCompId));
+        EnsureSequenceNumbers(msgSeqNum, businessSeqNum);
+        WriteField(FixTags.MsgType, msgType);
+        WriteField(FixTags.SenderCompId, senderCompId);
+        WriteField(FixTags.TargetCompId, targetCompId);
+        WriteField(FixTags.MsgSeqNum, msgSeqNum);
+        WriteUtcTimestamp(FixTags.SendingTime, sendingTime);
+        WriteField(FixTags.BusinessSeqNum, businessSeqNum);
+    }
+
+    /// <summary>
+    /// Writes the standard header fields and B3 <c>BusinessSeqNum (10016)</c>.
+    /// BeginString and BodyLength are already written by the constructor.
+    /// </summary>
+    /// <param name="msgType">MsgType (tag 35) bytes.</param>
+    /// <param name="senderCompId">SenderCompID (tag 49) bytes.</param>
+    /// <param name="targetCompId">TargetCompID (tag 56) bytes.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34). Must be positive.</param>
+    /// <param name="sendingTime">SendingTime (tag 52), formatted as UTC <c>YYYYMMDD-HH:MM:SS.sss</c>.</param>
+    /// <param name="businessSeqNum">BusinessSeqNum (tag 10016). Must be positive.</param>
+    /// <exception cref="ArgumentException">An identifier is empty or not ASCII.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A sequence number is not positive.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteB3Header(
+        scoped ReadOnlySpan<byte> msgType,
+        scoped ReadOnlySpan<byte> senderCompId,
+        scoped ReadOnlySpan<byte> targetCompId,
+        long msgSeqNum,
+        DateTime sendingTime,
+        long businessSeqNum)
+    {
+        ValidateAsciiField(msgType, nameof(msgType));
+        ValidateAsciiField(senderCompId, nameof(senderCompId));
+        ValidateAsciiField(targetCompId, nameof(targetCompId));
+        EnsureSequenceNumbers(msgSeqNum, businessSeqNum);
+        WriteField(FixTags.MsgType, msgType);
+        WriteField(FixTags.SenderCompId, senderCompId);
+        WriteField(FixTags.TargetCompId, targetCompId);
+        WriteField(FixTags.MsgSeqNum, msgSeqNum);
+        WriteUtcTimestamp(FixTags.SendingTime, sendingTime);
+        WriteField(FixTags.BusinessSeqNum, businessSeqNum);
+    }
+
+    /// <summary>
+    /// Writes <c>NoPartyIDs (453)</c>. Call <see cref="WriteParty(ReadOnlySpan{byte}, byte, int)"/>
+    /// once per entry afterward.
+    /// </summary>
+    /// <param name="count">Number of party entries. Must be positive.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="count"/> is not positive.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteNoPartyIds(int count)
+    {
+        if (count <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "NoPartyIDs must be positive.");
+        }
+
+        WriteField(FixTags.NoPartyIds, count);
+    }
+
+    /// <summary>
+    /// Writes one <c>Parties</c> entry: PartyID (448), PartyIDSource (447), PartyRole (452).
+    /// </summary>
+    /// <param name="partyId">PartyID (tag 448).</param>
+    /// <param name="partyIdSource">PartyIDSource (tag 447). <c>D</c> is proprietary/custom code.</param>
+    /// <param name="partyRole">PartyRole (tag 452), for example <see cref="FixTags.PartyRoleClearingFirm"/>.</param>
+    /// <exception cref="ArgumentException">The id or source is empty or not ASCII.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="partyRole"/> is not positive.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteParty(string partyId, char partyIdSource, int partyRole)
+    {
+        ValidateAsciiString(partyId, nameof(partyId));
+        EnsurePartySourceAndRole(partyIdSource, partyRole);
+        Span<byte> source = stackalloc byte[1];
+        source[0] = (byte)partyIdSource;
+        WriteField(FixTags.PartyId, partyId);
+        WriteField(FixTags.PartyIdSource, source);
+        WriteField(FixTags.PartyRole, partyRole);
+    }
+
+    /// <summary>
+    /// Writes one <c>Parties</c> entry: PartyID (448), PartyIDSource (447), PartyRole (452).
+    /// </summary>
+    /// <param name="partyId">PartyID (tag 448) bytes.</param>
+    /// <param name="partyIdSource">PartyIDSource (tag 447). <c>D</c> is proprietary/custom code.</param>
+    /// <param name="partyRole">PartyRole (tag 452), for example <see cref="FixTags.PartyRoleClearingFirm"/>.</param>
+    /// <exception cref="ArgumentException">The id or source is empty or not ASCII.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="partyRole"/> is not positive.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteParty(scoped ReadOnlySpan<byte> partyId, byte partyIdSource, int partyRole)
+    {
+        ValidateAsciiField(partyId, nameof(partyId));
+        EnsurePartySourceAndRole((char)partyIdSource, partyRole);
+        Span<byte> source = stackalloc byte[1];
+        source[0] = partyIdSource;
+        WriteField(FixTags.PartyId, partyId);
+        WriteField(FixTags.PartyIdSource, source);
+        WriteField(FixTags.PartyRole, partyRole);
+    }
+
+    /// <summary>
+    /// Writes the minimum B3 <c>Parties</c> group: <c>NoPartyIDs=2</c>, Clearing Firm
+    /// (<c>PartyRole=4</c>), then Client ID (<c>PartyRole=3</c>).
+    /// </summary>
+    /// <param name="clearingFirmId">Clearing firm PartyID.</param>
+    /// <param name="clientId">Client PartyID.</param>
+    /// <param name="partyIdSource">
+    /// PartyIDSource for both entries. Defaults to <c>D</c> (proprietary/custom code).
+    /// </param>
+    /// <exception cref="ArgumentException">An id or the source is empty or not ASCII.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteMinimumParties(string clearingFirmId, string clientId, char partyIdSource = 'D')
+    {
+        WriteNoPartyIds(2);
+        WriteParty(clearingFirmId, partyIdSource, FixTags.PartyRoleClearingFirm);
+        WriteParty(clientId, partyIdSource, FixTags.PartyRoleClientId);
+    }
+
+    /// <summary>
+    /// Writes the minimum B3 <c>Parties</c> group: <c>NoPartyIDs=2</c>, Clearing Firm
+    /// (<c>PartyRole=4</c>), then Client ID (<c>PartyRole=3</c>).
+    /// </summary>
+    /// <param name="clearingFirmId">Clearing firm PartyID bytes.</param>
+    /// <param name="clientId">Client PartyID bytes.</param>
+    /// <param name="partyIdSource">
+    /// PartyIDSource for both entries. Defaults to <c>D</c> (proprietary/custom code).
+    /// </param>
+    /// <exception cref="ArgumentException">An id or the source is empty or not ASCII.</exception>
+    /// <exception cref="InvalidOperationException">The writer is already finalized, or the buffer is full.</exception>
+    public void WriteMinimumParties(
+        scoped ReadOnlySpan<byte> clearingFirmId,
+        scoped ReadOnlySpan<byte> clientId,
+        byte partyIdSource = (byte)'D')
+    {
+        WriteNoPartyIds(2);
+        WriteParty(clearingFirmId, partyIdSource, FixTags.PartyRoleClearingFirm);
+        WriteParty(clientId, partyIdSource, FixTags.PartyRoleClientId);
+    }
+
+    /// <summary>
     /// Patches BodyLength and appends CheckSum per <c>.kiro/steering/b3-guidelines.md</c> §15.
     /// </summary>
     /// <returns>Total bytes written, including the trailer.</returns>
@@ -202,6 +379,74 @@ public ref struct B3FixMessageWriter
         _destination[_cursor++] = Soh;
         _finished = true;
         return _cursor;
+    }
+
+    private static void EnsureSequenceNumbers(long msgSeqNum, long businessSeqNum)
+    {
+        if (msgSeqNum <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(msgSeqNum), msgSeqNum, "MsgSeqNum must be positive.");
+        }
+
+        if (businessSeqNum <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(businessSeqNum),
+                businessSeqNum,
+                "BusinessSeqNum must be positive.");
+        }
+    }
+
+    private static void EnsurePartySourceAndRole(char partyIdSource, int partyRole)
+    {
+        if (partyIdSource > 0x7F || partyIdSource == (char)Soh || partyIdSource == '\0')
+        {
+            throw new ArgumentException("PartyIDSource must be a non-zero ASCII character.", nameof(partyIdSource));
+        }
+
+        if (partyRole <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(partyRole), partyRole, "PartyRole must be positive.");
+        }
+    }
+
+    private static void ValidateAsciiString(string value, string paramName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] > 0x7F || value[i] == (char)Soh)
+            {
+                throw new ArgumentException("Field value must be ASCII and must not contain SOH.", paramName);
+            }
+        }
+    }
+
+    private static void ValidateAsciiField(ReadOnlySpan<byte> value, string paramName)
+    {
+        if (value.IsEmpty)
+        {
+            throw new ArgumentException("Field value must be non-empty ASCII.", paramName);
+        }
+
+        bool blank = true;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] > 0x7F || value[i] == Soh)
+            {
+                throw new ArgumentException("Field value must be ASCII and must not contain SOH.", paramName);
+            }
+
+            if (value[i] != (byte)' ')
+            {
+                blank = false;
+            }
+        }
+
+        if (blank)
+        {
+            throw new ArgumentException("Field value must be non-empty ASCII.", paramName);
+        }
     }
 
     private void WriteTag(int tag)

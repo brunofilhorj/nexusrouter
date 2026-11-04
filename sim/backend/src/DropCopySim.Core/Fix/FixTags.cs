@@ -33,6 +33,30 @@ public static class FixTags
     /// <summary>TargetCompID (tag 56).</summary>
     public const int TargetCompId = 56;
 
+    /// <summary>PartyIDSource (tag 447).</summary>
+    public const int PartyIdSource = 447;
+
+    /// <summary>PartyID (tag 448).</summary>
+    public const int PartyId = 448;
+
+    /// <summary>PartyRole (tag 452).</summary>
+    public const int PartyRole = 452;
+
+    /// <summary>NoPartyIDs (tag 453).</summary>
+    public const int NoPartyIds = 453;
+
+    /// <summary>
+    /// <c>PartyRole</c> (tag 452) value for Client ID.
+    /// See <c>.kiro/steering/b3-guidelines.md</c> §9.
+    /// </summary>
+    public const int PartyRoleClientId = 3;
+
+    /// <summary>
+    /// <c>PartyRole</c> (tag 452) value for Clearing Firm. Required on B3 equities.
+    /// See <c>.kiro/steering/b3-guidelines.md</c> §9.
+    /// </summary>
+    public const int PartyRoleClearingFirm = 4;
+
     /// <summary>EncryptMethod (tag 98).</summary>
     public const int EncryptMethod = 98;
 
