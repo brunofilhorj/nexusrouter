@@ -1,6 +1,9 @@
 using System.Buffers;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Text;
 using DropCopySim.Core.Fix;
 using DropCopySim.Core.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -26,8 +29,12 @@ public sealed class AcceptorSession : IAsyncDisposable
     private readonly ILogger<AcceptorSession> _logger;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly FixSessionFsm _fsm = new();
+    private readonly TaskCompletionSource _logonAccepted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _outboundSeqNum;
+    private long _lastOutboundTimestamp;
     private long _lastActivityUtcTicks;
+    private string _peerCompId = string.Empty;
+    private int _heartbeatIntervalSeconds;
     private int _started;
     private int _disposed;
 
@@ -55,7 +62,7 @@ public sealed class AcceptorSession : IAsyncDisposable
     /// <summary>Acceptor options captured for this connection.</summary>
     public AcceptorOptions Options { get; }
 
-    /// <summary>Session lifecycle state machine. Protocol transitions beyond connect and disconnect belong to later tasks.</summary>
+    /// <summary>Session lifecycle state machine.</summary>
     public FixSessionFsm Fsm => _fsm;
 
     /// <summary>
@@ -97,10 +104,12 @@ public sealed class AcceptorSession : IAsyncDisposable
             Options.TargetCompId,
             DescribeRemote());
 
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task heartbeatTask = RunHeartbeatLoopAsync(_logonAccepted.Task, heartbeatCancellation.Token);
         Exception? failure = null;
         try
         {
-            await ReadFramesAsync(cancellationToken).ConfigureAwait(false);
+            await ReadFramesAsync(heartbeatCancellation.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (IsTransportClosed(ex))
         {
@@ -114,6 +123,15 @@ public sealed class AcceptorSession : IAsyncDisposable
         }
         finally
         {
+            heartbeatCancellation.Cancel();
+            try
+            {
+                await heartbeatTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (heartbeatCancellation.IsCancellationRequested)
+            {
+            }
+
             await _reader.CompleteAsync(failure).ConfigureAwait(false);
             Disconnect();
             _logger.LogInformation(
@@ -198,11 +216,18 @@ public sealed class AcceptorSession : IAsyncDisposable
             ReadOnlySequence<byte> buffer = result.Buffer;
             try
             {
-                while (Fix44FrameScanner.TryDecode(ref buffer, out ReadOnlySequence<byte> frame))
+                bool continueReading = true;
+                while (continueReading && Fix44FrameScanner.TryDecodeAny(ref buffer, out ReadOnlySequence<byte> frame))
                 {
                     NoteInboundActivity();
                     _logger.LogTrace("Inbound FIX frame of {FrameLength} bytes", frame.Length);
                     FrameReceived?.Invoke(frame);
+                    continueReading = await HandleInboundFrameAsync(frame, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!continueReading)
+                {
+                    break;
                 }
             }
             finally
@@ -217,6 +242,230 @@ public sealed class AcceptorSession : IAsyncDisposable
         }
     }
 
+    private async ValueTask<bool> HandleInboundFrameAsync(
+        ReadOnlySequence<byte> frame,
+        CancellationToken cancellationToken)
+    {
+        byte[] bytes = frame.ToArray();
+        bool hasMsgType = TryGetField(bytes, FixTags.MsgType, out string msgType);
+
+        if (_fsm.State == AcceptorSessionState.Connected)
+        {
+            string peerCompId = TryGetField(bytes, FixTags.SenderCompId, out string senderCompId)
+                ? senderCompId
+                : Options.TargetCompId;
+
+            if (!TryGetField(bytes, FixTags.BeginString, out string beginString)
+                || !string.Equals(beginString, Options.BeginString, StringComparison.Ordinal))
+            {
+                await SendRejectAsync(peerCompId, "BeginString must be FIX.4.4.", cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+
+            if (!hasMsgType || !string.Equals(msgType, "A", StringComparison.Ordinal))
+            {
+                await SendRejectAsync(peerCompId, "The first FIX message must be Logon (MsgType=A).", cancellationToken)
+                    .ConfigureAwait(false);
+                return false;
+            }
+
+            if (!TryGetField(bytes, FixTags.TargetCompId, out string targetCompId)
+                || !string.Equals(targetCompId, Options.SenderCompId, StringComparison.Ordinal))
+            {
+                await SendRejectAsync(peerCompId, "TargetCompID does not match the acceptor SenderCompID.", cancellationToken)
+                    .ConfigureAwait(false);
+                return false;
+            }
+
+            if (!TryGetField(bytes, FixTags.SenderCompId, out senderCompId)
+                || !string.Equals(senderCompId, Options.TargetCompId, StringComparison.Ordinal))
+            {
+                await SendRejectAsync(peerCompId, "SenderCompID does not match the configured client.", cancellationToken)
+                    .ConfigureAwait(false);
+                return false;
+            }
+
+            if (!TryGetField(bytes, FixTags.HeartBtInt, out string heartbeatValue)
+                || !int.TryParse(heartbeatValue, NumberStyles.None, CultureInfo.InvariantCulture, out int heartbeatInterval)
+                || heartbeatInterval <= 0)
+            {
+                await SendRejectAsync(peerCompId, "Logon HeartBtInt (108) must be a positive integer.", cancellationToken)
+                    .ConfigureAwait(false);
+                return false;
+            }
+
+            if (TryGetField(bytes, FixTags.ResetSeqNumFlag, out string resetSeqNumFlag)
+                && string.Equals(resetSeqNumFlag, "Y", StringComparison.Ordinal))
+            {
+                ResetOutboundMsgSeqNum();
+            }
+
+            _peerCompId = peerCompId;
+            _heartbeatIntervalSeconds = heartbeatInterval;
+            _fsm.TransitionToLogonReceived();
+            PublishState();
+
+            await SendAdministrativeMessageAsync(
+                "A",
+                peerCompId,
+                heartbeatInterval,
+                null,
+                null,
+                cancellationToken).ConfigureAwait(false);
+
+            _fsm.TransitionToActive();
+            PublishState();
+            _logonAccepted.TrySetResult();
+            return true;
+        }
+
+        if (_fsm.State != AcceptorSessionState.Active || !hasMsgType)
+        {
+            return false;
+        }
+
+        switch (msgType)
+        {
+            case "0":
+                return true;
+            case "1":
+                if (!TryGetField(bytes, FixTags.TestReqId, out string testReqId) || testReqId.Length == 0)
+                {
+                    await SendRejectAsync(_peerCompId, "TestRequest is missing TestReqID (112).", cancellationToken)
+                        .ConfigureAwait(false);
+                    return false;
+                }
+
+                await SendAdministrativeMessageAsync(
+                    "0",
+                    _peerCompId,
+                    null,
+                    testReqId,
+                    null,
+                    cancellationToken).ConfigureAwait(false);
+                return true;
+            case "5":
+                await SendAdministrativeMessageAsync(
+                    "5",
+                    _peerCompId,
+                    null,
+                    null,
+                    null,
+                    cancellationToken).ConfigureAwait(false);
+                _fsm.TransitionToLogoutSent();
+                PublishState();
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    private ValueTask SendRejectAsync(string targetCompId, string text, CancellationToken cancellationToken) =>
+        SendAdministrativeMessageAsync("3", targetCompId, null, null, text, cancellationToken);
+
+    private async ValueTask SendAdministrativeMessageAsync(
+        string msgType,
+        string targetCompId,
+        int? heartbeatInterval,
+        string? testReqId,
+        string? text,
+        CancellationToken cancellationToken)
+    {
+        int capacity = checked(
+            128
+            + Options.SenderCompId.Length
+            + targetCompId.Length
+            + (testReqId?.Length ?? 0)
+            + (text?.Length ?? 0));
+        byte[] buffer = new byte[capacity];
+        var messageWriter = new B3FixMessageWriter(buffer);
+        long sequenceNumber = AllocateOutboundMsgSeqNum();
+        messageWriter.WriteB3Header(
+            msgType,
+            Options.SenderCompId,
+            targetCompId,
+            sequenceNumber,
+            DateTime.UtcNow,
+            sequenceNumber);
+
+        if (heartbeatInterval is int interval)
+        {
+            messageWriter.WriteField(FixTags.EncryptMethod, 0);
+            messageWriter.WriteField(FixTags.HeartBtInt, interval);
+            messageWriter.WriteField(FixTags.ApplicationLogonRspCode, 0);
+        }
+
+        if (testReqId is not null)
+        {
+            messageWriter.WriteField(FixTags.TestReqId, testReqId);
+        }
+
+        if (text is not null)
+        {
+            messageWriter.WriteField(FixTags.Text, text);
+        }
+
+        int length = messageWriter.Finish();
+        await SendOutbound(buffer.AsSpan(0, length), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RunHeartbeatLoopAsync(Task logonAccepted, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await logonAccepted.WaitAsync(cancellationToken).ConfigureAwait(false);
+            TimeSpan interval = TimeSpan.FromSeconds(_heartbeatIntervalSeconds);
+            using var timer = new PeriodicTimer(interval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                long lastSent = Volatile.Read(ref _lastOutboundTimestamp);
+                if (lastSent == 0 || Stopwatch.GetElapsedTime(lastSent) >= interval)
+                {
+                    await SendAdministrativeMessageAsync(
+                        "0",
+                        _peerCompId,
+                        null,
+                        null,
+                        null,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception ex) when (IsTransportClosed(ex))
+        {
+            _logger.LogDebug(ex, "Acceptor heartbeat loop stopped. SenderCompId {SenderCompId}", Options.SenderCompId);
+        }
+    }
+
+    private static bool TryGetField(ReadOnlySpan<byte> frame, int tag, out string value)
+    {
+        value = string.Empty;
+        int fieldStart = 0;
+        while (fieldStart < frame.Length)
+        {
+            int separatorOffset = frame[fieldStart..].IndexOf((byte)0x01);
+            if (separatorOffset < 0)
+            {
+                return false;
+            }
+
+            ReadOnlySpan<byte> field = frame.Slice(fieldStart, separatorOffset);
+            int equalsOffset = field.IndexOf((byte)'=');
+            if (equalsOffset > 0
+                && int.TryParse(field[..equalsOffset], NumberStyles.None, CultureInfo.InvariantCulture, out int fieldTag)
+                && fieldTag == tag)
+            {
+                value = Encoding.ASCII.GetString(field[(equalsOffset + 1)..]);
+                return true;
+            }
+
+            fieldStart += separatorOffset + 1;
+        }
+
+        return false;
+    }
+
     private async ValueTask WriteFrameAsync(byte[] frame, CancellationToken cancellationToken)
     {
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -228,6 +477,8 @@ public sealed class AcceptorSession : IAsyncDisposable
             {
                 throw new OperationCanceledException(cancellationToken);
             }
+
+            Volatile.Write(ref _lastOutboundTimestamp, Stopwatch.GetTimestamp());
         }
         finally
         {

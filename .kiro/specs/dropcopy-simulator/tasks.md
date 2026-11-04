@@ -183,7 +183,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-10 — Implementar o handshake de Logon e o protocolo administrativo
+- [x] T-10 — Implementar o handshake de Logon e o protocolo administrativo
 
 **Objetivo:** Validar e responder o Logon, tratar Heartbeat/TestRequest/Logout.
 

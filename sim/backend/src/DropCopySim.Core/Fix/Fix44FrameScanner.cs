@@ -16,6 +16,71 @@ public static class Fix44FrameScanner
     private static ReadOnlySpan<byte> BeginString => "8=FIX.4.4\x01"u8;
 
     /// <summary>
+    /// Extracts one complete FIX frame regardless of its BeginString value.
+    /// </summary>
+    /// <param name="buffer">Unconsumed bytes; may span multiple segments.</param>
+    /// <param name="frame">The complete frame, or default when the method returns <see langword="false"/>.</param>
+    /// <returns><see langword="true"/> when a complete frame was isolated.</returns>
+    /// <remarks>
+    /// This is used by the acceptor's first-frame validation so it can reject an unsupported BeginString
+    /// rather than silently waiting for a FIX 4.4 frame.
+    /// </remarks>
+    public static bool TryDecodeAny(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> frame)
+    {
+        frame = default;
+        if (buffer.IsEmpty)
+        {
+            return false;
+        }
+
+        var reader = new SequenceReader<byte>(buffer);
+        while (reader.TryAdvanceTo((byte)'8', advancePastDelimiter: false))
+        {
+            long beginStart = reader.Consumed;
+            ReadOnlySequence<byte> candidate = buffer.Slice(beginStart);
+            var beginReader = new SequenceReader<byte>(candidate);
+            beginReader.Advance(1);
+            if (!beginReader.TryPeek(out byte equals))
+            {
+                buffer = candidate;
+                return false;
+            }
+
+            if (equals != (byte)'=')
+            {
+                reader.Advance(1);
+                continue;
+            }
+
+            if (!beginReader.TryReadTo(out ReadOnlySequence<byte> _, Soh, advancePastDelimiter: true))
+            {
+                buffer = candidate;
+                return false;
+            }
+
+            if (!TryFindChecksumEnd(candidate.Slice(beginReader.Consumed), out long checksumLength))
+            {
+                buffer = candidate;
+                return false;
+            }
+
+            long frameLength = beginReader.Consumed + checksumLength;
+            if (frameLength > int.MaxValue)
+            {
+                buffer = buffer.Slice(beginStart + 1);
+                return false;
+            }
+
+            frame = buffer.Slice(beginStart, frameLength);
+            buffer = buffer.Slice(beginStart + frameLength);
+            return true;
+        }
+
+        buffer = buffer.Slice(buffer.End);
+        return false;
+    }
+
+    /// <summary>
     /// Tries to extract one complete FIX 4.4 frame and advances <paramref name="buffer"/> past it.
     /// </summary>
     /// <param name="buffer">Unconsumed bytes; may span multiple segments.</param>

@@ -18,6 +18,9 @@ public static class FixTags
     /// <summary>CheckSum (tag 10).</summary>
     public const int CheckSum = 10;
 
+    /// <summary>Text (tag 58).</summary>
+    public const int Text = 58;
+
     /// <summary>MsgSeqNum (tag 34).</summary>
     public const int MsgSeqNum = 34;
 
@@ -62,6 +65,9 @@ public static class FixTags
 
     /// <summary>HeartBtInt (tag 108).</summary>
     public const int HeartBtInt = 108;
+
+    /// <summary>TestReqID (tag 112).</summary>
+    public const int TestReqId = 112;
 
     /// <summary>ResetSeqNumFlag (tag 141).</summary>
     public const int ResetSeqNumFlag = 141;
