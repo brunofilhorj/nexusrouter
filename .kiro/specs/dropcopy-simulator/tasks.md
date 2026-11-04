@@ -217,7 +217,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 4 — Geração de Mensagens de Aplicação
 
-- [ ] T-12 — Definir `IFixMessageFactory`, `OrderContext` e `OrderLifecycleModel`
+- [x] T-12 — Definir `IFixMessageFactory`, `OrderContext` e `OrderLifecycleModel`
 
 **Objetivo:** Abstração de geração e o modelo de ciclo de vida da ordem.
 
