@@ -131,7 +131,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 3 — Acceptor FIX 4.4
 
-- [ ] T-07 — Implementar `FixSessionFsm` (lado acceptor)
+- [x] T-07 — Implementar `FixSessionFsm` (lado acceptor)
 
 **Objetivo:** Máquina de estados de sessão do lado servidor (Logon recebido/respondido).
 
@@ -146,7 +146,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-08 — Implementar `AcceptorSession` — socket, leitura e writer outbound
+- [x] T-08 — Implementar `AcceptorSession` — socket, leitura e writer outbound
 
 **Objetivo:** Representar uma conexão aceita com leitura via Pipelines e envio de frames.
 
@@ -164,7 +164,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-09 — Implementar `FixAcceptorService` — `TcpListener` e aceitação
+- [x] T-09 — Implementar `FixAcceptorService` — `TcpListener` e aceitação
 
 **Objetivo:** `IHostedService` que escuta e cria `AcceptorSession` por conexão.
 
@@ -183,7 +183,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-10 — Implementar o handshake de Logon e o protocolo administrativo
+- [x] T-10 — Implementar o handshake de Logon e o protocolo administrativo
 
 **Objetivo:** Validar e responder o Logon, tratar Heartbeat/TestRequest/Logout.
 
@@ -201,7 +201,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-11 — Implementar `ResendRequest`/`SequenceReset` (gap-fill básico)
+- [x] T-11 — Implementar `ResendRequest`/`SequenceReset` (gap-fill básico)
 
 **Objetivo:** Recuperação de sequência de nível de sessão FIX.
 
