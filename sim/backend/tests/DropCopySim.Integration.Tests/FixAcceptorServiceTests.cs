@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using DropCopySim.Core.Acceptor;
+using DropCopySim.Core.Generation;
+using DropCopySim.Core.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -19,7 +22,9 @@ public sealed class FixAcceptorServiceTests
                 ListenPort = port,
             }),
             NullLogger<FixAcceptorService>.Instance,
-            NullLogger<AcceptorSession>.Instance);
+            NullLogger<AcceptorSession>.Instance,
+            CreateGenerator(),
+            CreateTelemetryHub());
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -56,13 +61,43 @@ public sealed class FixAcceptorServiceTests
                 },
             }),
             NullLogger<FixAcceptorService>.Instance,
-            NullLogger<AcceptorSession>.Instance);
+            NullLogger<AcceptorSession>.Instance,
+            CreateGenerator(),
+            CreateTelemetryHub());
 
         await Assert.ThrowsAsync<NotSupportedException>(
             () => service.StartAsync(CancellationToken.None));
 
         await service.StopAsync(CancellationToken.None);
     }
+
+    private static OrderFlowGenerator CreateGenerator() => new(
+        TestSimulationConfig(),
+        new SimulationCounters(),
+        Channel.CreateUnbounded<TelemetryEvent>().Writer,
+        NullLogger<OrderFlowGenerator>.Instance);
+
+    private static TelemetryHub CreateTelemetryHub() => new(
+        Options.Create(new TelemetryOptions()),
+        NullLogger<TelemetryHub>.Instance);
+
+    private static SimulationConfig TestSimulationConfig() => new()
+    {
+        TotalOrders = 10,
+        RatePerSecond = 100,
+        Accounts = ["ACC1"],
+        Instruments =
+        [
+            new Instrument
+            {
+                SecurityId = 200001,
+                Symbol = "PETR4",
+                SecurityExchange = "BVMF",
+            },
+        ],
+        Outcome = new OutcomeMix { FillPct = 100 },
+        EnabledMessageTypes = ["8"],
+    };
 
     private static int GetAvailablePort()
     {

@@ -24,6 +24,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Habilita .NET User Secrets no desenvolvimento local. O Host usa WebApplication.CreateBuilder,
+         que carrega User Secrets automaticamente quando o ambiente é Development e este Id está presente.
+         User Secrets é SOMENTE para dev local — nunca para produção (ver docs/secrets.md). -->
+    <UserSecretsId>nexusrouter-host-6f1c2a9e-7b3d-4e58-9f21-0c4d8e2a1b55</UserSecretsId>
   </PropertyGroup>
 
 </Project>

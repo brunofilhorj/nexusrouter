@@ -1,0 +1,28 @@
+{
+  "project_type": ".NET 10 / C# 14 solution for the DropCopy FIX simulator, located under sim/backend. Minimal API Host (ASP.NET Core) + Core library + two xUnit test projects.",
+  "language": "C# 14 (.NET 10)",
+  "build_system": "dotnet SDK with central package management. sim/backend/Directory.Packages.props is an isolation barrier that stops MSBuild walking up to the repo root. TreatWarningsAsErrors is effectively on (build must be warning-clean). nullable enabled.",
+  "test_framework": "xUnit 2.9.3 ONLY. There is NO NSubstitute and NO FluentAssertions in the sim/ stack (confirmed in sim/backend/Directory.Packages.props). Do NOT add either — the design forbids new dependencies. Use plain xUnit Assert and hand-written test doubles.",
+  "build_command": "dotnet build sim/backend/DropCopySimulator.slnx (run from c:\\repos\\nexusrouter)",
+  "test_command": "dotnet test sim/backend/DropCopySimulator.slnx (run from c:\\repos\\nexusrouter). Filter a subset with --filter FullyQualifiedName~<ClassName>.",
+  "verification_instructions": "From c:\\repos\\nexusrouter: (1) dotnet build sim/backend/DropCopySimulator.slnx must produce zero errors and zero warnings. (2) dotnet test sim/backend/DropCopySimulator.slnx must pass all tests including the new ones. No frontend files are touched, so npm run typecheck is not required. Do NOT commit/push/PR.",
+  "snapshot_or_generated_files": null,
+  "environment_constraints": "Windows host, bash shell. Run dotnet commands from the repo root c:\\repos\\nexusrouter. Do not run two agents on the same working tree. The WIP already committed in 49b39aa (shutdown guard in StopAsync, enum serialization in TelemetryHub, frontend hydration) must be preserved — none conflicts with these fixes.",
+  "contribution_requirements": "AGENTS.md: .kiro/ is source of truth; implement one unit of work at a time; do not commit/push/open PR unless the user explicitly asks. coding-standards.md and b3-guidelines.md apply to C# and FIX code respectively.",
+  "key_patterns": "OrderFlowGenerator.AttachSession(session|null) uses Volatile.Write and is safe in any generator state (only checks _disposed); ActiveSession() revalidates Fsm.State==Active each tick, so wiring is tolerant to out-of-order events. AcceptorSession exposes `public event Action<SessionStateChanged>? StateChanged` and `public FixSessionFsm Fsm`. SessionStateChanged.State is a `required string` holding the FSM state name. FixAcceptorService.AcceptLoopAsync runs one session at a time (sequential while loop). Compare state names with string.Equals(e.State, nameof(AcceptorSessionState.Active), StringComparison.Ordinal). B3FixMessageWriter is a public ref struct: WriteB3Header(string msgType, string senderCompId, string targetCompId, long msgSeqNum, DateTime sendingTime, long businessSeqNum), WriteField(int tag, int/long/string/ReadOnlySpan<byte>), int Finish(). Test helper pattern for a valid SimulationConfig: see CreateConfig in DropCopySim.Core.Tests/OrderFlowGeneratorTests.cs (Accounts=[\"ACC1\"], one Instrument, Outcome FillPct=100, EnabledMessageTypes=[\"8\"]).",
+  "relevant_files": [
+    "sim/backend/src/DropCopySim.Core/Acceptor/FixAcceptorService.cs",
+    "sim/backend/src/DropCopySim.Core/Generation/OrderFlowGenerator.cs",
+    "sim/backend/src/DropCopySim.Core/Acceptor/AcceptorSession.cs",
+    "sim/backend/src/DropCopySim.Core/Fix/B3FixMessageWriter.cs",
+    "sim/backend/src/DropCopySim.Core/Telemetry/SessionStateChanged.cs",
+    "sim/backend/src/DropCopySim.Host/Endpoints/TelemetryEndpoints.cs",
+    "sim/backend/src/DropCopySim.Host/DropCopySim.Host.csproj",
+    "sim/backend/tests/DropCopySim.Integration.Tests/DropCopySim.Integration.Tests.csproj",
+    "sim/backend/tests/DropCopySim.Integration.Tests/FixAcceptorServiceTests.cs",
+    "sim/backend/tests/DropCopySim.Core.Tests/OrderFlowGeneratorTests.cs",
+    "sim/backend/Directory.Packages.props",
+    "sim/backend/DropCopySimulator.slnx"
+  ],
+  "directory_structure": "sim/backend/src/DropCopySim.Core (library: Acceptor/, Generation/, Fix/, Telemetry/), sim/backend/src/DropCopySim.Host (ASP.NET Core Minimal API: Endpoints/, Program.cs), sim/backend/tests/DropCopySim.Core.Tests (xUnit), sim/backend/tests/DropCopySim.Integration.Tests (xUnit). Solution: sim/backend/DropCopySimulator.slnx."
+}

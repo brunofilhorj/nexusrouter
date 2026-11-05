@@ -5,6 +5,7 @@ using RabbitMQ.Client.Exceptions;
 
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
+using NexusRouter.Domain.Secrets;
 
 namespace NexusRouter.Egress.RabbitMQ;
 
@@ -18,6 +19,7 @@ namespace NexusRouter.Egress.RabbitMQ;
 public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatcherOptions>
 {
     private readonly object _connectionGate = new();
+    private readonly ISecretResolver _secretResolver;
     private IConnection? _connection;
     private IModel? _model;
     private int _released;
@@ -26,17 +28,22 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
     /// Cria o dispatcher. A conexão abre em <see cref="DispatcherBase{TOptions}.StartAsync"/>.
     /// </summary>
     /// <param name="dispatcherId">Nome único na rota. Também é o nome da conexão no broker.</param>
-    /// <param name="options">Host, exchange e nomes das variáveis de credencial.</param>
+    /// <param name="options">Host, exchange e chaves de lookup das credenciais.</param>
     /// <param name="logger">Log de conexão e de reconexão.</param>
+    /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
+    /// <param name="secretResolver">Resolve as credenciais pelas chaves em <paramref name="options"/>, sob demanda.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="logger"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public RabbitMQMessageDispatcher(
         string dispatcherId,
         RabbitMQDispatcherOptions options,
         ILogger<RabbitMQMessageDispatcher> logger,
-        DispatchPayloadPool payloadPool)
+        DispatchPayloadPool payloadPool,
+        ISecretResolver secretResolver)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
+        ArgumentNullException.ThrowIfNull(secretResolver);
+        _secretResolver = secretResolver;
     }
 
     /// <summary>
@@ -103,8 +110,8 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         {
             CloseQuietly();
 
-            string userName = EnvironmentValue.ReadRequired(Options.UsernameEnvVar);
-            string password = EnvironmentValue.ReadRequired(Options.PasswordEnvVar);
+            string userName = _secretResolver.ResolveRequired(Options.UsernameEnvVar);
+            string password = _secretResolver.ResolveRequired(Options.PasswordEnvVar);
             var factory = new ConnectionFactory
             {
                 HostName = Options.Host,

@@ -3,14 +3,16 @@
  *
  * A topbar sempre visível traz o estado corrente da simulação como fonte da
  * verdade, o `ConnectivityBadge` (API/WS) e o `ThemeToggle`. Abaixo, duas
- * colunas: controle à esquerda (`SimulationControls`, `ConfigForm`,
- * `FaultControls`) e observação à direita (`SessionStatus`, `SimulationStatus`
- * e o `MessageFeed`). O tema (claro/escuro) é aplicado ao documento pelo
+ * colunas: controle à esquerda (`SimulationControls`, `FaultControls`) e
+ * observação à direita (`SessionStatus`, `SimulationStatus` e o `MessageFeed`).
+ * A configuração (`ConfigForm`) não ocupa espaço permanente: vive num modal
+ * (`ConfigModal`) aberto pelo ícone de engrenagem na topbar, ao lado do seletor
+ * de tema. O tema (claro/escuro) é aplicado ao documento pelo
  * `ThemeToggle`/`useTheme`; aqui a casca apenas importa os design tokens.
  */
 
-import { useEffect } from 'react';
-import ConfigForm from './components/ConfigForm';
+import { useEffect, useState } from 'react';
+import ConfigModal from './components/ConfigModal';
 import ConnectivityBadge from './components/ConnectivityBadge';
 import FaultControls from './components/FaultControls';
 import MessageFeed from './components/MessageFeed';
@@ -19,6 +21,8 @@ import SimulationControls from './components/SimulationControls';
 import SimulationStatus from './components/SimulationStatus';
 import ThemeToggle from './components/ThemeToggle';
 import { useAppSelector } from './state/useAppStore';
+import { appStore } from './state/store';
+import { simApi } from './api/client';
 import type { SimulationState } from './api/types';
 import { telemetryClient } from './ws/telemetry';
 import './theme/tokens.css';
@@ -34,10 +38,29 @@ function App(): React.JSX.Element {
   const simulationState = useAppSelector<SimulationState>(
     (s) => s.simulationState,
   );
+  // Configuração vive num modal, aberto pela engrenagem da topbar.
+  const [configOpen, setConfigOpen] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    // Semeia o estado com a verdade do servidor antes/independente de transições
+    // (um reload com o backend já em Running cairia em Idle, travando a UI).
+    void simApi
+      .getState()
+      .then((snapshot) => {
+        if (!cancelled) {
+          appStore.hydrate(snapshot);
+        }
+      })
+      .catch(() => {
+        // Backend indisponível na carga: a telemetria hidrata ao reconectar.
+      });
+
     telemetryClient.start();
-    return () => telemetryClient.stop();
+    return () => {
+      cancelled = true;
+      telemetryClient.stop();
+    };
   }, []);
 
   return (
@@ -58,13 +81,25 @@ function App(): React.JSX.Element {
           {simulationState}
         </span>
         <ConnectivityBadge />
+        <button
+          type="button"
+          className="config-toggle"
+          aria-label="Abrir configuração"
+          aria-haspopup="dialog"
+          aria-expanded={configOpen}
+          title="Configuração"
+          onClick={() => setConfigOpen(true)}
+        >
+          <span className="config-toggle__icon" aria-hidden="true">
+            ⚙️
+          </span>
+        </button>
         <ThemeToggle />
       </header>
 
       <div className="app__body">
         <div className="app__column app__column--control">
           <SimulationControls />
-          <ConfigForm />
           <FaultControls />
         </div>
         <div className="app__column app__column--observe">
@@ -73,6 +108,8 @@ function App(): React.JSX.Element {
           <MessageFeed />
         </div>
       </div>
+
+      <ConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
     </div>
   );
 }

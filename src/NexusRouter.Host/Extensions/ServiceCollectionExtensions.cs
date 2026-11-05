@@ -12,6 +12,7 @@ using NexusRouter.Audit.Sinks;
 using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
+using NexusRouter.Domain.Secrets;
 using NexusRouter.Egress.Fix;
 using NexusRouter.Egress.Kafka;
 using NexusRouter.Egress.RabbitMQ;
@@ -60,6 +61,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        AddSecretResolver(services, configuration);
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
         // Frame decoders — singletons sem estado, compartilháveis entre sessões.
@@ -103,9 +105,10 @@ public static class ServiceCollectionExtensions
                 IMessageRouter router = sp.GetRequiredService<IMessageRouter>();
                 AuditChannelSingleton auditSingleton = sp.GetRequiredService<AuditChannelSingleton>();
                 ChannelWriter<AuditRecord> auditWriter = auditSingleton.Instance.Writer;
+                ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
                 ILogger<FixSession> logger = sp.GetRequiredService<ILogger<FixSession>>();
 
-                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, logger);
+                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, secretResolver, logger);
             });
         }
 
@@ -222,6 +225,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        AddSecretResolver(services, configuration);
         services.TryAddSingleton<DispatchPayloadPool>();
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
 
@@ -272,6 +276,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
+        AddSecretResolver(services, configuration);
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
         Configuration.AuditOptions auditConfig = options.Audit;
 
@@ -321,7 +326,8 @@ public static class ServiceCollectionExtensions
                         };
                         AuditCoreOptions core = sp.GetRequiredService<AuditCoreOptions>();
                         ILogger<PostgresAuditSink> logger = sp.GetRequiredService<ILogger<PostgresAuditSink>>();
-                        return new PostgresAuditSink(sinkOpts, core, logger);
+                        ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+                        return new PostgresAuditSink(sinkOpts, core, logger, secretResolver);
                     });
                     break;
             }
@@ -353,6 +359,23 @@ public static class ServiceCollectionExtensions
             sp => sp.GetRequiredService<DispatcherAuditObserver>());
 
         return services;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers privados — Secrets
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registra o <see cref="ISecretResolver"/> sobre a <see cref="IConfiguration"/> da aplicação.
+    /// </summary>
+    /// <remarks>
+    /// Idempotente via <c>TryAddSingleton</c>: pode ser chamado por cada tier sem registrar o resolvedor mais de uma vez.
+    /// O resolvedor lê segredos pelas chaves de lookup (ex.: <c>RABBITMQ_DEFAULT_PASS</c>), que o provider de
+    /// variáveis de ambiente do .NET expõe por nome plano — preservando compatibilidade com env var do processo.
+    /// </remarks>
+    private static void AddSecretResolver(IServiceCollection services, IConfiguration configuration)
+    {
+        services.TryAddSingleton<ISecretResolver>(_ => new ConfigurationSecretResolver(configuration));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -405,7 +428,8 @@ public static class ServiceCollectionExtensions
             };
             ILogger<KafkaMessageDispatcher> logger = sp.GetRequiredService<ILogger<KafkaMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
-            return new KafkaMessageDispatcher(config.Id, opts, logger, payloadPool);
+            ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+            return new KafkaMessageDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
         });
 
         // Expõe como IMessageDispatcher para que o RouteResolver e o DispatcherAuditObserver resolvam.
@@ -432,7 +456,8 @@ public static class ServiceCollectionExtensions
             };
             ILogger<RabbitMQMessageDispatcher> logger = sp.GetRequiredService<ILogger<RabbitMQMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
-            return new RabbitMQMessageDispatcher(config.Id, opts, logger, payloadPool);
+            ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+            return new RabbitMQMessageDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<RabbitMQMessageDispatcher>());
@@ -465,7 +490,8 @@ public static class ServiceCollectionExtensions
             };
             ILogger<FixOutboundDispatcher> logger = sp.GetRequiredService<ILogger<FixOutboundDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
-            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool);
+            ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());

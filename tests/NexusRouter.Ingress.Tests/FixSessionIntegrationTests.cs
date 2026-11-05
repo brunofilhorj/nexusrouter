@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Secrets;
 using NexusRouter.Ingress.Decoders;
 using NexusRouter.Ingress.Sessions;
 
@@ -145,7 +146,18 @@ public sealed class FixSessionIntegrationTests
             reconnectPolicy,
             new NullRouter(),
             auditWriter,
+            ThrowingSecretResolver.Instance,
             NullLogger<FixSession>.Instance);
+
+    // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
+    private sealed class ThrowingSecretResolver : ISecretResolver
+    {
+        public static readonly ThrowingSecretResolver Instance = new();
+
+        public string ResolveRequired(string key) =>
+            throw new InvalidOperationException(
+                $"O resolvedor de segredos não deveria ser chamado neste teste (chave '{key}').");
+    }
 
     private static Channel<AuditRecord> CreateAuditChannel() =>
         Channel.CreateUnbounded<AuditRecord>(new UnboundedChannelOptions

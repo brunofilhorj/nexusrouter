@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Channels;
 using DropCopySim.Core.Acceptor;
 using DropCopySim.Core.Fix;
+using DropCopySim.Core.Generation;
+using DropCopySim.Core.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -160,7 +163,35 @@ public sealed class AcceptorSessionProtocolTests
                 HeartBtIntSeconds = heartBtIntSeconds,
             }),
             NullLogger<FixAcceptorService>.Instance,
-            NullLogger<AcceptorSession>.Instance);
+            NullLogger<AcceptorSession>.Instance,
+            CreateGenerator(),
+            CreateTelemetryHub());
+
+    private static TelemetryHub CreateTelemetryHub() => new(
+        Options.Create(new TelemetryOptions()),
+        NullLogger<TelemetryHub>.Instance);
+
+    private static OrderFlowGenerator CreateGenerator() => new(
+        new SimulationConfig
+        {
+            TotalOrders = 10,
+            RatePerSecond = 100,
+            Accounts = ["ACC1"],
+            Instruments =
+            [
+                new Instrument
+                {
+                    SecurityId = 200001,
+                    Symbol = "PETR4",
+                    SecurityExchange = "BVMF",
+                },
+            ],
+            Outcome = new OutcomeMix { FillPct = 100 },
+            EnabledMessageTypes = ["8"],
+        },
+        new SimulationCounters(),
+        Channel.CreateUnbounded<TelemetryEvent>().Writer,
+        NullLogger<OrderFlowGenerator>.Instance);
 
     private static byte[] BuildClientFrame(string msgType, long sequenceNumber, params (int Tag, string Value)[] fields)
     {

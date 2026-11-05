@@ -1,0 +1,7 @@
+{
+  "task_id": "task-dropcopy-defect-fixes",
+  "task_description": "Corrigir dois defeitos isolados no DropCopy simulator (sim/backend): Defeito A — wiring da AcceptorSession ao OrderFlowGenerator (o gerador nunca recebe a sessao ativa, ActiveSession() sempre null, loop em no-op silencioso); Defeito B — fechamento gracioso do WebSocket de telemetria para parar o ruido de WebSocketException quando o cliente aborta sob React StrictMode. Inclui atualizar testes existentes e adicionar novos testes. Sem tocar no NexusRouter, sem dependencias novas.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

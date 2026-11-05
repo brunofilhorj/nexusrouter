@@ -67,6 +67,7 @@ public static class StateEndpoints
             TargetCompId = session.Options.TargetCompId,
             NextOutboundMsgSeqNum = session.NextOutboundMsgSeqNum,
             NextExpectedInboundMsgSeqNum = session.NextExpectedInboundMsgSeqNum,
+            LastHeartbeatUtc = session.LastActivityUtc,
         };
     }
 }

@@ -195,10 +195,42 @@ body {
   min-width: 0;
 }
 
+/*
+ * Coluna de observação (Seção 4.5): SessionStatus e SimulationStatus lado a lado
+ * na primeira linha; MessageFeed ocupa a largura inteira abaixo de ambos.
+ */
+.app__column--observe {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-content: start;
+}
+
+.app__column--observe > .session-status {
+  grid-column: 1;
+}
+
+.app__column--observe > .simulation-status {
+  grid-column: 2;
+}
+
+.app__column--observe > .message-feed {
+  grid-column: 1 / -1;
+}
+
 /* Empilha as colunas em telas estreitas. */
 @media (max-width: 900px) {
   .app__body {
     grid-template-columns: 1fr;
+  }
+
+  /* Volta a empilhar os cartões de observação em telas estreitas. */
+  .app__column--observe {
+    grid-template-columns: 1fr;
+  }
+
+  .app__column--observe > .session-status,
+  .app__column--observe > .simulation-status {
+    grid-column: 1;
   }
 }
 
@@ -239,6 +271,113 @@ body {
 
 .theme-toggle:hover {
   border-color: var(--color-accent);
+}
+
+/* Botão de engrenagem (abre o modal de configuração) na topbar. */
+.config-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.config-toggle:hover {
+  border-color: var(--color-accent);
+}
+
+.config-toggle__icon {
+  font-size: 1rem;
+}
+
+/* Modal de configuração (ConfigModal): mesma moldura do ConfirmDialog, porém
+ * mais largo e rolável, pois hospeda o formulário completo. */
+.config-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background: rgb(0 0 0 / 55%);
+  overflow-y: auto;
+}
+
+.config-modal__panel {
+  width: min(44rem, 100%);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 4rem);
+}
+
+.config-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.config-modal__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.config-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.config-modal__close:hover {
+  border-color: var(--color-accent);
+}
+
+.config-modal__body {
+  padding: 1rem 1.25rem 1.25rem;
+  overflow-y: auto;
+}
+
+/* O cartão do formulário, dentro do modal, não precisa de moldura própria nem
+ * do título repetido (o cabeçalho do modal já o nomeia). */
+.config-modal__body .config-form {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.config-modal__body .config-form > h2 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Modal de confirmação (ConfirmDialog). */
@@ -308,4 +447,547 @@ body {
 .confirm-dialog__confirm:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ============================================================================
+ * Estilos dos componentes do painel (Seção 4.5).
+ *
+ * A moldura acima entrega topbar + colunas + cartão base. Esta seção veste o
+ * conteúdo interno de cada componente — controles, formulário, cartões de
+ * métrica e feed — mantendo o espírito de "ferramenta de operador": densidade,
+ * rótulos sempre presentes, estado por cor + texto e dados FIX monoespaçados.
+ *
+ * Tudo consome os tokens já definidos; nenhuma cor fixa é introduzida aqui, de
+ * modo que a troca de tema continua sendo o único ponto de verdade.
+ * ========================================================================= */
+
+/* Título de seção padrão dos cartões. */
+.app__column > section > h2 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app__column > section h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Botão genérico do painel (base para controles e ações). */
+:where(.simulation-controls, .config-form, .fault-controls, .session-status)
+  button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  padding: 0.4rem 0.85rem;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
+:where(.simulation-controls, .config-form, .fault-controls) button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+:where(.simulation-controls, .config-form, .fault-controls) button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Campos de formulário coerentes em todo o painel. */
+:where(.config-form, .fault-controls) :where(input, select, textarea) {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  width: 100%;
+}
+
+:where(.config-form, .fault-controls) input[type='checkbox'] {
+  width: auto;
+  accent-color: var(--color-accent);
+}
+
+:where(.config-form, .fault-controls) :where(input, select, textarea):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ----------------------------------------------------------------------------
+ * SimulationControls — barra de comandos da rodada.
+ * ------------------------------------------------------------------------- */
+.simulation-controls__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.simulation-controls__button {
+  min-width: 5rem;
+  font-weight: 600;
+}
+
+/* Start = ação primária positiva; destaca-se quando habilitado. */
+.simulation-controls__button[data-action='start']:not(:disabled) {
+  background: var(--state-ok-bg);
+  border-color: var(--state-ok);
+  color: var(--state-ok);
+}
+
+.simulation-controls__button[data-action='pause']:not(:disabled) {
+  background: var(--state-warn-bg);
+  border-color: var(--state-warn);
+  color: var(--state-warn);
+}
+
+.simulation-controls__button[data-action='resume']:not(:disabled) {
+  background: var(--state-ok-bg);
+  border-color: var(--state-ok);
+  color: var(--state-ok);
+}
+
+.simulation-controls__button[data-action='stop']:not(:disabled) {
+  background: var(--state-danger-bg);
+  border-color: var(--state-danger);
+  color: var(--state-danger);
+}
+
+.simulation-controls__error,
+.config-form__error,
+.fault-controls__error {
+  margin: 0.6rem 0 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--state-danger);
+  background: var(--state-danger-bg);
+  border: 1px solid var(--danger-zone-border);
+  border-radius: 6px;
+}
+
+.config-form__notice,
+.simulation-controls__notice {
+  margin: 0.6rem 0 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--state-ok);
+  background: var(--state-ok-bg);
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+/* ----------------------------------------------------------------------------
+ * ConfigForm — formulário denso agrupado por fieldset.
+ * ------------------------------------------------------------------------- */
+.config-form__policy {
+  margin: 0 0 0.75rem;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--state-warn);
+  background: var(--state-warn-bg);
+  border-radius: 6px;
+}
+
+.config-form__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.config-form__group {
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.config-form__group legend {
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.config-form__group:disabled {
+  opacity: 0.7;
+}
+
+/* Campo: rótulo em cima, controle embaixo (checkbox fica em linha). */
+.config-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.config-form__field:has(input[type='checkbox']) {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text);
+}
+
+.config-form__hint {
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.config-form__instruments {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--color-text);
+}
+
+.config-form__instruments li {
+  margin: 0.1rem 0;
+}
+
+.config-form__outcome-sum {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.config-form__outcome-sum[data-valid='yes'] {
+  color: var(--state-ok);
+}
+
+.config-form__outcome-sum[data-valid='no'] {
+  color: var(--state-danger);
+}
+
+.config-form__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.config-form__actions button {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+  padding: 0.5rem 1.1rem;
+}
+
+.config-form__empty,
+.session-status__empty,
+.simulation-status__empty,
+.message-feed__empty {
+  margin: 0;
+  padding: 0.75rem 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* ----------------------------------------------------------------------------
+ * FaultControls — zona perigosa, grupos empilhados.
+ * ------------------------------------------------------------------------- */
+.fault-controls__warning {
+  margin: 0 0 0.9rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--state-danger);
+  background: var(--state-danger-bg);
+  border: 1px solid var(--danger-zone-border);
+  border-radius: 6px;
+}
+
+.fault-controls__group {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.fault-controls__group + .fault-controls__group {
+  margin-top: 0.75rem;
+}
+
+.fault-controls__group-title {
+  margin: 0;
+  color: var(--color-text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85rem;
+}
+
+.fault-controls__group-desc {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.fault-controls__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.fault-controls__hint {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+/* Botões de injeção: ação destrutiva, destaque em vermelho. */
+.fault-controls__button {
+  align-self: flex-start;
+  font-weight: 600;
+}
+
+.fault-controls__button[data-variant='danger']:not(:disabled) {
+  background: var(--state-danger);
+  border-color: var(--state-danger);
+  color: var(--color-accent-contrast);
+}
+
+/* ----------------------------------------------------------------------------
+ * Cartões de métrica — SessionStatus e SimulationStatus.
+ * Grade rótulo → valor, compacta e alinhada.
+ * ------------------------------------------------------------------------- */
+.session-status__grid,
+.simulation-status__grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.3rem 1rem;
+  align-items: baseline;
+}
+
+.session-status__row,
+.simulation-status__row {
+  display: contents;
+}
+
+.session-status__row dt,
+.simulation-status__row dt {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.session-status__row dd,
+.simulation-status__row dd {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+/* Estado da sessão/simulação por cor + texto (acessibilidade). */
+:where(.session-status, .simulation-status) dd[data-state] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+:where(.session-status, .simulation-status) dd[data-state]::before {
+  content: '';
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--state-neutral);
+}
+
+:where(.session-status, .simulation-status) dd[data-state='active']::before,
+:where(.session-status, .simulation-status) dd[data-state='running']::before {
+  background: var(--state-ok);
+}
+
+:where(.session-status, .simulation-status) dd[data-state='paused']::before,
+:where(.session-status, .simulation-status) dd[data-state='logon']::before,
+:where(.session-status, .simulation-status) dd[data-state='logout']::before {
+  background: var(--state-warn);
+}
+
+:where(.session-status, .simulation-status) dd[data-state='disconnected']::before {
+  background: var(--state-danger);
+}
+
+.simulation-status__reason {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.simulation-status__row dd[data-errors='yes'] {
+  color: var(--state-danger);
+}
+
+.simulation-status__exectypes {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.simulation-status__exectype-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr));
+  gap: 0.4rem;
+}
+
+.simulation-status__exectype {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.simulation-status__exectype-key {
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.simulation-status__exectype-count {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+/* ----------------------------------------------------------------------------
+ * ConnectivityBadge — compacto na topbar, dois canais.
+ * ------------------------------------------------------------------------- */
+/* Oculta visualmente mantendo o elemento acessível a leitores de tela. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.connectivity-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.connectivity-badge__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.connectivity-badge__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.connectivity-badge__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--state-neutral);
+  flex: none;
+}
+
+.connectivity-badge__item[data-status='up'] .connectivity-badge__dot {
+  background: var(--state-ok);
+}
+
+.connectivity-badge__item[data-status='up'] .connectivity-badge__label {
+  color: var(--color-text);
+}
+
+.connectivity-badge__item[data-status='connecting'] .connectivity-badge__dot {
+  background: var(--state-warn);
+}
+
+.connectivity-badge__item[data-status='down'] .connectivity-badge__dot {
+  background: var(--state-danger);
+}
+
+/* ----------------------------------------------------------------------------
+ * MessageFeed — tabela densa, rolável, dados FIX monoespaçados.
+ * ------------------------------------------------------------------------- */
+.message-feed {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.message-feed__table-wrap {
+  overflow: auto;
+  max-height: 60vh;
+}
+
+.message-feed__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-feed__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border-strong);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.message-feed__table tbody td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+/* Zebra para leitura em linha. */
+.message-feed__row:nth-child(even) td {
+  background: var(--color-surface-raised);
+}
+
+.message-feed__time {
+  color: var(--color-text-muted);
 }

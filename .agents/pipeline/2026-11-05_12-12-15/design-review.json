@@ -1,0 +1,21 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "title": "Helper CreateGenerator()/TestSimulationConfig() não fixa a SimulationConfig concreta",
+      "where": "Defeito A -> Mudanças concretas -> FixAcceptorServiceTests.cs (snippet CreateGenerator())",
+      "problem": "O snippet deixa TestSimulationConfig() como 'default/fábrica se existir, ou montar instância', sem fixar qual. Como o construtor do gerador não valida accounts/instruments (só Start() valida, e esses testes não chamam Start()), qualquer SimulationConfig não-nula serve.",
+      "fix": "Opcional: fixar que TestSimulationConfig() retorna uma SimulationConfig padrão não-nula. Não bloqueante."
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "title": "WriteB3Header com argumentos nomeados e literais string liga-se à sobrecarga string",
+      "where": "Defeito A -> teste de integração (snippet do Logon)",
+      "problem": "B3FixMessageWriter.WriteB3Header tem sobrecargas string e ReadOnlySpan<byte>. O snippet nomeado com literais string resolve para a sobrecarga string (correto); apenas garantir na implementação que os literais sejam string (não u8).",
+      "fix": "Nenhum; observação para a implementação. Não bloqueante."
+    }
+  ]
+}

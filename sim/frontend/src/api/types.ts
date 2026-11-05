@@ -98,6 +98,8 @@ export interface SessionStateView {
   nextOutboundMsgSeqNum: number;
   /** Próximo MsgSeqNum de entrada que a sessão espera do cliente. */
   nextExpectedInboundMsgSeqNum: number;
+  /** Horário UTC (ISO 8601) da última atividade de heartbeat, ou null quando não houver. */
+  lastHeartbeatUtc?: string | null;
 }
 
 /** Visão da FSM da simulação e contadores da rodada dentro de StateResponse. */

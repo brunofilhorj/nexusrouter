@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
+using NexusRouter.Domain.Secrets;
 using NexusRouter.Egress.Fix;
 using NexusRouter.Ingress.Sessions;
 
@@ -128,7 +129,8 @@ public sealed class FixOutboundDispatcherTests
                 LogonTimeout = TimeSpan.FromSeconds(2),
             },
             NullLogger<FixOutboundDispatcher>.Instance,
-            new DispatchPayloadPool());
+            new DispatchPayloadPool(),
+            ThrowingSecretResolver.Instance);
         await dispatcher.StartAsync(CancellationToken.None);
         Assert.True(dispatcher.IsHealthy);
         return dispatcher;
@@ -272,6 +274,17 @@ public sealed class FixOutboundDispatcherTests
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+
+    // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
+    // Se for, falha alto em vez de ler silenciosamente uma credencial.
+    private sealed class ThrowingSecretResolver : ISecretResolver
+    {
+        public static readonly ThrowingSecretResolver Instance = new();
+
+        public string ResolveRequired(string key) =>
+            throw new InvalidOperationException(
+                $"O resolvedor de segredos não deveria ser chamado neste teste (chave '{key}').");
     }
 
     private static string TempDirectory() =>
