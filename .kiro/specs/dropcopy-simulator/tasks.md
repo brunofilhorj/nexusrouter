@@ -268,7 +268,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-15 — Implementar seleção de conta e instrumento
+- [x] T-15 — Implementar seleção de conta e instrumento
 
 **Objetivo:** Resolver conta e instrumento por ordem segundo a config.
 

@@ -86,6 +86,7 @@ public sealed class ExecutionReportFactory : IFixMessageFactory
             ref writer,
             FixTags.BtsFinalTxOrdStatus,
             ctx.BtsFinalTxOrdStatus ?? ctx.OrdStatus);
+        writer.WriteField(FixTags.Account, ctx.Account);
 
         writer.WriteField(FixTags.Symbol, ctx.Symbol);
         if (ctx.SecurityId > 0)

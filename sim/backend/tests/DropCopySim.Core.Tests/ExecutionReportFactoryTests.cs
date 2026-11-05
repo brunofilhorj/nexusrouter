@@ -28,6 +28,7 @@ public class ExecutionReportFactoryTests
         Assert.Contains("22=8\u0001", message);
         Assert.Contains("55=PETR4\u0001", message);
         Assert.Contains("207=BVMF\u0001", message);
+        Assert.Contains("1=ACCOUNT-1\u0001", message);
         Assert.Contains("453=2\u0001448=CLEARING\u0001447=D\u0001452=4\u0001448=ACCOUNT-1\u0001447=D\u0001452=3\u0001", message);
         Assert.Contains("10029=1\u0001", message);
         Assert.Contains("9773=Y\u0001", message);
