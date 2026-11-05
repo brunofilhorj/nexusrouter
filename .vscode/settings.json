@@ -1,1 +1,6 @@
-{}
+{
+    "csharp-dev-tools.solutionViewer.selectedWorkspaceSolutions": [
+        "NexusRouter.slnx",
+        "sim/backend/DropCopySimulator.slnx"
+    ]
+}
