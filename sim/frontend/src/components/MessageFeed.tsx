@@ -65,6 +65,7 @@ export function MessageFeed(): React.JSX.Element {
             : 'Telemetria offline.'}
         </p>
       ) : (
+        <div className="message-feed__table-wrap">
         <table className="message-feed__table">
           <thead>
             <tr>
@@ -97,6 +98,7 @@ export function MessageFeed(): React.JSX.Element {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );

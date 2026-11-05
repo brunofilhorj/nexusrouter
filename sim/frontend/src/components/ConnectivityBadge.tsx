@@ -93,7 +93,9 @@ export function ConnectivityBadge(): React.JSX.Element {
       className="connectivity-badge"
       aria-labelledby="connectivity-badge-heading"
     >
-      <h2 id="connectivity-badge-heading">Conectividade</h2>
+      <h2 id="connectivity-badge-heading" className="visually-hidden">
+        Conectividade
+      </h2>
       <ul className="connectivity-badge__list">
         <li
           className="connectivity-badge__item"
