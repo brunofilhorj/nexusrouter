@@ -490,7 +490,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-29 — Implementar `FaultControls`
+- [x] T-29 — Implementar `FaultControls`
 
 **Objetivo:** Injetar falhas pela UI.
 
