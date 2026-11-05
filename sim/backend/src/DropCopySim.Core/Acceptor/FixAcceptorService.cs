@@ -144,6 +144,13 @@ public sealed class FixAcceptorService : IHostedService
             {
                 break;
             }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+            {
+                // StopAsync closes the listener, which disposes the underlying socket.
+                // A pending AcceptSocketAsync can observe that disposal as an
+                // ObjectDisposedException instead of cancellation; treat it as a clean stop.
+                break;
+            }
 
             var session = new AcceptorSession(socket, _options, _sessionLogger);
             Volatile.Write(ref _activeSession, session);
