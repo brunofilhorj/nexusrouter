@@ -19,6 +19,8 @@ import SimulationControls from './components/SimulationControls';
 import SimulationStatus from './components/SimulationStatus';
 import ThemeToggle from './components/ThemeToggle';
 import { useAppSelector } from './state/useAppStore';
+import { appStore } from './state/store';
+import { simApi } from './api/client';
 import type { SimulationState } from './api/types';
 import { telemetryClient } from './ws/telemetry';
 import './theme/tokens.css';
@@ -36,8 +38,25 @@ function App(): React.JSX.Element {
   );
 
   useEffect(() => {
+    let cancelled = false;
+    // Semeia o estado com a verdade do servidor antes/independente de transições
+    // (um reload com o backend já em Running cairia em Idle, travando a UI).
+    void simApi
+      .getState()
+      .then((snapshot) => {
+        if (!cancelled) {
+          appStore.hydrate(snapshot);
+        }
+      })
+      .catch(() => {
+        // Backend indisponível na carga: a telemetria hidrata ao reconectar.
+      });
+
     telemetryClient.start();
-    return () => telemetryClient.stop();
+    return () => {
+      cancelled = true;
+      telemetryClient.stop();
+    };
   }, []);
 
   return (

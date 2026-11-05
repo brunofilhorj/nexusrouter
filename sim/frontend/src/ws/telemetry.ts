@@ -13,7 +13,7 @@
  */
 
 import type { TelemetryEvent } from '../api/types';
-import { SIM_API_BASE_URL } from '../api/client';
+import { SIM_API_BASE_URL, simApi } from '../api/client';
 import { appStore, type AppStore } from '../state/store';
 
 /** Caminho do endpoint de upgrade WebSocket do SimCore. */
@@ -80,14 +80,23 @@ export class TelemetryClient {
   private stopped = true;
   private readonly store: AppStore;
   private readonly url: string;
+  private readonly onOpen: (() => void) | undefined;
 
   /**
    * @param store Store a atualizar com conectividade e eventos.
    * @param url URL do WebSocket; default derivada de `VITE_SIM_API`.
+   * @param onOpen Callback disparado a cada conexão bem-sucedida. Útil para
+   *   re-hidratar o store com `GET /v1/state` após uma reconexão, já que o feed
+   *   só empurra transições e perderia o estado corrente entre quedas.
    */
-  constructor(store: AppStore = appStore, url: string = resolveWebSocketUrl()) {
+  constructor(
+    store: AppStore = appStore,
+    url: string = resolveWebSocketUrl(),
+    onOpen?: () => void,
+  ) {
     this.store = store;
     this.url = url;
+    this.onOpen = onOpen;
   }
 
   /** Abre a conexão e habilita a reconexão automática. Idempotente. */
@@ -131,6 +140,8 @@ export class TelemetryClient {
     socket.onopen = () => {
       this.attempt = 0;
       this.store.setConnectivity('open');
+      // Re-hidrata o estado corrente: o feed só traz transições futuras.
+      this.onOpen?.();
     };
 
     socket.onmessage = (ev: MessageEvent) => {
@@ -193,5 +204,22 @@ export class TelemetryClient {
   }
 }
 
-/** Instância singleton do cliente de telemetria ligada ao store da app. */
-export const telemetryClient = new TelemetryClient();
+/**
+ * Instância singleton do cliente de telemetria ligada ao store da app.
+ *
+ * A cada (re)conexão do feed, re-hidrata o store com `GET /v1/state` para
+ * recuperar o estado corrente que o feed, por só empurrar transições, não
+ * reemitiria após uma queda.
+ */
+export const telemetryClient = new TelemetryClient(
+  appStore,
+  resolveWebSocketUrl(),
+  () => {
+    void simApi
+      .getState()
+      .then((snapshot) => appStore.hydrate(snapshot))
+      .catch(() => {
+        // Snapshot indisponível no momento da reconexão: tolerado.
+      });
+  },
+);

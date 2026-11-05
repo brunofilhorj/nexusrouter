@@ -15,6 +15,7 @@ import type {
   SessionStateChanged,
   SimulationState,
   SimulationStateChanged,
+  StateResponse,
   TelemetryEvent,
 } from '../api/types';
 
@@ -114,6 +115,42 @@ export class AppStore {
 
   /** Lê o snapshot imutável corrente (estável entre mutações). */
   readonly getSnapshot = (): AppState => this.state;
+
+  /**
+   * Semeia o estado a partir do snapshot consolidado `GET /v1/state`.
+   *
+   * A telemetria WebSocket só empurra *transições*; após um reload (ou uma
+   * reconexão do feed) o store voltaria ao default `Idle` e ficaria preso lá até
+   * a próxima transição, divergindo do backend — que pode já estar `Running`.
+   * Esta hidratação alinha `simulationState`, `session` e `counters` com a
+   * verdade do servidor sem depender de um evento de transição.
+   */
+  hydrate(snapshot: StateResponse): void {
+    const sim = snapshot.simulation;
+    const session: SessionView | null = snapshot.session
+      ? {
+          state: snapshot.session.state,
+          senderCompId: snapshot.session.senderCompId,
+          targetCompId: snapshot.session.targetCompId,
+          msgSeqNum: snapshot.session.nextOutboundMsgSeqNum,
+          lastHeartbeatUtc: null,
+          timestampUtc: new Date().toISOString(),
+        }
+      : this.state.session;
+    const counters: CountersView = {
+      totalSent: sim.totalSent,
+      ratePerSec: 0,
+      byExecType: sim.byExecType,
+      errors: sim.errors,
+      elapsedMs: sim.elapsedMs,
+    };
+    this.commit({
+      ...this.state,
+      simulationState: sim.state,
+      session,
+      counters,
+    });
+  }
 
   /** Atualiza o estado de conectividade do WebSocket (FR-UI-08). */
   setConnectivity(status: ConnectivityStatus): void {

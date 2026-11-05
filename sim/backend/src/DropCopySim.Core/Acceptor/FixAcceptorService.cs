@@ -99,8 +99,18 @@ public sealed class FixAcceptorService : IHostedService
             Task? acceptLoop = Interlocked.Exchange(ref _acceptLoop, null);
             if (acceptLoop is not null)
             {
+                // The accept loop was already signalled to stop (stoppingCts cancelled,
+                // listener closed, active session disposed above). If the host's own
+                // shutdown deadline elapses before the loop winds down, do not let the
+                // resulting cancellation escape StopAsync — that would surface as an
+                // unhandled exception and fault the process on shutdown. Log and move on.
                 await acceptLoop.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(
+                "FIX acceptor shutdown deadline elapsed before the accept loop stopped; abandoning the wait.");
         }
         finally
         {

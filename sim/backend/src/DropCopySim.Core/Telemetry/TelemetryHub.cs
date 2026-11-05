@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,7 +24,13 @@ namespace DropCopySim.Core.Telemetry;
 /// </remarks>
 public sealed class TelemetryHub : IHostedService, IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    // Serialize enums as names (e.g. "Running") so the WebSocket feed matches the HTTP control-API
+    // contract and the SimPanel DTOs; without this the SimulationState enum would be written as a
+    // number and the UI's stateSlug(state) would fail on a non-string value.
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
 
     private readonly Channel<TelemetryEvent> _channel;
     private readonly ConcurrentDictionary<string, ITelemetryClient> _clients = new(StringComparer.Ordinal);
