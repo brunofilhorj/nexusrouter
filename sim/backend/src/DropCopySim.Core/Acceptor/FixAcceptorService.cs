@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using DropCopySim.Core.Generation;
+using DropCopySim.Core.Telemetry;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,6 +16,7 @@ public sealed class FixAcceptorService : IHostedService
     private readonly AcceptorOptions _options;
     private readonly ILogger<FixAcceptorService> _logger;
     private readonly ILogger<AcceptorSession> _sessionLogger;
+    private readonly OrderFlowGenerator _generator;
     private TcpListener? _listener;
     private CancellationTokenSource? _stoppingCts;
     private Task? _acceptLoop;
@@ -25,19 +28,23 @@ public sealed class FixAcceptorService : IHostedService
     /// <param name="options">Validated listener and session options.</param>
     /// <param name="logger">Logger for listener lifecycle events.</param>
     /// <param name="sessionLogger">Logger supplied to each accepted session.</param>
+    /// <param name="generator">Order flow generator wired to the active session.</param>
     /// <exception cref="ArgumentNullException">A required argument is null.</exception>
     public FixAcceptorService(
         IOptions<AcceptorOptions> options,
         ILogger<FixAcceptorService> logger,
-        ILogger<AcceptorSession> sessionLogger)
+        ILogger<AcceptorSession> sessionLogger,
+        OrderFlowGenerator generator)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(sessionLogger);
+        ArgumentNullException.ThrowIfNull(generator);
 
         _options = options.Value;
         _logger = logger;
         _sessionLogger = sessionLogger;
+        _generator = generator;
     }
 
     /// <summary>Gets the currently connected session, if one has been accepted.</summary>
@@ -140,6 +147,34 @@ public sealed class FixAcceptorService : IHostedService
 
             var session = new AcceptorSession(socket, _options, _sessionLogger);
             Volatile.Write(ref _activeSession, session);
+
+            void OnStateChanged(SessionStateChanged e)
+            {
+                if (string.Equals(e.State, nameof(AcceptorSessionState.Active), StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        _generator.AttachSession(session);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        _logger.LogDebug("Generator disposed; skipped attaching the active session.");
+                    }
+                }
+                else if (string.Equals(e.State, nameof(AcceptorSessionState.Disconnected), StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        _generator.AttachSession(null);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        _logger.LogDebug("Generator disposed; skipped detaching the disconnected session.");
+                    }
+                }
+            }
+
+            session.StateChanged += OnStateChanged;
             try
             {
                 await session.RunAsync(cancellationToken).ConfigureAwait(false);
@@ -151,6 +186,16 @@ public sealed class FixAcceptorService : IHostedService
             finally
             {
                 await session.DisposeAsync().ConfigureAwait(false);
+                session.StateChanged -= OnStateChanged;
+                try
+                {
+                    _generator.AttachSession(null);
+                }
+                catch (ObjectDisposedException)
+                {
+                    _logger.LogDebug("Generator disposed; skipped detaching on session teardown.");
+                }
+
                 Interlocked.CompareExchange(ref _activeSession, null, session);
             }
         }
