@@ -504,7 +504,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-30 — Implementar `MessageFeed` e `ConnectivityBadge`
+- [x] T-30 — Implementar `MessageFeed` e `ConnectivityBadge`
 
 **Objetivo:** Feed ao vivo das últimas mensagens e indicador de conectividade.
 
