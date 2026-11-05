@@ -388,7 +388,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-22 — Implementar os endpoints de controle, estado e falha
+- [x] T-22 — Implementar os endpoints de controle, estado e falha
 
 **Objetivo:** Expor a API HTTP do SimPanel.
 

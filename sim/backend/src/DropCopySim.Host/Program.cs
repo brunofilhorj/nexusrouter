@@ -1,9 +1,11 @@
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using DropCopySim.Core.Acceptor;
 using DropCopySim.Core.Generation;
 using DropCopySim.Core.Telemetry;
 using DropCopySim.Host;
 using DropCopySim.Host.Auth;
+using DropCopySim.Host.Endpoints;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -96,8 +98,10 @@ builder.Services.AddSingleton<SimulationController>(static sp =>
     return new SimulationController(generator, counters, config);
 });
 
-// FIX acceptor hosted service (listens for the NexusRouter inbound session).
-builder.Services.AddHostedService<FixAcceptorService>();
+// FIX acceptor hosted service (listens for the NexusRouter inbound session). Registered as a
+// singleton so the control endpoints can reach ActiveSession for fault injection and state reads.
+builder.Services.AddSingleton<FixAcceptorService>();
+builder.Services.AddHostedService(static sp => sp.GetRequiredService<FixAcceptorService>());
 
 // CORS for the SimPanel frontend (Control:AllowedOrigins).
 var controlOptions = configRoot.GetSection(ControlOptions.SectionName).Get<ControlOptions>() ?? new ControlOptions();
@@ -108,6 +112,11 @@ builder.Services.AddCors(options => options.AddPolicy(SimPanelCorsPolicy, policy
     .WithOrigins(corsOrigins)
     .AllowAnyHeader()
     .AllowAnyMethod()));
+
+// Serialize/accept enums as names (e.g. "Running", "InvalidCredentials", "RoundRobin") so the
+// control-API JSON is symmetric and self-describing for the SimPanel (FR-API-05).
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 // Optional control-API bearer token (FR-API-06): enforced only when the env var named by
 // Control:AuthTokenEnvVar has a value; otherwise the API runs in open lab mode.
@@ -124,6 +133,12 @@ app.UseWebSockets();
 app.UseControlTokenAuth();
 
 app.MapGet("/", () => Results.Ok(new { service = "DropCopySim.Host", status = "up" }));
+
+// Control-plane HTTP + telemetry WebSocket endpoints (T-22, FR-API-01, FR-API-02).
+app.MapStateEndpoints();
+app.MapSimulationEndpoints();
+app.MapFaultEndpoints();
+app.MapTelemetryEndpoints();
 
 app.Run();
 
