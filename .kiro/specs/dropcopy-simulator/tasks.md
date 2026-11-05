@@ -434,7 +434,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-25 — Implementar a camada de API (`api/client.ts`, `api/types.ts`)
+- [x] T-25 — Implementar a camada de API (`api/client.ts`, `api/types.ts`)
 
 **Objetivo:** Cliente HTTP tipado espelhando o contrato do SimCore.
 
