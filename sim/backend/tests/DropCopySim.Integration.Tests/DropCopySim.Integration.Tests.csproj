@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DropCopySim.Core\DropCopySim.Core.csproj" />
+    <ProjectReference Include="..\..\src\DropCopySim.Host\DropCopySim.Host.csproj" />
   </ItemGroup>
 
 </Project>

@@ -46,9 +46,9 @@ public static class TelemetryEndpoints
             {
                 // Host shutdown or client disconnect; fall through to cleanup.
             }
-            catch (WebSocketException ex)
+            catch (WebSocketException)
             {
-                logger.LogDebug(ex, "Telemetry WebSocket client {ClientId} closed abnormally.", clientId);
+                logger.LogDebug("Telemetry WebSocket client {ClientId} closed abnormally.", clientId);
             }
             finally
             {
@@ -71,17 +71,46 @@ public static class TelemetryEndpoints
         var buffer = new byte[1024];
         while (socket.State == WebSocketState.Open)
         {
-            var result = await socket
-                .ReceiveAsync(buffer, cancellationToken)
-                .ConfigureAwait(false);
+            WebSocketReceiveResult result;
+            try
+            {
+                result = await socket
+                    .ReceiveAsync(buffer, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (WebSocketException)
+            {
+                return;
+            }
 
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                await socket
-                    .CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", cancellationToken)
-                    .ConfigureAwait(false);
+                await TryCloseGracefullyAsync(socket, cancellationToken).ConfigureAwait(false);
                 return;
             }
+        }
+    }
+
+    /// <summary>
+    /// Closes <paramref name="socket"/> with a normal-closure status when it is in a state that still
+    /// permits a close handshake, swallowing the <see cref="WebSocketException"/> thrown when the socket
+    /// was already aborted (e.g. the client tore the connection down between frames).
+    /// </summary>
+    internal static async Task TryCloseGracefullyAsync(WebSocket socket, CancellationToken cancellationToken)
+    {
+        if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+        {
+            return;
+        }
+
+        try
+        {
+            await socket
+                .CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WebSocketException)
+        {
         }
     }
 }

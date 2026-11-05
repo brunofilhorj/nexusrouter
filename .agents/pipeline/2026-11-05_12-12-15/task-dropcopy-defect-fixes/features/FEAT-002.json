@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "Defeito B: fechar o WebSocket de telemetria graciosamente. Quando o SimPanel aborta a conexao (React StrictMode fecha/reabre), o socket pode estar em WebSocketState.Aborted no momento do CloseAsync e lanca WebSocketException, que hoje e logada com stack trace (LogDebug com a excecao). A correcao extrai um TryCloseGracefullyAsync internal static que checa o estado e engole apenas WebSocketException, trata WebSocketException no ReceiveAsync do pump, e loga sem a excecao. Independente do FEAT-001.",
+  "status": "completed",
+  "steps": [
+    "Em sim/backend/src/DropCopySim.Host/Endpoints/TelemetryEndpoints.cs: extrair `internal static async Task TryCloseGracefullyAsync(WebSocket socket, CancellationToken cancellationToken)` que retorna cedo se `socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived)`; senao chama `await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, \"Closing\", cancellationToken).ConfigureAwait(false);` dentro de `try { ... } catch (WebSocketException) { }` (captura SOMENTE WebSocketException).",
+    "Em PumpUntilClosedAsync: envolver `var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);` em `try { ... } catch (WebSocketException) { return; }` (nao capturar OperationCanceledException — ela deve propagar). No ramo `result.MessageType == WebSocketMessageType.Close`, substituir o `CloseAsync` direto por `await TryCloseGracefullyAsync(socket, cancellationToken).ConfigureAwait(false); return;`.",
+    "No catch externo do endpoint, trocar `logger.LogDebug(ex, \"Telemetry WebSocket client {ClientId} closed abnormally.\", clientId);` por `logger.LogDebug(\"Telemetry WebSocket client {ClientId} closed abnormally.\", clientId);` (sem a excecao).",
+    "Em sim/backend/src/DropCopySim.Host/DropCopySim.Host.csproj: adicionar `<ItemGroup><InternalsVisibleTo Include=\"DropCopySim.Integration.Tests\" /></ItemGroup>`.",
+    "Em sim/backend/tests/DropCopySim.Integration.Tests/DropCopySim.Integration.Tests.csproj: adicionar `<ProjectReference Include=\"..\\..\\src\\DropCopySim.Host\\DropCopySim.Host.csproj\" />` ao ItemGroup de ProjectReference existente.",
+    "Criar sim/backend/tests/DropCopySim.Integration.Tests/TelemetryCloseTests.cs com um test double escrito a mao: `private sealed class FakeWebSocket : System.Net.WebSockets.WebSocket` que sobrescreve `State` (configuravel via ctor) e `CloseAsync` (opcionalmente lanca WebSocketException); demais membros abstratos (Abort, CloseOutputAsync, Dispose, ReceiveAsync, SendAsync, CloseStatus, CloseStatusDescription, SubProtocol) com stubs minimos (lancar NotSupportedException onde nao usado). NAO usar NSubstitute/FluentAssertions. Dois testes xUnit: (a) State=Aborted -> `await TelemetryEndpoints.TryCloseGracefullyAsync(fake, default)` nao lanca e CloseAsync nao e chamado; (b) State=Open com CloseAsync lancando WebSocketException -> `TryCloseGracefullyAsync` nao propaga. TryCloseGracefullyAsync e alcancavel via InternalsVisibleTo."
+  ],
+  "acceptance_criteria": [
+    "`dotnet build sim/backend/DropCopySimulator.slnx` compila sem erros e sem warnings.",
+    "`dotnet test sim/backend/DropCopySimulator.slnx --filter FullyQualifiedName~TelemetryCloseTests` passa ambos os casos (Aborted e Open-que-lanca) sem excecao propagada.",
+    "Nenhuma dependencia nova foi adicionada ao sim/backend/Directory.Packages.props (sem NSubstitute/FluentAssertions).",
+    "O catch externo do endpoint loga em Debug sem a excecao."
+  ],
+  "verification": [
+    "cd c:\\repos\\nexusrouter && dotnet build sim/backend/DropCopySimulator.slnx",
+    "cd c:\\repos\\nexusrouter && dotnet test sim/backend/DropCopySimulator.slnx --filter \"FullyQualifiedName~TelemetryCloseTests\""
+  ],
+  "blocked_reason": null,
+  "findings": "Implemented in sim/backend. TelemetryEndpoints.cs: added `internal static async Task TryCloseGracefullyAsync(WebSocket, CancellationToken)` (returns early unless State is Open or CloseReceived; otherwise CloseAsync NormalClosure inside try/catch(WebSocketException){}). PumpUntilClosedAsync now wraps ReceiveAsync in try/catch(WebSocketException){return;} (OperationCanceledException still propagates) and the Close branch calls TryCloseGracefullyAsync then returns. Outer endpoint catch(WebSocketException) no longer passes the exception to LogDebug. DropCopySim.Host.csproj: added <InternalsVisibleTo Include=\"DropCopySim.Integration.Tests\" />. DropCopySim.Integration.Tests.csproj: added ProjectReference to DropCopySim.Host.csproj. New test file tests/DropCopySim.Integration.Tests/TelemetryCloseTests.cs with hand-written FakeWebSocket double (no NSubstitute/FluentAssertions) and two xUnit tests: Aborted-state -> no CloseAsync call, no throw; Open-state with CloseAsync throwing WebSocketException -> swallowed. Verification from c:\\repos\\nexusrouter: `dotnet build sim/backend/DropCopySimulator.slnx` succeeded with 0 errors/0 warnings; `dotnet test ... --filter FullyQualifiedName~TelemetryCloseTests` -> total 2, failed 0, succeeded 2. No new packages added to Directory.Packages.props. Note: the test command must be run with --no-build or a long timeout (>10min) available; VSTest startup is slow on this host. FEAT-002 is independent of FEAT-001."
+}
