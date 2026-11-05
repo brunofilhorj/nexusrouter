@@ -403,7 +403,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-23 — Implementar autenticação por token opcional
+- [x] T-23 — Implementar autenticação por token opcional
 
 **Objetivo:** Proteger a API quando `SIM_CONTROL_TOKEN` estiver definido.
 

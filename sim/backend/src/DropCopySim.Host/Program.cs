@@ -3,6 +3,7 @@ using DropCopySim.Core.Acceptor;
 using DropCopySim.Core.Generation;
 using DropCopySim.Core.Telemetry;
 using DropCopySim.Host;
+using DropCopySim.Host.Auth;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -108,11 +109,19 @@ builder.Services.AddCors(options => options.AddPolicy(SimPanelCorsPolicy, policy
     .AllowAnyHeader()
     .AllowAnyMethod()));
 
+// Optional control-API bearer token (FR-API-06): enforced only when the env var named by
+// Control:AuthTokenEnvVar has a value; otherwise the API runs in open lab mode.
+builder.Services.AddControlTokenAuth();
+
 var app = builder.Build();
 
 app.UseSerilogRequestLogging();
 app.UseCors(SimPanelCorsPolicy);
 app.UseWebSockets();
+
+// Token gate runs after CORS (so browser preflight OPTIONS is answered by the CORS middleware)
+// and before any control endpoint is matched.
+app.UseControlTokenAuth();
 
 app.MapGet("/", () => Results.Ok(new { service = "DropCopySim.Host", status = "up" }));
 
