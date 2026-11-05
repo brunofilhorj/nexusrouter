@@ -351,7 +351,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 6 — API de Controle + Telemetria (Host)
 
-- [ ] T-20 — Implementar `TelemetryHub` (channel + broadcast WebSocket)
+- [x] T-20 — Implementar `TelemetryHub` (channel + broadcast WebSocket)
 
 **Objetivo:** Difundir estado e amostras ao front sem bloquear o envio FIX.
 
@@ -370,7 +370,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-21 — Implementar `Program.cs` e wiring de DI do Host
+- [x] T-21 — Implementar `Program.cs` e wiring de DI do Host
 
 **Objetivo:** Subir o `WebApplication` com acceptor, controller, telemetria e Serilog.
 
@@ -388,7 +388,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-22 — Implementar os endpoints de controle, estado e falha
+- [x] T-22 — Implementar os endpoints de controle, estado e falha
 
 **Objetivo:** Expor a API HTTP do SimPanel.
 
@@ -403,7 +403,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-23 — Implementar autenticação por token opcional
+- [x] T-23 — Implementar autenticação por token opcional
 
 **Objetivo:** Proteger a API quando `SIM_CONTROL_TOKEN` estiver definido.
 
