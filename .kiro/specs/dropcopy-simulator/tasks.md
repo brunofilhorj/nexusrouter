@@ -476,7 +476,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-28 — Implementar `SimulationControls` e `ConfigForm`
+- [x] T-28 — Implementar `SimulationControls` e `ConfigForm`
 
 **Objetivo:** Controlar a rodada e editar a configuração.
 
