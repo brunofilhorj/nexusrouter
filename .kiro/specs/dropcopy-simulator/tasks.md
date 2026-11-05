@@ -217,7 +217,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 4 — Geração de Mensagens de Aplicação
 
-- [ ] T-12 — Definir `IFixMessageFactory`, `OrderContext` e `OrderLifecycleModel`
+- [x] T-12 — Definir `IFixMessageFactory`, `OrderContext` e `OrderLifecycleModel`
 
 **Objetivo:** Abstração de geração e o modelo de ciclo de vida da ordem.
 
@@ -233,7 +233,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-13 — Implementar `ExecutionReportFactory` (MsgType=8)
+- [x] T-13 — Implementar `ExecutionReportFactory` (MsgType=8)
 
 **Objetivo:** Produzir `ExecutionReport` fiéis ao `FIX44Entrypoint.xml`.
 
@@ -253,7 +253,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-14 — Implementar os factories opcionais `OrderCancelReject` (9) e `BusinessMessageReject` (j)
+- [x] T-14 — Implementar os factories opcionais `OrderCancelReject` (9) e `BusinessMessageReject` (j)
 
 **Objetivo:** Ampliar a cobertura de tipos de mensagem para roteamento.
 
@@ -268,7 +268,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-15 — Implementar seleção de conta e instrumento
+- [x] T-15 — Implementar seleção de conta e instrumento
 
 **Objetivo:** Resolver conta e instrumento por ordem segundo a config.
 
@@ -282,7 +282,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-16 — Implementar `OrderFlowGenerator` (loop + rate limiting)
+- [x] T-16 — Implementar `OrderFlowGenerator` (loop + rate limiting)
 
 **Objetivo:** Loop de background que gera e envia frames na taxa alvo.
 
@@ -302,7 +302,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 5 — Controle de Simulação e Injeção de Falhas
 
-- [ ] T-17 — Implementar `SimulationController` (FSM Idle/Running/Paused)
+- [x] T-17 — Implementar `SimulationController` (FSM Idle/Running/Paused)
 
 **Objetivo:** Comandar a rodada e validar transições.
 
@@ -321,7 +321,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-18 — Implementar os comandos de injeção de falha na sessão
+- [x] T-18 — Implementar os comandos de injeção de falha na sessão
 
 **Objetivo:** Drop, Force Logout e Sequence Gap.
 
@@ -335,7 +335,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-19 — Implementar o modo de resposta de Logon configurável
+- [x] T-19 — Implementar o modo de resposta de Logon configurável
 
 **Objetivo:** Suportar Logon com falha para testar o NexusRouter.
 

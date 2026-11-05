@@ -22,6 +22,8 @@ namespace DropCopySim.Core.Acceptor;
 /// </remarks>
 public sealed class AcceptorSession : IAsyncDisposable
 {
+    private const byte Soh = 0x01;
+
     private readonly Socket _socket;
     private readonly NetworkStream _stream;
     private readonly PipeReader _reader;
@@ -36,6 +38,7 @@ public sealed class AcceptorSession : IAsyncDisposable
     private long _lastActivityUtcTicks;
     private string _peerCompId = string.Empty;
     private int _heartbeatIntervalSeconds;
+    private int _logonMode;
     private int _started;
     private int _disposed;
 
@@ -55,6 +58,7 @@ public sealed class AcceptorSession : IAsyncDisposable
         _socket = socket;
         Options = options;
         _logger = logger;
+        _logonMode = (int)options.LogonMode;
         _stream = new NetworkStream(socket, ownsSocket: false);
         _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(leaveOpen: true));
         _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(leaveOpen: true));
@@ -62,6 +66,19 @@ public sealed class AcceptorSession : IAsyncDisposable
 
     /// <summary>Acceptor options captured for this connection.</summary>
     public AcceptorOptions Options { get; }
+
+    /// <summary>
+    /// How the next client Logon is answered (FR-ACC-05, FR-FAULT-03).
+    /// </summary>
+    /// <remarks>
+    /// Initialized from <see cref="AcceptorOptions.LogonMode"/> and switchable at runtime with
+    /// <see cref="SetLogonMode(LogonMode)"/>. Read when a Logon arrives: <see cref="LogonMode.Success"/>
+    /// answers with <c>ApplicationLogonRspCode (6930) = 0</c> and moves to
+    /// <see cref="AcceptorSessionState.Active"/>; <see cref="LogonMode.InvalidCredentials"/> and
+    /// <see cref="LogonMode.NotAuthorized"/> answer with <c>6930 = 1</c> or <c>6930 = 2</c> and close
+    /// the session (<c>.kiro/steering/b3-guidelines.md</c> §13).
+    /// </remarks>
+    public LogonMode LogonMode => (LogonMode)Volatile.Read(ref _logonMode);
 
     /// <summary>Session lifecycle state machine.</summary>
     public FixSessionFsm Fsm => _fsm;
@@ -158,6 +175,34 @@ public sealed class AcceptorSession : IAsyncDisposable
     public void ResetOutboundMsgSeqNum() => Interlocked.Exchange(ref _outboundSeqNum, 0);
 
     /// <summary>
+    /// Switches how the next client Logon is answered (FR-FAULT-03).
+    /// </summary>
+    /// <param name="mode">The Logon response mode applied to Logons received after this call.</param>
+    /// <remarks>
+    /// Consumed by the control endpoint (T-22). A Logon already accepted on this connection keeps its
+    /// state; the new mode takes effect on the next Logon (typically after a reconnect). Safe to call
+    /// from the control plane concurrently with the read loop.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is not a defined value.</exception>
+    public void SetLogonMode(LogonMode mode)
+    {
+        if (mode is not (LogonMode.Success or LogonMode.InvalidCredentials or LogonMode.NotAuthorized))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown Logon mode.");
+        }
+
+        LogonMode previous = (LogonMode)Interlocked.Exchange(ref _logonMode, (int)mode);
+        if (previous != mode)
+        {
+            _logger.LogInformation(
+                "Logon response mode changed from {PreviousMode} to {LogonMode}. SenderCompId {SenderCompId}",
+                previous,
+                mode,
+                Options.SenderCompId);
+        }
+    }
+
+    /// <summary>
     /// Writes one complete FIX frame to the client.
     /// </summary>
     /// <param name="frame">Frame bytes, including the CheckSum trailer.</param>
@@ -178,6 +223,136 @@ public sealed class AcceptorSession : IAsyncDisposable
 
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         return WriteFrameAsync(frame.ToArray(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Drops the TCP connection abruptly, without sending a FIX Logout (FR-FAULT-01).
+    /// </summary>
+    /// <remarks>
+    /// Simulates an ungraceful disconnect so the NexusRouter exercises its reconnect-with-backoff
+    /// path (<c>.kiro/steering/b3-guidelines.md</c> §13, "Desconexão TCP (sem Logout)"). The read
+    /// loop observes the closed transport and moves the session to
+    /// <see cref="AcceptorSessionState.Disconnected"/>; <see cref="FixAcceptorService"/> then accepts
+    /// a fresh connection (FR-FAULT-06). Safe to call more than once; later calls are ignored.
+    /// </remarks>
+    public void DropConnection()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Fault injection: dropping connection without Logout. SenderCompId {SenderCompId}",
+            Options.SenderCompId);
+
+        try
+        {
+            _socket.Shutdown(SocketShutdown.Both);
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "Fault injection: socket shutdown skipped on drop.");
+        }
+
+        try
+        {
+            _socket.Close();
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "Fault injection: socket close skipped on drop.");
+        }
+    }
+
+    /// <summary>
+    /// Sends a FIX Logout (MsgType=5) carrying <paramref name="text"/> in Text (tag 58) (FR-FAULT-02).
+    /// </summary>
+    /// <param name="text">
+    /// Human-readable Logout reason, for example <c>"MsgSeqNum too low"</c> or
+    /// <c>"Password will expire"</c> (<c>.kiro/steering/b3-guidelines.md</c> §13).
+    /// </param>
+    /// <param name="cancellationToken">Cancels while waiting for the outbound lock or socket write.</param>
+    /// <returns>A task that completes once the Logout has been flushed to the client.</returns>
+    /// <exception cref="ArgumentException"><paramref name="text"/> is null or empty.</exception>
+    /// <exception cref="InvalidSessionStateException">The session is not <see cref="AcceptorSessionState.Active"/>.</exception>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    public async ValueTask ForceLogoutAsync(string text, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(text);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        if (_fsm.State != AcceptorSessionState.Active)
+        {
+            throw new InvalidSessionStateException(_fsm.State, AcceptorSessionState.LogoutSent, AcceptorSessionState.Active);
+        }
+
+        _logger.LogWarning(
+            "Fault injection: forcing Logout. SenderCompId {SenderCompId} Text {LogoutText}",
+            Options.SenderCompId,
+            text);
+
+        await SendAdministrativeMessageAsync(
+            "5",
+            _peerCompId,
+            null,
+            null,
+            text,
+            cancellationToken).ConfigureAwait(false);
+
+        _fsm.TransitionToLogoutSent();
+        PublishState();
+    }
+
+    /// <summary>
+    /// Injects a gap in the outbound session sequence by skipping <paramref name="skip"/> numbers (FR-FAULT-04).
+    /// </summary>
+    /// <param name="skip">Number of outbound MsgSeqNum values to skip. Must be positive.</param>
+    /// <remarks>
+    /// The next outbound frame is numbered past the skipped range, so the client detects a gap and
+    /// issues a <c>ResendRequest (2)</c>. The inbound handler answers that request with a
+    /// <c>SequenceReset (4)</c> <c>GapFillFlag=Y</c> covering the hole
+    /// (<c>.kiro/steering/b3-guidelines.md</c> §12.1). This does not send a frame on its own.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="skip"/> is not positive.</exception>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    public void InjectSequenceGap(int skip)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(skip);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        long gapStart = Interlocked.Add(ref _outboundSeqNum, skip) + 1;
+        _logger.LogWarning(
+            "Fault injection: skipping {Skip} outbound sequence numbers. Next outbound MsgSeqNum {NextSeqNum} SenderCompId {SenderCompId}",
+            skip,
+            gapStart,
+            Options.SenderCompId);
+    }
+
+    /// <summary>
+    /// Sends one deliberately malformed frame of the requested <paramref name="kind"/> (FR-FAULT-05, optional).
+    /// </summary>
+    /// <param name="kind">The way the frame should deviate from a valid FIX 4.4 message.</param>
+    /// <param name="cancellationToken">Cancels while waiting for the outbound lock or socket write.</param>
+    /// <returns>A task that completes once the malformed frame has been flushed to the client.</returns>
+    /// <remarks>
+    /// Consumes one outbound MsgSeqNum. The frame is otherwise a Heartbeat (MsgType=0) so the only
+    /// defect is the injected one (bad CheckSum or a missing header field).
+    /// </remarks>
+    /// <exception cref="ObjectDisposedException">The session has been disposed.</exception>
+    public async ValueTask InjectMalformedAsync(
+        MalformedInjectionKind kind,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+        _logger.LogWarning(
+            "Fault injection: sending malformed frame {Kind}. SenderCompId {SenderCompId}",
+            kind,
+            Options.SenderCompId);
+
+        byte[] frame = BuildMalformedFrame(kind);
+        await SendOutbound(frame, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Closes the socket and releases the outbound writer.</summary>
@@ -317,13 +492,30 @@ public sealed class AcceptorSession : IAsyncDisposable
             _fsm.TransitionToLogonReceived();
             PublishState();
 
+            LogonMode logonMode = LogonMode;
+            int logonRspCode = (int)logonMode;
+
             await SendAdministrativeMessageAsync(
                 "A",
                 peerCompId,
                 heartbeatInterval,
                 null,
                 null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                logonRspCode).ConfigureAwait(false);
+
+            if (logonMode != LogonMode.Success)
+            {
+                _logger.LogWarning(
+                    "Fault injection: rejecting Logon with ApplicationLogonRspCode {LogonRspCode} ({LogonMode}). SenderCompId {SenderCompId}",
+                    logonRspCode,
+                    logonMode,
+                    Options.SenderCompId);
+
+                // Logon failed deterministically (FR-FAULT-03). End the read loop; RunAsync's finally
+                // moves the session LogonReceived -> Disconnected, closing the connection without Active.
+                return false;
+            }
 
             _fsm.TransitionToActive();
             PublishState();
@@ -400,6 +592,80 @@ public sealed class AcceptorSession : IAsyncDisposable
         }
     }
 
+    private byte[] BuildMalformedFrame(MalformedInjectionKind kind)
+    {
+        int capacity = checked(128 + Options.SenderCompId.Length + _peerCompId.Length);
+        byte[] buffer = new byte[capacity];
+        var messageWriter = new B3FixMessageWriter(buffer);
+        long sequenceNumber = AllocateOutboundMsgSeqNum();
+        messageWriter.WriteB3Header(
+            "0",
+            Options.SenderCompId,
+            _peerCompId.Length == 0 ? Options.TargetCompId : _peerCompId,
+            sequenceNumber,
+            DateTime.UtcNow,
+            sequenceNumber);
+        int length = messageWriter.Finish();
+
+        return kind switch
+        {
+            MalformedInjectionKind.InvalidCheckSum => CorruptCheckSum(buffer, length),
+            MalformedInjectionKind.MissingField => RemoveField(buffer, length, FixTags.SendingTime),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown malformed injection kind."),
+        };
+    }
+
+    private static byte[] CorruptCheckSum(byte[] frame, int length)
+    {
+        byte[] corrupted = frame[..length];
+
+        // CheckSum (10=XXX<SOH>) is the final seven bytes: "10=" + three digits + SOH.
+        // Flip each digit to a different one so the trailer no longer matches the body.
+        for (int i = corrupted.Length - 4; i < corrupted.Length - 1; i++)
+        {
+            corrupted[i] = corrupted[i] == (byte)'0' ? (byte)'1' : (byte)'0';
+        }
+
+        return corrupted;
+    }
+
+    private static byte[] RemoveField(byte[] frame, int length, int tag)
+    {
+        ReadOnlySpan<byte> source = frame.AsSpan(0, length);
+        Span<byte> prefix = stackalloc byte[12];
+        int prefixLength = 0;
+        prefix[prefixLength++] = Soh;
+        int digitsAt = prefixLength;
+        if (!System.Buffers.Text.Utf8Formatter.TryFormat(tag, prefix[digitsAt..], out int digits))
+        {
+            throw new InvalidOperationException("Tag did not fit in the lookup prefix.");
+        }
+
+        prefixLength += digits;
+        prefix[prefixLength++] = (byte)'=';
+        ReadOnlySpan<byte> needle = prefix[..prefixLength];
+
+        int fieldStart = source.IndexOf(needle);
+        if (fieldStart < 0)
+        {
+            // Field not present; nothing to remove, return as-is.
+            return source.ToArray();
+        }
+
+        int valueStart = fieldStart + needle.Length;
+        int sohOffset = source[valueStart..].IndexOf(Soh);
+        if (sohOffset < 0)
+        {
+            return source.ToArray();
+        }
+
+        int fieldEnd = valueStart + sohOffset + 1;
+        byte[] result = new byte[length - (fieldEnd - fieldStart)];
+        source[..fieldStart].CopyTo(result);
+        source[fieldEnd..].CopyTo(result.AsSpan(fieldStart));
+        return result;
+    }
+
     private ValueTask SendRejectAsync(string targetCompId, string text, CancellationToken cancellationToken) =>
         SendAdministrativeMessageAsync("3", targetCompId, null, null, text, cancellationToken);
 
@@ -470,7 +736,8 @@ public sealed class AcceptorSession : IAsyncDisposable
         int? heartbeatInterval,
         string? testReqId,
         string? text,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int logonRspCode = 0)
     {
         int capacity = checked(
             128
@@ -493,7 +760,7 @@ public sealed class AcceptorSession : IAsyncDisposable
         {
             messageWriter.WriteField(FixTags.EncryptMethod, 0);
             messageWriter.WriteField(FixTags.HeartBtInt, interval);
-            messageWriter.WriteField(FixTags.ApplicationLogonRspCode, 0);
+            messageWriter.WriteField(FixTags.ApplicationLogonRspCode, logonRspCode);
         }
 
         if (testReqId is not null)

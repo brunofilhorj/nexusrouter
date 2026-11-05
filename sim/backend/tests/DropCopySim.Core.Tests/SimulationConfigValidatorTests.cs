@@ -38,6 +38,27 @@ public class SimulationConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_Accepts_OptionalRejectMessageTypes()
+    {
+        var config = CreateValidConfig() with { EnabledMessageTypes = ["8", "9", "j"] };
+
+        var result = _sut.Validate(Options.DefaultName, config);
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Fact]
+    public void Validate_Fails_WhenMessageTypeIsUnsupported()
+    {
+        var config = CreateValidConfig() with { EnabledMessageTypes = ["X"] };
+
+        var result = _sut.Validate(Options.DefaultName, config);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, static f => f.Contains("not supported", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Validate_Fails_WhenAccountsEmpty()
     {
         var config = CreateValidConfig() with { Accounts = [] };
