@@ -518,7 +518,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-30b — Implementar a camada de tema (claro/escuro) e o layout do dashboard
+- [x] T-30b — Implementar a camada de tema (claro/escuro) e o layout do dashboard
 
 **Objetivo:** Suporte a tema claro e escuro e a moldura de layout do SimPanel.
 
