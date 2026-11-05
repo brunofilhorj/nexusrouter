@@ -351,7 +351,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 6 — API de Controle + Telemetria (Host)
 
-- [ ] T-20 — Implementar `TelemetryHub` (channel + broadcast WebSocket)
+- [x] T-20 — Implementar `TelemetryHub` (channel + broadcast WebSocket)
 
 **Objetivo:** Difundir estado e amostras ao front sem bloquear o envio FIX.
 
