@@ -462,7 +462,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-27 — Implementar `SessionStatus` e `SimulationStatus`
+- [x] T-27 — Implementar `SessionStatus` e `SimulationStatus`
 
 **Objetivo:** Exibir estado da sessão FIX e da simulação.
 
