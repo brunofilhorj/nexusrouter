@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Secrets;
 
 namespace NexusRouter.Ingress.Sessions;
 
@@ -33,6 +34,7 @@ public sealed class FixSession : IHostedService
     private readonly IReconnectPolicy _reconnectPolicy;
     private readonly IMessageRouter _router;
     private readonly ChannelWriter<AuditRecord> _auditChannel;
+    private readonly ISecretResolver _secretResolver;
     private readonly ILogger<FixSession> _logger;
     private readonly FixSessionStateMachine _stateMachine = new();
     private readonly SessionId _sessionId;
@@ -60,6 +62,7 @@ public sealed class FixSession : IHostedService
     /// <param name="reconnectPolicy">Atraso entre tentativas. Quem chama não espera dentro da política.</param>
     /// <param name="router">Destino das mensagens de aplicação.</param>
     /// <param name="auditChannel">Canal não bloqueante para falhas de conexão.</param>
+    /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="logger">Log estruturado da sessão.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     /// <exception cref="ArgumentException">Host, comp IDs ou BeginString são inválidos.</exception>
@@ -70,6 +73,7 @@ public sealed class FixSession : IHostedService
         IReconnectPolicy reconnectPolicy,
         IMessageRouter router,
         ChannelWriter<AuditRecord> auditChannel,
+        ISecretResolver secretResolver,
         ILogger<FixSession> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -77,6 +81,7 @@ public sealed class FixSession : IHostedService
         ArgumentNullException.ThrowIfNull(reconnectPolicy);
         ArgumentNullException.ThrowIfNull(router);
         ArgumentNullException.ThrowIfNull(auditChannel);
+        ArgumentNullException.ThrowIfNull(secretResolver);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.SessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Host);
@@ -111,6 +116,7 @@ public sealed class FixSession : IHostedService
         _reconnectPolicy = reconnectPolicy;
         _router = router;
         _auditChannel = auditChannel;
+        _secretResolver = secretResolver;
         _logger = logger;
         _sessionId = new SessionId(options.SessionId);
     }
@@ -258,6 +264,7 @@ public sealed class FixSession : IHostedService
                         CertificatePasswordEnvVar = _options.TlsCertificatePasswordEnvVar,
                         TargetHost = _options.Host,
                     },
+                    _secretResolver,
                     cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation(
                     "Sessão {SessionId} autenticou TLS com {Host}:{Port}",

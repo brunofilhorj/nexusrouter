@@ -5,11 +5,7 @@
       "commandName": "Project",
       "dotnetRunMessages": true,
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development",
-        "RABBITMQ_DEFAULT_USER": "nexus",
-        "RABBITMQ_DEFAULT_PASS": "nexus",
-        "NEXUS_PG_USER": "nexus",
-        "NEXUS_PG_PASSWORD": "nexus"
+        "ASPNETCORE_ENVIRONMENT": "Development"
       }
     }
   }

@@ -3,14 +3,16 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 
+using NexusRouter.Domain.Secrets;
+
 namespace NexusRouter.Ingress.Sessions;
 
 /// <summary>
 /// Encapsula um <see cref="TcpClient"/> em TLS 1.2 ou 1.3 quando a sessão pede.
 /// </summary>
 /// <remarks>
-/// A senha do certificado é lida da variável nomeada em <see cref="TlsOptions.CertificatePasswordEnvVar"/>
-/// e não é registrada em log. O material da chave privada também não é registrado.
+/// A senha do certificado é resolvida pela chave em <see cref="TlsOptions.CertificatePasswordEnvVar"/>
+/// via <see cref="ISecretResolver"/> e não é registrada em log. O material da chave privada também não é registrado.
 /// </remarks>
 public static class TlsSocketFactory
 {
@@ -19,22 +21,28 @@ public static class TlsSocketFactory
     /// </summary>
     /// <param name="client">Socket já conectado.</param>
     /// <param name="options">Liga ou desliga o handshake e aponta o certificado cliente.</param>
+    /// <param name="secretResolver">Resolve a senha do certificado pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="cancellationToken">Cancela o handshake.</param>
     /// <returns>Stream para leitura e escrita. Com TLS, o certificado cliente vive até o descarte do stream.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="client"/> ou <paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="client"/>, <paramref name="options"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     /// <exception cref="ArgumentException"><see cref="TlsOptions.TargetHost"/> é vazio quando TLS está ligado.</exception>
-    /// <exception cref="InvalidOperationException">A variável de senha do certificado não está definida.</exception>
-    public static async ValueTask<Stream> WrapAsync(TcpClient client, TlsOptions options, CancellationToken cancellationToken)
+    /// <exception cref="InvalidOperationException">A chave de senha do certificado não está definida em nenhuma fonte.</exception>
+    public static async ValueTask<Stream> WrapAsync(
+        TcpClient client,
+        TlsOptions options,
+        ISecretResolver secretResolver,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(secretResolver);
         if (!options.Enabled)
         {
             return client.GetStream();
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(options.TargetHost);
-        X509Certificate2? certificate = LoadCertificate(options);
+        X509Certificate2? certificate = LoadCertificate(options, secretResolver);
         var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
         try
         {
@@ -65,24 +73,27 @@ public static class TlsSocketFactory
     /// <param name="client">Socket já aceito.</param>
     /// <param name="options">Liga ou desliga o handshake e aponta o certificado do servidor.</param>
     /// <param name="requireClientCertificate">Quando <see langword="true"/>, o handshake exige certificado do cliente.</param>
+    /// <param name="secretResolver">Resolve a senha do certificado pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="cancellationToken">Cancela o handshake.</param>
     /// <returns>Stream para leitura e escrita. Com TLS, o certificado do servidor vive até o descarte do stream.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="client"/> ou <paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="client"/>, <paramref name="options"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     /// <exception cref="InvalidOperationException">TLS está ligado e o certificado do servidor não foi informado.</exception>
     public static async ValueTask<Stream> WrapServerAsync(
         TcpClient client,
         TlsOptions options,
         bool requireClientCertificate,
+        ISecretResolver secretResolver,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(secretResolver);
         if (!options.Enabled)
         {
             return client.GetStream();
         }
 
-        X509Certificate2 certificate = LoadCertificate(options)
+        X509Certificate2 certificate = LoadCertificate(options, secretResolver)
             ?? throw new InvalidOperationException("O TLS do acceptor FIX exige um certificado de servidor.");
         var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
         try
@@ -104,7 +115,7 @@ public static class TlsSocketFactory
         }
     }
 
-    private static X509Certificate2? LoadCertificate(TlsOptions options)
+    private static X509Certificate2? LoadCertificate(TlsOptions options, ISecretResolver secretResolver)
     {
         if (string.IsNullOrWhiteSpace(options.CertificatePath))
         {
@@ -114,12 +125,7 @@ public static class TlsSocketFactory
         string? password = null;
         if (!string.IsNullOrWhiteSpace(options.CertificatePasswordEnvVar))
         {
-            password = Environment.GetEnvironmentVariable(options.CertificatePasswordEnvVar);
-            if (string.IsNullOrEmpty(password))
-            {
-                throw new InvalidOperationException(
-                    $"A variável de ambiente '{options.CertificatePasswordEnvVar}' não está definida.");
-            }
+            password = secretResolver.ResolveRequired(options.CertificatePasswordEnvVar);
         }
 
         return X509CertificateLoader.LoadPkcs12FromFile(

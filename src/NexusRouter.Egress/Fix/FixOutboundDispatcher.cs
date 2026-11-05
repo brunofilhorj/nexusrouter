@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
+using NexusRouter.Domain.Secrets;
 using NexusRouter.Ingress.Sessions;
 
 namespace NexusRouter.Egress.Fix;
@@ -33,6 +34,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private readonly ExponentialBackoffReconnectPolicy _acceptRetry;
     private readonly ConcurrentSessionTable _sessions = new();
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
+    private readonly ISecretResolver _secretResolver;
 
     private TcpListener? _listener;
     private CancellationTokenSource? _acceptCts;
@@ -46,15 +48,20 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     /// <param name="dispatcherId">Nome único na rota e prefixo do arquivo de sequence number.</param>
     /// <param name="options">Endereço de escuta, comp ID local, TLS e diretório de sequência.</param>
     /// <param name="logger">Log de accept, Logon e sessão.</param>
+    /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
+    /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="logger"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public FixOutboundDispatcher(
         string dispatcherId,
         FixOutboundDispatcherOptions options,
         ILogger<FixOutboundDispatcher> logger,
-        DispatchPayloadPool payloadPool)
+        DispatchPayloadPool payloadPool,
+        ISecretResolver secretResolver)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
+        ArgumentNullException.ThrowIfNull(secretResolver);
+        _secretResolver = secretResolver;
         _acceptRetry = new ExponentialBackoffReconnectPolicy(
             options.AcceptRetryBaseDelay,
             options.AcceptRetryMaxDelay,
@@ -225,6 +232,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                     client,
                     CreateTlsOptions(),
                     Options.TlsRequireClientCertificate,
+                    _secretResolver,
                     cancellationToken).ConfigureAwait(false)
                 : client.GetStream();
 

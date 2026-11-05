@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
+using NexusRouter.Domain.Secrets;
 
 namespace NexusRouter.Egress.Kafka;
 
@@ -18,6 +19,7 @@ namespace NexusRouter.Egress.Kafka;
 public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptions>
 {
     private readonly IKafkaPartitionStrategy _partitionStrategy;
+    private readonly ISecretResolver _secretResolver;
     private IProducer<Null, byte[]>? _producer;
     private int _released;
 
@@ -27,19 +29,23 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     /// <param name="dispatcherId">Nome único na rota.</param>
     /// <param name="options">Brokers, tópico e segurança. A validação ocorre aqui.</param>
     /// <param name="logger">Log de conexão e de falha de entrega.</param>
+    /// <param name="secretResolver">Resolve usuário e senha SASL pelas chaves em <paramref name="options"/>, sob demanda.</param>
     /// <param name="partitionStrategy">
     /// Estratégia já construída. Quando nula, a opção <see cref="KafkaDispatcherOptions.PartitionStrategy"/> define a estratégia.
     /// </param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="logger"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public KafkaMessageDispatcher(
         string dispatcherId,
         KafkaDispatcherOptions options,
         ILogger<KafkaMessageDispatcher> logger,
         DispatchPayloadPool payloadPool,
+        ISecretResolver secretResolver,
         IKafkaPartitionStrategy? partitionStrategy = null)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
+        ArgumentNullException.ThrowIfNull(secretResolver);
+        _secretResolver = secretResolver;
         _partitionStrategy = partitionStrategy ?? CreateStrategy(options);
     }
 
@@ -178,8 +184,8 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
 
             if (KafkaDispatcherOptions.UsesPassword(Options.SaslMechanism))
             {
-                config.SaslUsername = EnvironmentValue.ReadRequired(Options.SaslUsernameEnvVar!);
-                config.SaslPassword = EnvironmentValue.ReadRequired(Options.SaslPasswordEnvVar!);
+                config.SaslUsername = _secretResolver.ResolveRequired(Options.SaslUsernameEnvVar!);
+                config.SaslPassword = _secretResolver.ResolveRequired(Options.SaslPasswordEnvVar!);
             }
         }
 

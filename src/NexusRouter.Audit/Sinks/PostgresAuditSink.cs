@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
+using NexusRouter.Domain.Secrets;
 
 using Npgsql;
 using NpgsqlTypes;
@@ -28,6 +29,7 @@ public sealed class PostgresAuditSink : IAuditSink
     private readonly PostgresAuditSinkOptions _options;
     private readonly ILogger<PostgresAuditSink> _logger;
     private readonly RawFixRetention _rawFix;
+    private readonly ISecretResolver _secretResolver;
     private NpgsqlDataSource? _dataSource;
 
     /// <summary>
@@ -36,20 +38,24 @@ public sealed class PostgresAuditSink : IAuditSink
     /// <param name="options">Endereço do PostgreSQL, sem senha.</param>
     /// <param name="auditOptions">Modo de persistência do payload.</param>
     /// <param name="logger">Log da falha de COPY. A mensagem não inclui a senha.</param>
+    /// <param name="secretResolver">Resolve usuário e senha pelas chaves em <paramref name="options"/>, sob demanda.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     public PostgresAuditSink(
         PostgresAuditSinkOptions options,
         AuditOptions auditOptions,
-        ILogger<PostgresAuditSink> logger)
+        ILogger<PostgresAuditSink> logger,
+        ISecretResolver secretResolver)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(auditOptions);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(secretResolver);
         options.EnsureValid();
         auditOptions.EnsureValid();
         _options = options;
         _logger = logger;
         _rawFix = new RawFixRetention(auditOptions);
+        _secretResolver = secretResolver;
     }
 
     /// <inheritdoc />
@@ -68,8 +74,8 @@ public sealed class PostgresAuditSink : IAuditSink
             Host = _options.Host,
             Port = _options.Port,
             Database = _options.Database,
-            Username = ReadRequired(_options.UsernameEnvVar),
-            Password = ReadRequired(_options.PasswordEnvVar),
+            Username = _secretResolver.ResolveRequired(_options.UsernameEnvVar),
+            Password = _secretResolver.ResolveRequired(_options.PasswordEnvVar),
             SslMode = _options.SslMode,
             Timeout = _options.CommandTimeoutSeconds,
             CommandTimeout = _options.CommandTimeoutSeconds,
@@ -224,16 +230,5 @@ public sealed class PostgresAuditSink : IAuditSink
         }
 
         importer.Write(value, NpgsqlDbType.Text);
-    }
-
-    private static string ReadRequired(string variableName)
-    {
-        string? value = Environment.GetEnvironmentVariable(variableName);
-        if (string.IsNullOrEmpty(value))
-        {
-            throw new InvalidOperationException($"A variável de ambiente '{variableName}' não está definida.");
-        }
-
-        return value;
     }
 }
