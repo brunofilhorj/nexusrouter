@@ -321,7 +321,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-18 — Implementar os comandos de injeção de falha na sessão
+- [x] T-18 — Implementar os comandos de injeção de falha na sessão
 
 **Objetivo:** Drop, Force Logout e Sequence Gap.
 
