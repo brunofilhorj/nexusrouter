@@ -233,7 +233,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-13 — Implementar `ExecutionReportFactory` (MsgType=8)
+- [x] T-13 — Implementar `ExecutionReportFactory` (MsgType=8)
 
 **Objetivo:** Produzir `ExecutionReport` fiéis ao `FIX44Entrypoint.xml`.
 

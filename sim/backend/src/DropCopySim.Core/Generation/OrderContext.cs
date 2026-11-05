@@ -20,6 +20,12 @@ public readonly record struct OrderContext
     /// <summary>Current order status (FIX tag 39).</summary>
     public char OrdStatus { get; init; }
 
+    /// <summary>Optional B3 final transaction order status (FIX tag 10029).</summary>
+    public char? BtsFinalTxOrdStatus { get; init; }
+
+    /// <summary>Optional market-maker protection reset indicator (FIX tag 9773).</summary>
+    public char? MmProtectionReset { get; init; }
+
     /// <summary>Order side (FIX tag 54).</summary>
     public char Side { get; init; }
 

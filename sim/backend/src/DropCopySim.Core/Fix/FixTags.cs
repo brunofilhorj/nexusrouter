@@ -21,6 +21,57 @@ public static class FixTags
     /// <summary>Text (tag 58).</summary>
     public const int Text = 58;
 
+    /// <summary>Account (tag 1).</summary>
+    public const int Account = 1;
+
+    /// <summary>Average price (tag 6).</summary>
+    public const int AvgPx = 6;
+
+    /// <summary>Client order identifier (tag 11).</summary>
+    public const int ClOrdId = 11;
+
+    /// <summary>Cumulative quantity (tag 14).</summary>
+    public const int CumQty = 14;
+
+    /// <summary>Execution identifier (tag 17).</summary>
+    public const int ExecId = 17;
+
+    /// <summary>SecurityIDSource (tag 22).</summary>
+    public const int SecurityIdSource = 22;
+
+    /// <summary>Last price (tag 31).</summary>
+    public const int LastPx = 31;
+
+    /// <summary>Last quantity (tag 32).</summary>
+    public const int LastQty = 32;
+
+    /// <summary>Order identifier (tag 37).</summary>
+    public const int OrderId = 37;
+
+    /// <summary>Side (tag 54).</summary>
+    public const int Side = 54;
+
+    /// <summary>TransactTime (tag 60).</summary>
+    public const int TransactTime = 60;
+
+    /// <summary>SecurityID (tag 48).</summary>
+    public const int SecurityId = 48;
+
+    /// <summary>Symbol (tag 55).</summary>
+    public const int Symbol = 55;
+
+    /// <summary>SecurityExchange (tag 207).</summary>
+    public const int SecurityExchange = 207;
+
+    /// <summary>Leaves quantity (tag 151).</summary>
+    public const int LeavesQty = 151;
+
+    /// <summary>Execution type (tag 150).</summary>
+    public const int ExecType = 150;
+
+    /// <summary>Order status (tag 39).</summary>
+    public const int OrdStatus = 39;
+
     /// <summary>MsgSeqNum (tag 34).</summary>
     public const int MsgSeqNum = 34;
 
