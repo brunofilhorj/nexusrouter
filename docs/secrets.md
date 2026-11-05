@@ -101,6 +101,28 @@ Quem usa o `docker-compose.yml` local pode continuar exportando as variáveis (o
 do `.env.example`). Como a resolução passa por `IConfiguration`, o nome da variável de ambiente é a
 própria chave de lookup, então nada muda do ponto de vista do app.
 
+### `.env` (infra) vs. User Secrets (app) — não confundir
+
+São **duas pontas distintas** da mesma conexão, e o `.env` **continua necessário** mesmo depois da
+Opção B1:
+
+- O **`.env`** (gitignored; template em `.env.example`) alimenta o **`docker-compose.yml`**. É o lado do
+  **servidor**: define quais credenciais o RabbitMQ e o Postgres **criam** ao subir os containers
+  (`RABBITMQ_DEFAULT_USER/PASS`, `POSTGRES_USER/PASSWORD/DB`). Essas chaves `POSTGRES_*` são consumidas
+  só pelos containers e não têm relação com a leitura da aplicação.
+- O **User Secrets** é o lado do **cliente**: é de onde a aplicação .NET lê as credenciais para **se
+  conectar** a esses mesmos serviços.
+
+Os valores das duas pontas precisam **coincidir** para a app conectar (por padrão, `nexus`/`nexus` dos
+dois lados). O `.env` nunca é versionado; apenas o `.env.example`, com placeholders de dev, vai para o
+repositório.
+
+| Arquivo | Ponta | Para quê | Versionado? |
+|---|---|---|---|
+| `.env` | infra (servidor) | credenciais que o docker-compose cria nos containers | não (gitignored) |
+| `.env.example` | infra (template) | modelo de onboarding, com placeholders | sim |
+| User Secrets | app (cliente) | credenciais que a aplicação usa para conectar, em dev | não (fora do repo) |
+
 ---
 
 ## 2. Produção e staging — AWS Secrets Manager
@@ -180,6 +202,8 @@ destino não tiver acesso direto ao Secrets Manager.
 ## Resumo
 
 - A chave de lookup vai no `appsettings.json`; o **valor** nunca.
+- `.env` (infra, servidor) e User Secrets (app, cliente) são pontas distintas e complementares; o `.env`
+  segue necessário para o docker-compose e os valores das duas pontas devem coincidir.
 - Dev local: **.NET User Secrets** (ou env var via docker-compose). Nunca em produção.
 - Produção/staging: **AWS Secrets Manager**, via provider de `IConfiguration` ou injeção como env var.
 - CI: **GitHub Actions Secrets** injetados como env var no job; de preferência, deixe o destino ler do
