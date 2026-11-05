@@ -1,0 +1,311 @@
+/*
+ * Design tokens de cor do SimPanel (Seção 4.5 do design).
+ *
+ * Toda cor da UI vem de uma variável CSS definida aqui. As paletas de tema claro
+ * e escuro são trocadas pelo atributo `data-theme` na raiz (<html>), aplicado
+ * pelo hook `useTheme`. Nenhum componente referencia cor fixa diretamente — só
+ * estas variáveis — de modo que a troca de tema é um único ponto de verdade.
+ *
+ * A convenção de estado (Seção 4.5) é comunicada por cor + rótulo, nunca só por
+ * cor: Idle = neutro, Running = verde, Paused = âmbar, desconectado/erro =
+ * vermelho. As variáveis `--state-*` carregam essas cores para os componentes.
+ */
+
+/* Tema escuro: padrão da primeira carga quando não há preferência salva. */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Superfícies e bordas. */
+  --color-bg: #0f1115;
+  --color-surface: #171a21;
+  --color-surface-raised: #1f242d;
+  --color-border: #2a303b;
+  --color-border-strong: #3a4250;
+
+  /* Texto. */
+  --color-text: #e6e9ef;
+  --color-text-muted: #9aa3b2;
+  --color-text-inverted: #0f1115;
+
+  /* Acento (ação primária / foco). */
+  --color-accent: #4f8cff;
+  --color-accent-contrast: #ffffff;
+  --color-focus-ring: #4f8cff;
+
+  /* Cores de estado (acompanhadas sempre de rótulo). */
+  --state-neutral: #9aa3b2;
+  --state-neutral-bg: #232832;
+  --state-ok: #35c76a;
+  --state-ok-bg: #16331f;
+  --state-warn: #e0a83a;
+  --state-warn-bg: #352a12;
+  --state-danger: #f4625f;
+  --state-danger-bg: #3a1a1a;
+
+  /* Zona perigosa (injeção de falha). */
+  --danger-zone-border: #6a2a2a;
+  --danger-zone-bg: #1c1314;
+}
+
+/* Tema claro. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --color-bg: #f4f6fa;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #d9dee7;
+  --color-border-strong: #b8c0cd;
+
+  --color-text: #161a21;
+  --color-text-muted: #5b6472;
+  --color-text-inverted: #ffffff;
+
+  --color-accent: #2563eb;
+  --color-accent-contrast: #ffffff;
+  --color-focus-ring: #2563eb;
+
+  --state-neutral: #5b6472;
+  --state-neutral-bg: #eceff4;
+  --state-ok: #1a8f44;
+  --state-ok-bg: #e3f5ea;
+  --state-warn: #a9771a;
+  --state-warn-bg: #faf0d8;
+  --state-danger: #c22f2f;
+  --state-danger-bg: #fbe5e5;
+
+  --danger-zone-border: #e0b4b4;
+  --danger-zone-bg: #fdf1f1;
+}
+
+/* ----------------------------------------------------------------------------
+ * Base e moldura de layout (Seção 4.5): topbar fixa + duas colunas.
+ * O estilo detalhado de cada componente é responsabilidade de suas tarefas;
+ * aqui fica apenas a moldura do dashboard e os tokens que ela consome.
+ * ------------------------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Casca da aplicação: ocupa a viewport inteira. */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Topbar fixa no topo: estado + conectividade + seletor de tema. */
+.app__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app__brand {
+  display: flex;
+  flex-direction: column;
+  margin-right: auto;
+}
+
+.app__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.app__subtitle {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+/* Estado corrente da simulação, sempre à vista (fonte da verdade). */
+.app__sim-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--state-neutral);
+  background: var(--state-neutral-bg);
+  border: 1px solid transparent;
+}
+
+.app__sim-state::before {
+  content: '';
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.app__sim-state[data-state='running'] {
+  color: var(--state-ok);
+  background: var(--state-ok-bg);
+}
+
+.app__sim-state[data-state='paused'] {
+  color: var(--state-warn);
+  background: var(--state-warn-bg);
+}
+
+.app__sim-state[data-state='idle'] {
+  color: var(--state-neutral);
+  background: var(--state-neutral-bg);
+}
+
+/* Duas colunas: controle à esquerda, observação à direita. */
+.app__body {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.8fr);
+  gap: 1rem;
+  padding: 1rem;
+  flex: 1 1 auto;
+  align-items: start;
+}
+
+.app__column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* Empilha as colunas em telas estreitas. */
+@media (max-width: 900px) {
+  .app__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Cartão base reutilizado pelas seções do painel. */
+.app__column > section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+/* A zona de falhas é destacada como perigosa (moldura de alerta). */
+.app__column > section.fault-controls,
+.fault-controls[data-danger='true'] {
+  border-color: var(--danger-zone-border);
+  background: var(--danger-zone-bg);
+}
+
+/* Foco visível e consistente em elementos interativos. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Seletor de tema na topbar. */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: var(--color-accent);
+}
+
+/* Modal de confirmação (ConfirmDialog). */
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+
+.confirm-dialog__panel {
+  width: min(28rem, 100%);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.confirm-dialog__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.confirm-dialog__desc {
+  margin: 0 0 1.25rem;
+  color: var(--color-text-muted);
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.confirm-dialog__cancel,
+.confirm-dialog__confirm {
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.confirm-dialog__cancel {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+}
+
+.confirm-dialog__confirm {
+  border: 1px solid transparent;
+  color: var(--color-accent-contrast);
+}
+
+.confirm-dialog__confirm[data-variant='danger'] {
+  background: var(--state-danger);
+}
+
+.confirm-dialog__confirm[data-variant='primary'] {
+  background: var(--color-accent);
+}
+
+.confirm-dialog__confirm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

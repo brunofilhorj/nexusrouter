@@ -419,7 +419,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 7 — Frontend SimPanel (React + Vite)
 
-- [ ] T-24 — Inicializar o projeto Vite + React + TypeScript
+- [x] T-24 — Inicializar o projeto Vite + React + TypeScript
 
 **Objetivo:** Scaffold do SimPanel.
 
@@ -434,7 +434,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-25 — Implementar a camada de API (`api/client.ts`, `api/types.ts`)
+- [x] T-25 — Implementar a camada de API (`api/client.ts`, `api/types.ts`)
 
 **Objetivo:** Cliente HTTP tipado espelhando o contrato do SimCore.
 
@@ -448,7 +448,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-26 — Implementar o cliente de telemetria WebSocket
+- [x] T-26 — Implementar o cliente de telemetria WebSocket
 
 **Objetivo:** Consumir o feed em tempo real com reconexão automática.
 
@@ -462,7 +462,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-27 — Implementar `SessionStatus` e `SimulationStatus`
+- [x] T-27 — Implementar `SessionStatus` e `SimulationStatus`
 
 **Objetivo:** Exibir estado da sessão FIX e da simulação.
 
@@ -476,34 +476,35 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-28 — Implementar `SimulationControls` e `ConfigForm`
+- [x] T-28 — Implementar `SimulationControls` e `ConfigForm`
 
 **Objetivo:** Controlar a rodada e editar a configuração.
 
-**Entradas:** `requirements.md` (FR-UI-04, FR-UI-05, FR-SIM-06, FR-SIM-08), `design.md` (Seção 4.4)
+**Entradas:** `requirements.md` (FR-UI-04, FR-UI-05, FR-SIM-06, FR-SIM-08), `design.md` (Seções 4.4, 4.5)
 
 **Passos:**
-1. `components/SimulationControls.tsx`: botões Start/Pause/Resume/Stop com `disabled` derivado do estado (tabela da Seção 4.4).
+1. `components/SimulationControls.tsx`: botões Start/Pause/Resume/Stop com `disabled` derivado do estado (tabela da Seção 4.4). `Stop` abre o `ConfirmDialog` (Seção 4.5) antes de executar; as demais ações são diretas.
 2. `components/ConfigForm.tsx`: quantidade (ou ilimitado), frequência, contas, instrumentos, seleção de conta, proporção de desfechos, `TestMessageIndicator`. Política híbrida na UI: em `Running`, só os campos hot (`RatePerSecond`, `Outcome`) ficam editáveis/submetíveis e o submit manda apenas o delta hot; campos travados ficam desabilitados com dica "pause para alterar". Em `Idle`/`Paused`, todos os campos são editáveis. Tratar 409 do servidor como rede de segurança.
 
 **Saída:** Operar a simulação e salvar config a partir da UI, respeitando a política híbrida por estado.
 
 ---
 
-- [ ] T-29 — Implementar `FaultControls`
+- [x] T-29 — Implementar `FaultControls`
 
 **Objetivo:** Injetar falhas pela UI.
 
-**Entradas:** `requirements.md` (FR-UI-06, FR-FAULT-01 a FR-FAULT-04)
+**Entradas:** `requirements.md` (FR-UI-06, FR-FAULT-01 a FR-FAULT-04), `design.md` (Seção 4.5)
 
 **Passos:**
 1. `components/FaultControls.tsx`: botão Drop Connection, Force Logout (com escolha de texto/cenário: "MsgSeqNum too low", "Password will expire", custom), seletor do modo de resposta ao Logon (Success/InvalidCredentials/NotAuthorized) e botão de Sequence Gap.
+2. Toda injeção de falha (Drop Connection, Force Logout, Sequence Gap) passa pelo `ConfirmDialog` (Seção 4.5), que nomeia a ação e seu efeito antes de disparar.
 
-**Saída:** Os comandos de falha são disparados pela UI e refletidos na telemetria.
+**Saída:** Os comandos de falha são disparados pela UI, confirmados por modal, e refletidos na telemetria.
 
 ---
 
-- [ ] T-30 — Implementar `MessageFeed` e `ConnectivityBadge`
+- [x] T-30 — Implementar `MessageFeed` e `ConnectivityBadge`
 
 **Objetivo:** Feed ao vivo das últimas mensagens e indicador de conectividade.
 
@@ -514,6 +515,23 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 2. `components/ConnectivityBadge.tsx`: indica API/WS up/down.
 
 **Saída:** O operador acompanha o fluxo amostrado e o estado da conexão com o SimCore.
+
+---
+
+- [x] T-30b — Implementar a camada de tema (claro/escuro) e o layout do dashboard
+
+**Objetivo:** Suporte a tema claro e escuro e a moldura de layout do SimPanel.
+
+**Entradas:** `design.md` (Seções 4.1, 4.5)
+
+**Passos:**
+1. `theme/tokens.css`: design tokens de cor para claro e escuro, trocados por `[data-theme]` na raiz; nenhum componente referencia cor fixa diretamente.
+2. `theme/useTheme.ts`: hook que lê `prefers-color-scheme` na primeira carga (escuro como padrão), persiste a escolha em `localStorage` e aplica o atributo `data-theme`.
+3. `components/ThemeToggle.tsx`: alterna claro/escuro na topbar.
+4. `components/ConfirmDialog.tsx`: modal de confirmação reutilizável (título, descrição do efeito, confirmar/cancelar), consumido por `SimulationControls` (Stop) e `FaultControls`.
+5. `App.tsx`: compõe a topbar (estado + `ConnectivityBadge` + `ThemeToggle`) e as duas colunas (controle à esquerda, observação à direita), conforme o layout da Seção 4.5.
+
+**Saída:** O painel alterna tema com preferência persistida e apresenta o layout de dashboard; o modal de confirmação está disponível para as ações importantes.
 
 ---
 
