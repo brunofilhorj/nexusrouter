@@ -370,7 +370,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-21 — Implementar `Program.cs` e wiring de DI do Host
+- [x] T-21 — Implementar `Program.cs` e wiring de DI do Host
 
 **Objetivo:** Subir o `WebApplication` com acceptor, controller, telemetria e Serilog.
 
