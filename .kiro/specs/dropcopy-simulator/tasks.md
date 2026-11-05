@@ -302,7 +302,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 5 — Controle de Simulação e Injeção de Falhas
 
-- [ ] T-17 — Implementar `SimulationController` (FSM Idle/Running/Paused)
+- [x] T-17 — Implementar `SimulationController` (FSM Idle/Running/Paused)
 
 **Objetivo:** Comandar a rodada e validar transições.
 
