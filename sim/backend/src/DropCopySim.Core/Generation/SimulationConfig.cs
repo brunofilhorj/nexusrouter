@@ -65,7 +65,9 @@ public sealed record SimulationConfig : IValidatableObject
     public bool TestMessageIndicator { get; init; } = true;
 
     /// <summary>
-    /// FIX MsgType values the generator is allowed to emit (v1 default: ExecutionReport <c>8</c>).
+    /// FIX MsgType values the generator is allowed to emit.
+    /// Supported values: <c>8</c> (ExecutionReport), <c>9</c> (OrderCancelReject), <c>j</c> (BusinessMessageReject).
+    /// Default is <c>8</c> only, so the optional factories stay off.
     /// Locked while Running.
     /// </summary>
     [MinLength(1)]
@@ -110,12 +112,29 @@ public sealed record SimulationConfig : IValidatableObject
             }
         }
 
+        var seenMessageTypes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var msgType in EnabledMessageTypes)
         {
             if (string.IsNullOrWhiteSpace(msgType))
             {
                 yield return new ValidationResult(
                     "EnabledMessageTypes entries must be non-empty FIX MsgType values.",
+                    [nameof(EnabledMessageTypes)]);
+                continue;
+            }
+
+            if (msgType is not ("8" or "9" or "j"))
+            {
+                yield return new ValidationResult(
+                    $"EnabledMessageTypes value '{msgType}' is not supported. Supported values are 8, 9, and j.",
+                    [nameof(EnabledMessageTypes)]);
+                continue;
+            }
+
+            if (!seenMessageTypes.Add(msgType))
+            {
+                yield return new ValidationResult(
+                    $"EnabledMessageTypes value '{msgType}' is duplicated.",
                     [nameof(EnabledMessageTypes)]);
             }
         }

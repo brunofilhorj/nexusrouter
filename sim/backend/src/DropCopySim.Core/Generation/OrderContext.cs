@@ -8,6 +8,12 @@ public readonly record struct OrderContext
     /// <summary>Client-assigned order identifier (FIX tag 11).</summary>
     public required string ClOrdId { get; init; }
 
+    /// <summary>
+    /// Original client order identifier (FIX tag 41).
+    /// When null, <see cref="OrderCancelRejectFactory"/> repeats <see cref="ClOrdId"/>.
+    /// </summary>
+    public string? OrigClOrdId { get; init; }
+
     /// <summary>Venue-assigned order identifier (FIX tag 37).</summary>
     public required string OrderId { get; init; }
 
@@ -19,6 +25,19 @@ public readonly record struct OrderContext
 
     /// <summary>Current order status (FIX tag 39).</summary>
     public char OrdStatus { get; init; }
+
+    /// <summary>
+    /// Cancel-reject response target (FIX tag 434).
+    /// <c>1</c> is an order cancel request; <c>2</c> is a cancel/replace request.
+    /// <c>\0</c> lets <see cref="OrderCancelRejectFactory"/> default to <c>1</c>.
+    /// </summary>
+    public char CxlRejResponseTo { get; init; }
+
+    /// <summary>
+    /// Cancel-reject reason (FIX tag 102).
+    /// Null lets <see cref="OrderCancelRejectFactory"/> default to <c>0</c> (too late to cancel).
+    /// </summary>
+    public int? CxlRejReason { get; init; }
 
     /// <summary>Optional B3 final transaction order status (FIX tag 10029).</summary>
     public char? BtsFinalTxOrdStatus { get; init; }
@@ -64,4 +83,27 @@ public readonly record struct OrderContext
 
     /// <summary>Client/account identifier (FIX tag 1 and PartyRole 3).</summary>
     public required string Account { get; init; }
+
+    /// <summary>
+    /// MsgType of the message rejected by <see cref="BusinessMessageRejectFactory"/> (FIX tag 372).
+    /// Null defaults to <c>D</c> (NewOrderSingle).
+    /// </summary>
+    public string? RefMsgType { get; init; }
+
+    /// <summary>
+    /// Business reject reason (FIX tag 380).
+    /// Null lets <see cref="BusinessMessageRejectFactory"/> default to <c>0</c> (other).
+    /// </summary>
+    public int? BusinessRejectReason { get; init; }
+
+    /// <summary>
+    /// Human-readable reject text (FIX tag 58).
+    /// Null lets <see cref="BusinessMessageRejectFactory"/> use a stable default sentence.
+    /// </summary>
+    public string? Text { get; init; }
+
+    /// <summary>
+    /// B3 sanity-validation flag (FIX tag 10031). Null omits the field; <c>Y</c> or <c>N</c> otherwise.
+    /// </summary>
+    public char? SanityValidation { get; init; }
 }

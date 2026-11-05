@@ -253,7 +253,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-14 — Implementar os factories opcionais `OrderCancelReject` (9) e `BusinessMessageReject` (j)
+- [x] T-14 — Implementar os factories opcionais `OrderCancelReject` (9) e `BusinessMessageReject` (j)
 
 **Objetivo:** Ampliar a cobertura de tipos de mensagem para roteamento.
 

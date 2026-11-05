@@ -30,6 +30,12 @@ public static class FixTags
     /// <summary>Client order identifier (tag 11).</summary>
     public const int ClOrdId = 11;
 
+    /// <summary>Original client order identifier (tag 41).</summary>
+    public const int OrigClOrdId = 41;
+
+    /// <summary>Cancel reject reason (tag 102).</summary>
+    public const int CxlRejReason = 102;
+
     /// <summary>Cumulative quantity (tag 14).</summary>
     public const int CumQty = 14;
 
@@ -135,6 +141,15 @@ public static class FixTags
     /// <summary>ResetSeqNumFlag (tag 141).</summary>
     public const int ResetSeqNumFlag = 141;
 
+    /// <summary>Referenced message type (tag 372).</summary>
+    public const int RefMsgType = 372;
+
+    /// <summary>Business reject reason (tag 380).</summary>
+    public const int BusinessRejectReason = 380;
+
+    /// <summary>Cancel reject response target (tag 434).</summary>
+    public const int CxlRejResponseTo = 434;
+
     /// <summary>TestMessageIndicator (tag 464) — B3 Logon / session indicator.</summary>
     public const int TestMessageIndicator = 464;
 
@@ -152,6 +167,9 @@ public static class FixTags
 
     /// <summary>BusinessSeqNum (tag 10016) — B3 business-level sequence.</summary>
     public const int BusinessSeqNum = 10016;
+
+    /// <summary>SanityValidation (tag 10031) — B3. <c>Y</c> means only a sanity check ran.</summary>
+    public const int SanityValidation = 10031;
 
     /// <summary>BTSFinalTxOrdStatus (tag 10029) — B3.</summary>
     public const int BtsFinalTxOrdStatus = 10029;

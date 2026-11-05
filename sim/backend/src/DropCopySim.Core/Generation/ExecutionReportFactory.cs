@@ -41,6 +41,9 @@ public sealed class ExecutionReportFactory : IFixMessageFactory
         _testMessageIndicator = testMessageIndicator;
     }
 
+    /// <summary>FIX MsgType for ExecutionReport.</summary>
+    public const string MsgType = "8";
+
     /// <inheritdoc />
     public string Name => "ExecutionReport";
 
