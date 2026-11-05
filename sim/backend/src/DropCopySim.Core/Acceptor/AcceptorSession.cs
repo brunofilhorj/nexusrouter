@@ -38,6 +38,7 @@ public sealed class AcceptorSession : IAsyncDisposable
     private long _lastActivityUtcTicks;
     private string _peerCompId = string.Empty;
     private int _heartbeatIntervalSeconds;
+    private int _logonMode;
     private int _started;
     private int _disposed;
 
@@ -57,6 +58,7 @@ public sealed class AcceptorSession : IAsyncDisposable
         _socket = socket;
         Options = options;
         _logger = logger;
+        _logonMode = (int)options.LogonMode;
         _stream = new NetworkStream(socket, ownsSocket: false);
         _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(leaveOpen: true));
         _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(leaveOpen: true));
@@ -64,6 +66,19 @@ public sealed class AcceptorSession : IAsyncDisposable
 
     /// <summary>Acceptor options captured for this connection.</summary>
     public AcceptorOptions Options { get; }
+
+    /// <summary>
+    /// How the next client Logon is answered (FR-ACC-05, FR-FAULT-03).
+    /// </summary>
+    /// <remarks>
+    /// Initialized from <see cref="AcceptorOptions.LogonMode"/> and switchable at runtime with
+    /// <see cref="SetLogonMode(LogonMode)"/>. Read when a Logon arrives: <see cref="LogonMode.Success"/>
+    /// answers with <c>ApplicationLogonRspCode (6930) = 0</c> and moves to
+    /// <see cref="AcceptorSessionState.Active"/>; <see cref="LogonMode.InvalidCredentials"/> and
+    /// <see cref="LogonMode.NotAuthorized"/> answer with <c>6930 = 1</c> or <c>6930 = 2</c> and close
+    /// the session (<c>.kiro/steering/b3-guidelines.md</c> §13).
+    /// </remarks>
+    public LogonMode LogonMode => (LogonMode)Volatile.Read(ref _logonMode);
 
     /// <summary>Session lifecycle state machine.</summary>
     public FixSessionFsm Fsm => _fsm;
@@ -158,6 +173,34 @@ public sealed class AcceptorSession : IAsyncDisposable
     /// </summary>
     /// <remarks>Called when the client Logon carries <c>ResetSeqNumFlag=Y</c> (FR-ACC-07).</remarks>
     public void ResetOutboundMsgSeqNum() => Interlocked.Exchange(ref _outboundSeqNum, 0);
+
+    /// <summary>
+    /// Switches how the next client Logon is answered (FR-FAULT-03).
+    /// </summary>
+    /// <param name="mode">The Logon response mode applied to Logons received after this call.</param>
+    /// <remarks>
+    /// Consumed by the control endpoint (T-22). A Logon already accepted on this connection keeps its
+    /// state; the new mode takes effect on the next Logon (typically after a reconnect). Safe to call
+    /// from the control plane concurrently with the read loop.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="mode"/> is not a defined value.</exception>
+    public void SetLogonMode(LogonMode mode)
+    {
+        if (mode is not (LogonMode.Success or LogonMode.InvalidCredentials or LogonMode.NotAuthorized))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown Logon mode.");
+        }
+
+        LogonMode previous = (LogonMode)Interlocked.Exchange(ref _logonMode, (int)mode);
+        if (previous != mode)
+        {
+            _logger.LogInformation(
+                "Logon response mode changed from {PreviousMode} to {LogonMode}. SenderCompId {SenderCompId}",
+                previous,
+                mode,
+                Options.SenderCompId);
+        }
+    }
 
     /// <summary>
     /// Writes one complete FIX frame to the client.
@@ -449,13 +492,30 @@ public sealed class AcceptorSession : IAsyncDisposable
             _fsm.TransitionToLogonReceived();
             PublishState();
 
+            LogonMode logonMode = LogonMode;
+            int logonRspCode = (int)logonMode;
+
             await SendAdministrativeMessageAsync(
                 "A",
                 peerCompId,
                 heartbeatInterval,
                 null,
                 null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                logonRspCode).ConfigureAwait(false);
+
+            if (logonMode != LogonMode.Success)
+            {
+                _logger.LogWarning(
+                    "Fault injection: rejecting Logon with ApplicationLogonRspCode {LogonRspCode} ({LogonMode}). SenderCompId {SenderCompId}",
+                    logonRspCode,
+                    logonMode,
+                    Options.SenderCompId);
+
+                // Logon failed deterministically (FR-FAULT-03). End the read loop; RunAsync's finally
+                // moves the session LogonReceived -> Disconnected, closing the connection without Active.
+                return false;
+            }
 
             _fsm.TransitionToActive();
             PublishState();
@@ -676,7 +736,8 @@ public sealed class AcceptorSession : IAsyncDisposable
         int? heartbeatInterval,
         string? testReqId,
         string? text,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int logonRspCode = 0)
     {
         int capacity = checked(
             128
@@ -699,7 +760,7 @@ public sealed class AcceptorSession : IAsyncDisposable
         {
             messageWriter.WriteField(FixTags.EncryptMethod, 0);
             messageWriter.WriteField(FixTags.HeartBtInt, interval);
-            messageWriter.WriteField(FixTags.ApplicationLogonRspCode, 0);
+            messageWriter.WriteField(FixTags.ApplicationLogonRspCode, logonRspCode);
         }
 
         if (testReqId is not null)

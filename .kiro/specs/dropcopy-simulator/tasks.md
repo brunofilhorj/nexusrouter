@@ -335,7 +335,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-19 — Implementar o modo de resposta de Logon configurável
+- [x] T-19 — Implementar o modo de resposta de Logon configurável
 
 **Objetivo:** Suportar Logon com falha para testar o NexusRouter.
 
