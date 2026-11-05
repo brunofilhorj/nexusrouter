@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="960" height="620" fill="#f4f6f9"/>
+
+  <!-- Topbar -->
+  <rect x="0" y="0" width="960" height="52" fill="#ffffff"/>
+  <rect x="0" y="51" width="960" height="1" fill="#dde3ea"/>
+  <text x="20" y="32" fill="#1a2029" font-size="18" font-weight="bold">SimPanel</text>
+  <text x="128" y="32" fill="#6b7689" font-size="12">DropCopy Simulator · B3 EntryPoint FIX 4.4</text>
+
+  <rect x="580" y="14" width="110" height="24" rx="12" fill="#e4f6ea" stroke="#28a745"/>
+  <circle cx="598" cy="26" r="5" fill="#28a745"/>
+  <text x="610" y="30" fill="#1b7a38" font-size="12" font-weight="bold">RUNNING</text>
+
+  <rect x="700" y="14" width="56" height="24" rx="12" fill="#eef1f5" stroke="#c6cfda"/>
+  <text x="712" y="30" fill="#4a5564" font-size="12">◑ light</text>
+
+  <rect x="766" y="14" width="80" height="24" rx="12" fill="#e4f6ea" stroke="#28a745"/>
+  <circle cx="782" cy="26" r="4" fill="#28a745"/>
+  <text x="792" y="30" fill="#3a7050" font-size="11">API up</text>
+  <rect x="854" y="14" width="84" height="24" rx="12" fill="#e4f6ea" stroke="#28a745"/>
+  <circle cx="870" cy="26" r="4" fill="#28a745"/>
+  <text x="880" y="30" fill="#3a7050" font-size="11">WS up</text>
+
+  <text x="20" y="78" fill="#8a94a6" font-size="11" letter-spacing="1">CONTROLE</text>
+
+  <rect x="20" y="88" width="300" height="78" rx="6" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="34" y="108" fill="#6b7689" font-size="11">Simulation Controls</text>
+  <rect x="34" y="118" width="62" height="34" rx="4" fill="#eef1f5"/>
+  <text x="50" y="140" fill="#aab3c0" font-size="12">Start</text>
+  <rect x="104" y="118" width="62" height="34" rx="4" fill="#fdf5e2" stroke="#d79a1a"/>
+  <text x="117" y="140" fill="#9a6d08" font-size="12">Pause</text>
+  <rect x="174" y="118" width="66" height="34" rx="4" fill="#eef1f5"/>
+  <text x="188" y="140" fill="#aab3c0" font-size="12">Resume</text>
+  <rect x="248" y="118" width="58" height="34" rx="4" fill="#fdeceb" stroke="#c0392b"/>
+  <text x="263" y="140" fill="#b23229" font-size="12">Stop</text>
+
+  <rect x="20" y="176" width="300" height="214" rx="6" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="34" y="196" fill="#6b7689" font-size="11">Config  ·  campos travados em Running</text>
+  <text x="34" y="222" fill="#4a5564" font-size="11">Rate/s (hot)</text>
+  <rect x="150" y="210" width="156" height="22" rx="3" fill="#ffffff" stroke="#c6cfda"/>
+  <text x="160" y="225" fill="#1a2029" font-size="11" font-family="monospace">10</text>
+  <text x="34" y="252" fill="#4a5564" font-size="11">Outcome mix (hot)</text>
+  <rect x="150" y="240" width="156" height="22" rx="3" fill="#ffffff" stroke="#c6cfda"/>
+  <text x="160" y="255" fill="#1a2029" font-size="11" font-family="monospace">fill70 pf20 cxl7 rej3</text>
+  <text x="34" y="282" fill="#aab3c0" font-size="11">Total orders 🔒</text>
+  <rect x="150" y="270" width="156" height="22" rx="3" fill="#f0f2f5" stroke="#e2e7ee"/>
+  <text x="160" y="285" fill="#aab3c0" font-size="11" font-family="monospace">unlimited</text>
+  <text x="34" y="312" fill="#aab3c0" font-size="11">Instruments 🔒</text>
+  <rect x="150" y="300" width="156" height="22" rx="3" fill="#f0f2f5" stroke="#e2e7ee"/>
+  <text x="160" y="315" fill="#aab3c0" font-size="11" font-family="monospace">PETR4, VALE3</text>
+  <text x="34" y="340" fill="#8a94a6" font-size="10" font-style="italic">pause para alterar campos travados</text>
+  <rect x="150" y="352" width="156" height="28" rx="4" fill="#e8f0fb" stroke="#2f6fb0"/>
+  <text x="178" y="371" fill="#1f5a97" font-size="12">Aplicar delta hot</text>
+
+  <rect x="20" y="400" width="300" height="196" rx="6" fill="#fdf2f1" stroke="#e6b3ad"/>
+  <text x="34" y="420" fill="#b23229" font-size="11">⚠ Fault Injection</text>
+  <rect x="34" y="430" width="128" height="30" rx="4" fill="#fdeceb" stroke="#c0392b"/>
+  <text x="48" y="450" fill="#b23229" font-size="11">Drop Connection</text>
+  <rect x="170" y="430" width="136" height="30" rx="4" fill="#fdeceb" stroke="#c0392b"/>
+  <text x="184" y="450" fill="#b23229" font-size="11">Force Logout…</text>
+  <text x="34" y="482" fill="#9a6d6a" font-size="10">Logon response mode</text>
+  <rect x="34" y="490" width="272" height="24" rx="3" fill="#ffffff" stroke="#e0bdb9"/>
+  <text x="44" y="506" fill="#8a4a44" font-size="11" font-family="monospace">Success ▾</text>
+  <rect x="34" y="524" width="128" height="30" rx="4" fill="#fdf5e2" stroke="#d79a1a"/>
+  <text x="52" y="544" fill="#9a6d08" font-size="11">Sequence Gap</text>
+  <text x="34" y="578" fill="#b58f8b" font-size="10" font-style="italic">ações importantes pedem confirmação por modal</text>
+
+  <text x="340" y="78" fill="#8a94a6" font-size="11" letter-spacing="1">OBSERVAÇÃO</text>
+
+  <rect x="340" y="88" width="290" height="120" rx="6" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="354" y="108" fill="#6b7689" font-size="11">FIX Session</text>
+  <text x="354" y="132" fill="#4a5564" font-size="11">State</text>
+  <text x="520" y="132" fill="#1b7a38" font-size="11" font-family="monospace">Active</text>
+  <text x="354" y="152" fill="#4a5564" font-size="11">Sender / Target</text>
+  <text x="470" y="152" fill="#1a2029" font-size="11" font-family="monospace">...FIRM / CLIENT1</text>
+  <text x="354" y="172" fill="#4a5564" font-size="11">MsgSeqNum</text>
+  <text x="520" y="172" fill="#1a2029" font-size="11" font-family="monospace">14 823</text>
+  <text x="354" y="192" fill="#4a5564" font-size="11">Last heartbeat</text>
+  <text x="520" y="192" fill="#1a2029" font-size="11" font-family="monospace">1s ago</text>
+
+  <rect x="640" y="88" width="300" height="120" rx="6" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="654" y="108" fill="#6b7689" font-size="11">Simulation</text>
+  <text x="654" y="132" fill="#4a5564" font-size="11">Sent</text>
+  <text x="820" y="132" fill="#1a2029" font-size="11" font-family="monospace">148 230</text>
+  <text x="654" y="152" fill="#4a5564" font-size="11">Effective rate</text>
+  <text x="820" y="152" fill="#1a2029" font-size="11" font-family="monospace">9.98 /s</text>
+  <text x="654" y="172" fill="#4a5564" font-size="11">By ExecType</text>
+  <text x="760" y="172" fill="#1a2029" font-size="11" font-family="monospace">New 103k · Fill 41k</text>
+  <text x="654" y="192" fill="#4a5564" font-size="11">Errors / Elapsed</text>
+  <text x="790" y="192" fill="#1a2029" font-size="11" font-family="monospace">0 · 00:49:32</text>
+
+  <rect x="340" y="216" width="600" height="380" rx="6" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="354" y="236" fill="#6b7689" font-size="11">Message Feed (amostrado)</text>
+  <text x="820" y="236" fill="#aab3c0" font-size="10">⏸ pausar scroll</text>
+  <rect x="340" y="244" width="600" height="22" fill="#f0f2f5"/>
+  <text x="354" y="259" fill="#8a94a6" font-size="10" font-family="monospace">MsgType  ClOrdID    OrderID   ExecType  OrdStatus  Side  Instr   BizSeq</text>
+  <g font-family="monospace" font-size="10">
+    <rect x="340" y="266" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="280" fill="#1a2029">8        A10231     O55120    F         2          1     PETR4   90233</text>
+    <text x="354" y="300" fill="#4a5564">8        A10230     O55119    0         0          2     VALE3   90232</text>
+    <rect x="340" y="306" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="320" fill="#1a2029">8        A10229     O55118    F         2          1     PETR4   90231</text>
+    <text x="354" y="340" fill="#4a5564">8        A10228     O55117    4         4          1     VALE3   90230</text>
+    <rect x="340" y="346" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="360" fill="#1a2029">8        A10227     O55116    0         0          2     PETR4   90229</text>
+    <text x="354" y="380" fill="#4a5564">8        A10226     O55115    F         1          1     VALE3   90228</text>
+    <rect x="340" y="386" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="400" fill="#1a2029">8        A10225     O55114    0         0          1     PETR4   90227</text>
+    <text x="354" y="420" fill="#4a5564">8        A10224     O55113    F         2          2     VALE3   90226</text>
+    <rect x="340" y="426" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="440" fill="#1a2029">8        A10223     O55112    0         0          1     PETR4   90225</text>
+    <text x="354" y="460" fill="#4a5564">8        A10222     O55111    4         4          2     VALE3   90224</text>
+    <rect x="340" y="466" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="480" fill="#1a2029">8        A10221     O55110    F         2          1     PETR4   90223</text>
+    <text x="354" y="500" fill="#4a5564">8        A10220     O55109    0         0          2     VALE3   90222</text>
+    <rect x="340" y="506" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="520" fill="#1a2029">8        A10219     O55108    F         2          1     PETR4   90221</text>
+    <text x="354" y="540" fill="#4a5564">8        A10218     O55107    0         0          1     VALE3   90220</text>
+    <rect x="340" y="546" width="600" height="20" fill="#f7f9fb"/>
+    <text x="354" y="560" fill="#1a2029">8        A10217     O55106    F         2          2     PETR4   90219</text>
+    <text x="354" y="580" fill="#4a5564">8        A10216     O55105    0         0          1     VALE3   90218</text>
+  </g>
+</svg>

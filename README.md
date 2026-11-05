@@ -56,6 +56,18 @@ nexusrouter/
 
 ---
 
+## DropCopy Simulator
+
+Para testar o NexusRouter sem depender da B3, o repositório inclui um simulador do gateway FIX 4.4
+(B3 EntryPoint) em [`sim/`](sim/README.md) — um acceptor FIX com API de controle e um painel web
+(SimPanel) para operar a simulação, injetar falhas e acompanhar o fluxo em tempo real.
+
+O simulador é **completamente isolado** do NexusRouter: tem a própria solução, CPM e `Directory.Build.props`,
+e remover `sim/` não altera a build principal nem a CI. Instruções de como rodar, configurar e testar
+backend e frontend estão em [`sim/README.md`](sim/README.md).
+
+---
+
 ## Arquitetura Resumida
 
 ```

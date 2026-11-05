@@ -201,6 +201,9 @@ sim/frontend/
 │   │   └── telemetry.ts         # conexão WS + reconexão automática
 │   ├── state/
 │   │   └── store.ts             # estado da app (contexto/reducer ou zustand)
+│   ├── theme/
+│   │   ├── tokens.css           # variáveis de tema (light/dark) via [data-theme] (Seção 4.5)
+│   │   └── useTheme.ts          # hook de tema: prefers-color-scheme + persistência
 │   └── components/
 │       ├── SessionStatus.tsx    # FR-UI-02
 │       ├── SimulationStatus.tsx # FR-UI-03
@@ -208,7 +211,9 @@ sim/frontend/
 │       ├── ConfigForm.tsx       # FR-UI-05
 │       ├── FaultControls.tsx    # FR-UI-06
 │       ├── MessageFeed.tsx      # FR-UI-07
-│       └── ConnectivityBadge.tsx # FR-UI-08
+│       ├── ConnectivityBadge.tsx # FR-UI-08
+│       ├── ThemeToggle.tsx      # alterna claro/escuro (Seção 4.5)
+│       └── ConfirmDialog.tsx    # modal de confirmação de ações importantes (Seção 4.5)
 ```
 
 ### 4.2 Camada de API e tipos
@@ -230,6 +235,24 @@ sim/frontend/
 | Paused  | ❌ | ❌ | ✅ | ✅ |
 
 `ConfigForm` aplica a política híbrida de FR-SIM-06 na UI. Em `Running`, apenas os campos hot (`RatePerSecond` e `Outcome`) ficam editáveis e submetíveis; os campos travados ficam desabilitados com uma dica ("pause para alterar"). Em `Idle`/`Paused`, todos os campos são editáveis. O envio em `Running` manda só o delta hot, evitando o 409 do servidor; o 409 permanece como rede de segurança caso o estado mude entre a leitura e o submit.
+
+### 4.5 UX e layout
+
+O SimPanel é uma **ferramenta de operador**, não um produto de cliente. O desenho prioriza densidade de informação, controle direto e baixa chance de ação acidental, em vez de identidade visual. Ele não adota o design system da MonteBravo nem nenhuma biblioteca de componentes de UI — os componentes são próprios, montados com CSS Modules e variáveis de tema. Isso mantém o simulador leve e sem acoplamento a padrões de produto.
+
+**Princípios.**
+- A UI é majoritariamente **reativa**: reflete o estado empurrado por telemetria (Seção 4.3). Os poucos pontos de ação (controles, config, falhas) são deliberados.
+- **Estado comunicado por cor + rótulo**, nunca só por cor (acessibilidade). Convenção: Idle = neutro, Running = verde, Paused = âmbar, desconectado/erro = vermelho, sempre acompanhados de texto.
+- Ação de **risco assimétrico** recebe atrito proporcional: parar a rodada e injetar falhas exigem confirmação explícita (ver abaixo).
+
+**Layout.** Dashboard de página única, sem roteamento. Uma topbar fixa no topo e duas colunas abaixo:
+- **Topbar (sempre visível):** `ConnectivityBadge` (API/WS up/down), o estado corrente da simulação (Idle/Running/Paused) como fonte da verdade sempre à vista, e o seletor de tema.
+- **Coluna esquerda — Controle:** `SimulationControls`, `ConfigForm` e `FaultControls`. A zona de falhas é visualmente separada e marcada como perigosa (moldura/realce de alerta).
+- **Coluna direita — Observação:** `SessionStatus` e `SimulationStatus` como cards compactos de métricas no topo, e o `MessageFeed` ocupando o restante — tabela rolável, dados FIX em fonte monoespaçada, item mais recente no topo, com opção de pausar o auto-scroll para inspeção.
+
+**Tema claro e escuro.** O painel suporta tema **claro e escuro**, com alternância na topbar e preferência persistida (`localStorage`); respeita `prefers-color-scheme` na primeira carga, com **escuro como padrão**. As cores são definidas por variáveis CSS (design tokens) trocadas por um atributo `data-theme` na raiz, de modo que nenhum componente referencia cores fixas diretamente.
+
+**Confirmação de ações importantes.** Ações destrutivas ou de alto impacto — `Stop` da simulação e todas as injeções de falha (`Drop Connection`, `Force Logout`, `Sequence Gap`) — abrem um **modal de confirmação** que nomeia a ação e seu efeito, com um botão primário de confirmação e cancelamento. Não se usa duplo clique. Ações de baixo risco (`Start`, `Pause`, `Resume`, salvar config) são diretas, sem modal. Erros retornados pela API (ex.: 409) aparecem como notificação discreta (toast), não como modal.
 
 ---
 
