@@ -161,6 +161,43 @@ export NEXUS_PG_PASSWORD="nexus"
 
 Mensagens FIX recebidas são persistidas de forma assíncrona na hypertable `ingress_fix_messages` (cold path). O hot path não fala com o banco.
 
+### Habilitando dispatchers (egress)
+
+Os destinos de saída são configurados em `src/NexusRouter.Host/appsettings.json`, em duas listas dentro de `NexusRouter` que se cruzam pelo `Id`:
+
+- **`Dispatchers`** — declara cada destino. O campo `Type` seleciona o tipo e os campos válidos:
+
+  | `Type`        | Destino               | Status                  |
+  |---------------|-----------------------|-------------------------|
+  | `Kafka`       | Producer Kafka        | disponível              |
+  | `RabbitMQ`    | Publisher RabbitMQ    | disponível              |
+  | `FixOutbound` | Acceptor FIX outbound | disponível              |
+  | `WebSocket`   | Acceptor WebSocket    | não implementado (T-28) |
+
+- **`Sessions[].Routes`** — cada sessão de ingresso lista, por `DispatcherId`, para quais dispatchers suas mensagens fazem fan-out.
+
+**Um dispatcher só recebe tráfego quando alguma `Routes` (ou `Clients`) referencia o seu `Id`.** Declarar em `Dispatchers` sem rotear sobe o dispatcher, mas ele fica ocioso.
+
+Para habilitar **um** dispatcher numa sessão, aponte uma rota para o `Id` dele. Para habilitar **vários** (fan-out concorrente), liste todos:
+
+```json
+"Sessions": [
+  {
+    "SessionId": "B3-ENTRYPOINT-01",
+    "Routes": [
+      { "DispatcherId": "kafka-fix-raw" },
+      { "DispatcherId": "rabbitmq-fix-raw" }
+    ]
+  }
+],
+"Dispatchers": [
+  { "Id": "kafka-fix-raw", "Type": "Kafka", "BootstrapServers": "127.0.0.1:19092", "Topic": "fix.ordexec.raw" },
+  { "Id": "rabbitmq-fix-raw", "Type": "RabbitMQ", "Host": "127.0.0.1", "Exchange": "fix.orders", "RoutingKey": "fix.raw" }
+]
+```
+
+A configuração é validada na subida (fail-closed): é obrigatório ao menos uma sessão e um dispatcher, `Id` de dispatcher não pode repetir, um `DispatcherId` não pode repetir na mesma sessão, e toda rota deve apontar para um `Id` existente. Credenciais (Kafka SASL, RabbitMQ) vêm por variáveis de ambiente, nunca no `appsettings.json`.
+
 Consulte `docs/EntryPointMessageSpecs.pdf` e `.kiro/steering/b3-guidelines.md` para detalhes completos de configuração do protocolo B3.
 
 ---
