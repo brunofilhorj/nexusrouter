@@ -448,7 +448,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-26 — Implementar o cliente de telemetria WebSocket
+- [x] T-26 — Implementar o cliente de telemetria WebSocket
 
 **Objetivo:** Consumir o feed em tempo real com reconexão automática.
 
