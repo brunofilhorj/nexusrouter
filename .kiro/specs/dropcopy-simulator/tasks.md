@@ -282,7 +282,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ---
 
-- [ ] T-16 — Implementar `OrderFlowGenerator` (loop + rate limiting)
+- [x] T-16 — Implementar `OrderFlowGenerator` (loop + rate limiting)
 
 **Objetivo:** Loop de background que gera e envia frames na taxa alvo.
 
