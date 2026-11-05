@@ -419,7 +419,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 
 ## Fase 7 — Frontend SimPanel (React + Vite)
 
-- [ ] T-24 — Inicializar o projeto Vite + React + TypeScript
+- [x] T-24 — Inicializar o projeto Vite + React + TypeScript
 
 **Objetivo:** Scaffold do SimPanel.
 
