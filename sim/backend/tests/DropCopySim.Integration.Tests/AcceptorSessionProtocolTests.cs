@@ -164,7 +164,12 @@ public sealed class AcceptorSessionProtocolTests
             }),
             NullLogger<FixAcceptorService>.Instance,
             NullLogger<AcceptorSession>.Instance,
-            CreateGenerator());
+            CreateGenerator(),
+            CreateTelemetryHub());
+
+    private static TelemetryHub CreateTelemetryHub() => new(
+        Options.Create(new TelemetryOptions()),
+        NullLogger<TelemetryHub>.Instance);
 
     private static OrderFlowGenerator CreateGenerator() => new(
         new SimulationConfig

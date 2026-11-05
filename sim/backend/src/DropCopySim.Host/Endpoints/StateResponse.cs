@@ -36,6 +36,9 @@ public sealed record SessionStateView
 
     /// <summary>Next inbound MsgSeqNum the session expects from the client.</summary>
     public required long NextExpectedInboundMsgSeqNum { get; init; }
+
+    /// <summary>UTC time of the last inbound or outbound heartbeat activity, or <c>null</c> when none yet.</summary>
+    public DateTimeOffset? LastHeartbeatUtc { get; init; }
 }
 
 /// <summary>Simulation FSM and round counters view for <see cref="StateResponse"/>.</summary>

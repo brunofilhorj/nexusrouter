@@ -28,11 +28,13 @@ public sealed class FixAcceptorGeneratorWiringTests
         };
 
         await using var generator = CreateGenerator();
+        await using var telemetry = CreateTelemetryHub();
         var service = new FixAcceptorService(
             Options.Create(options),
             NullLogger<FixAcceptorService>.Instance,
             NullLogger<AcceptorSession>.Instance,
-            generator);
+            generator,
+            telemetry);
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -137,6 +139,10 @@ public sealed class FixAcceptorGeneratorWiringTests
         new SimulationCounters(),
         Channel.CreateUnbounded<TelemetryEvent>().Writer,
         NullLogger<OrderFlowGenerator>.Instance);
+
+    private static TelemetryHub CreateTelemetryHub() => new(
+        Options.Create(new TelemetryOptions()),
+        NullLogger<TelemetryHub>.Instance);
 
     private static SimulationConfig TestSimulationConfig() => new()
     {

@@ -133,7 +133,7 @@ export class AppStore {
           senderCompId: snapshot.session.senderCompId,
           targetCompId: snapshot.session.targetCompId,
           msgSeqNum: snapshot.session.nextOutboundMsgSeqNum,
-          lastHeartbeatUtc: null,
+          lastHeartbeatUtc: snapshot.session.lastHeartbeatUtc ?? null,
           timestampUtc: new Date().toISOString(),
         }
       : this.state.session;

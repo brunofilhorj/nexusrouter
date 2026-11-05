@@ -17,6 +17,7 @@ public sealed class FixAcceptorService : IHostedService
     private readonly ILogger<FixAcceptorService> _logger;
     private readonly ILogger<AcceptorSession> _sessionLogger;
     private readonly OrderFlowGenerator _generator;
+    private readonly TelemetryHub _telemetry;
     private TcpListener? _listener;
     private CancellationTokenSource? _stoppingCts;
     private Task? _acceptLoop;
@@ -29,22 +30,26 @@ public sealed class FixAcceptorService : IHostedService
     /// <param name="logger">Logger for listener lifecycle events.</param>
     /// <param name="sessionLogger">Logger supplied to each accepted session.</param>
     /// <param name="generator">Order flow generator wired to the active session.</param>
+    /// <param name="telemetry">Telemetry hub the session's state transitions are broadcast through.</param>
     /// <exception cref="ArgumentNullException">A required argument is null.</exception>
     public FixAcceptorService(
         IOptions<AcceptorOptions> options,
         ILogger<FixAcceptorService> logger,
         ILogger<AcceptorSession> sessionLogger,
-        OrderFlowGenerator generator)
+        OrderFlowGenerator generator,
+        TelemetryHub telemetry)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(sessionLogger);
         ArgumentNullException.ThrowIfNull(generator);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _options = options.Value;
         _logger = logger;
         _sessionLogger = sessionLogger;
         _generator = generator;
+        _telemetry = telemetry;
     }
 
     /// <summary>Gets the currently connected session, if one has been accepted.</summary>
@@ -157,6 +162,11 @@ public sealed class FixAcceptorService : IHostedService
 
             void OnStateChanged(SessionStateChanged e)
             {
+                // Forward the transition to the telemetry hub so the SimPanel's session panel updates
+                // live over the WebSocket feed (FR-API-02); without this the UI only ever sees the
+                // one-shot GET /v1/state snapshot taken on (re)connect.
+                _telemetry.TryPublish(e);
+
                 if (string.Equals(e.State, nameof(AcceptorSessionState.Active), StringComparison.Ordinal))
                 {
                     try

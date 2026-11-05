@@ -92,6 +92,20 @@ public sealed class AcceptorSession : IAsyncDisposable
     public long NextExpectedInboundMsgSeqNum => Volatile.Read(ref _nextExpectedInboundMsgSeqNum);
 
     /// <summary>
+    /// UTC time of the last inbound or outbound session activity, or <c>null</c> before any activity.
+    /// </summary>
+    /// <remarks>Exposed for the <c>GET /v1/state</c> snapshot so it carries the same "last heartbeat"
+    /// readout the live <see cref="SessionStateChanged"/> feed does.</remarks>
+    public DateTimeOffset? LastActivityUtc
+    {
+        get
+        {
+            long ticks = Volatile.Read(ref _lastActivityUtcTicks);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+    }
+
+    /// <summary>
     /// Raised after this session changes <see cref="Fsm"/> state, for control-plane telemetry.
     /// </summary>
     public event Action<SessionStateChanged>? StateChanged;
@@ -798,6 +812,14 @@ public sealed class AcceptorSession : IAsyncDisposable
                         null,
                         cancellationToken).ConfigureAwait(false);
                 }
+
+                // Re-publish the session view each heartbeat tick while Active so the SimPanel's
+                // "last heartbeat" and MsgSeqNum stay live: PublishState otherwise only fires on FSM
+                // transitions, leaving the panel frozen once the session reaches Active.
+                if (_fsm.State == AcceptorSessionState.Active)
+                {
+                    PublishState();
+                }
             }
         }
         catch (Exception ex) when (IsTransportClosed(ex))
@@ -847,6 +869,10 @@ public sealed class AcceptorSession : IAsyncDisposable
             }
 
             Volatile.Write(ref _lastOutboundTimestamp, Stopwatch.GetTimestamp());
+            // Outbound frames (heartbeats included) count as session activity for the SimPanel's
+            // "last heartbeat" readout, matching SessionStateChanged.LastHeartbeatUtc's documented
+            // "last inbound or outbound heartbeat activity" meaning.
+            Volatile.Write(ref _lastActivityUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
         }
         finally
         {

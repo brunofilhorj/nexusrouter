@@ -23,7 +23,8 @@ public sealed class FixAcceptorServiceTests
             }),
             NullLogger<FixAcceptorService>.Instance,
             NullLogger<AcceptorSession>.Instance,
-            CreateGenerator());
+            CreateGenerator(),
+            CreateTelemetryHub());
 
         await service.StartAsync(CancellationToken.None);
         try
@@ -61,7 +62,8 @@ public sealed class FixAcceptorServiceTests
             }),
             NullLogger<FixAcceptorService>.Instance,
             NullLogger<AcceptorSession>.Instance,
-            CreateGenerator());
+            CreateGenerator(),
+            CreateTelemetryHub());
 
         await Assert.ThrowsAsync<NotSupportedException>(
             () => service.StartAsync(CancellationToken.None));
@@ -74,6 +76,10 @@ public sealed class FixAcceptorServiceTests
         new SimulationCounters(),
         Channel.CreateUnbounded<TelemetryEvent>().Writer,
         NullLogger<OrderFlowGenerator>.Instance);
+
+    private static TelemetryHub CreateTelemetryHub() => new(
+        Options.Create(new TelemetryOptions()),
+        NullLogger<TelemetryHub>.Instance);
 
     private static SimulationConfig TestSimulationConfig() => new()
     {

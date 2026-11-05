@@ -3,14 +3,16 @@
  *
  * A topbar sempre visível traz o estado corrente da simulação como fonte da
  * verdade, o `ConnectivityBadge` (API/WS) e o `ThemeToggle`. Abaixo, duas
- * colunas: controle à esquerda (`SimulationControls`, `ConfigForm`,
- * `FaultControls`) e observação à direita (`SessionStatus`, `SimulationStatus`
- * e o `MessageFeed`). O tema (claro/escuro) é aplicado ao documento pelo
+ * colunas: controle à esquerda (`SimulationControls`, `FaultControls`) e
+ * observação à direita (`SessionStatus`, `SimulationStatus` e o `MessageFeed`).
+ * A configuração (`ConfigForm`) não ocupa espaço permanente: vive num modal
+ * (`ConfigModal`) aberto pelo ícone de engrenagem na topbar, ao lado do seletor
+ * de tema. O tema (claro/escuro) é aplicado ao documento pelo
  * `ThemeToggle`/`useTheme`; aqui a casca apenas importa os design tokens.
  */
 
-import { useEffect } from 'react';
-import ConfigForm from './components/ConfigForm';
+import { useEffect, useState } from 'react';
+import ConfigModal from './components/ConfigModal';
 import ConnectivityBadge from './components/ConnectivityBadge';
 import FaultControls from './components/FaultControls';
 import MessageFeed from './components/MessageFeed';
@@ -36,6 +38,8 @@ function App(): React.JSX.Element {
   const simulationState = useAppSelector<SimulationState>(
     (s) => s.simulationState,
   );
+  // Configuração vive num modal, aberto pela engrenagem da topbar.
+  const [configOpen, setConfigOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,13 +81,25 @@ function App(): React.JSX.Element {
           {simulationState}
         </span>
         <ConnectivityBadge />
+        <button
+          type="button"
+          className="config-toggle"
+          aria-label="Abrir configuração"
+          aria-haspopup="dialog"
+          aria-expanded={configOpen}
+          title="Configuração"
+          onClick={() => setConfigOpen(true)}
+        >
+          <span className="config-toggle__icon" aria-hidden="true">
+            ⚙️
+          </span>
+        </button>
         <ThemeToggle />
       </header>
 
       <div className="app__body">
         <div className="app__column app__column--control">
           <SimulationControls />
-          <ConfigForm />
           <FaultControls />
         </div>
         <div className="app__column app__column--observe">
@@ -92,6 +108,8 @@ function App(): React.JSX.Element {
           <MessageFeed />
         </div>
       </div>
+
+      <ConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
     </div>
   );
 }
