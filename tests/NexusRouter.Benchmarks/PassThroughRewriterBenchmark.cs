@@ -5,11 +5,11 @@ using NexusRouter.Router;
 namespace NexusRouter.Benchmarks;
 
 /// <summary>
-/// Mede o custo de reescrita in-place de MsgSeqNum e CheckSum de um frame FIX 4.4.
+/// Mede o custo de reescrita de MsgSeqNum, BodyLength e CheckSum de um frame FIX 4.4.
 /// </summary>
 /// <remarks>
-/// Alocação esperada: 0 B por iteração — toda a operação é feita sobre um <see cref="Span{T}"/>
-/// pré-alocado no <see cref="GlobalSetup"/>.
+/// Alocação esperada: 0 B por iteração — toda a operação é feita sobre <see cref="Span{T}"/>
+/// pré-alocados no <see cref="GlobalSetup"/>.
 /// </remarks>
 [MemoryDiagnoser]
 public class PassThroughRewriterBenchmark
@@ -24,6 +24,7 @@ public class PassThroughRewriterBenchmark
 
     // Buffer de trabalho: uma cópia do template, reutilizado a cada iteração.
     private byte[] _workBuffer = [];
+    private byte[] _destination = [];
 
     /// <summary>
     /// Aloca o buffer de trabalho uma única vez antes das iterações.
@@ -33,6 +34,7 @@ public class PassThroughRewriterBenchmark
     {
         _workBuffer = new byte[TemplateFix44.Length];
         TemplateFix44.CopyTo(_workBuffer, 0);
+        _destination = new byte[TemplateFix44.Length + PassThroughRewriter.MaxGrowthBytes];
     }
 
     /// <summary>
@@ -43,6 +45,16 @@ public class PassThroughRewriterBenchmark
     {
         // Restaura o frame ao template antes de cada reescrita para manter a validade do campo.
         TemplateFix44.CopyTo(_workBuffer, 0);
-        PassThroughRewriter.Rewrite(_workBuffer.AsSpan(), newSeqNum: 42L);
+        PassThroughRewriter.Rewrite(_workBuffer.AsSpan(), newSeqNum: 7L);
+    }
+
+    /// <summary>
+    /// Copia o frame para o destino com um MsgSeqNum de largura diferente e recalcula tags 9 e 10, sem alocação.
+    /// </summary>
+    [Benchmark]
+    public int TryRewriteToWithResize()
+    {
+        PassThroughRewriter.TryRewriteTo(TemplateFix44, _destination, newSeqNum: 37582L, out int written);
+        return written;
     }
 }

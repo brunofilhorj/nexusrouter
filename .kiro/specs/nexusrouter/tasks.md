@@ -26,6 +26,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 8 | Testes | T-37 → T-43 |
 | Fase 9 | Retransmissão opcional por cliente | T-44 → T-48 |
 | Fase 10 | Egress WebSocket | T-49 → T-53 |
+| Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-09 |
 
 ---
 
@@ -1033,6 +1034,179 @@ Acceptor para aplicação web ou nativa. Depende de T-19 (`DispatcherBase`). O r
 
 ---
 
+## Fase 11 — Melhorias e débitos técnicos
+
+Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no fim para que nenhuma task existente mude de número.
+
+**Formato desta fase (difere das anteriores):**
+
+- ID `TD-NN`, sequencial dentro da fase. Não reutiliza `T-NN`. `./scripts/task.sh nexusrouter TD-02` extrai o bloco.
+- Ordem de execução é a ordem do arquivo. A linha **Depende de** lista só o que precisa estar `[x]` antes.
+- Cada task tem **Origem** (nota ou revisão que a gerou), **Tamanho** (P, M ou G), **Objetivo**, **Entradas**, **Passos** e **Saída**.
+- Task já entregue ganha **Entregue em** com o commit. Task aberta não tem esse campo.
+- Mensagem de commit e nome de branch usam o ID: `[TD-02] ...` e `feature/TD-02-<descricao>`.
+- Origem comum: `notes/seqnum-rethink.md`. Os itens §N citados abaixo são dessa nota.
+
+- [x] TD-01 — Responder `ResendRequest` do initiator com `SequenceReset-GapFill` válido
+
+**Origem:** `notes/seqnum-rethink.md` §7.1 item 2. **Tamanho:** P. **Depende de:** T-11.
+**Entregue em:** commit `7e68d33`.
+
+**Objetivo:** O `FixSession` deixa de enviar o frame inválido `35=4<SOH>` ao counterpart que pede reenvio.
+
+**Entradas:** `notes/seqnum-rethink.md` §7.1, `b3-guidelines.md` §12 e §13.
+
+**Passos:**
+1. `FixSession.HandleResendRequest` lê `BeginSeqNo` (7) e `EndSeqNo` (16) e responde com `BuildSequenceReset`: header completo, `34`=BeginSeqNo, `43=Y`, `122`, `123=Y`, `36` (próximo seqnum de saída, limitado por `EndSeqNo+1`), `9` e `10` válidos.
+2. Pedido sem BeginSeqNo válido, ou além do que já foi enviado, é ignorado com aviso.
+3. Remover o stub de `FixSessionStateMachine.HandleResendRequest`.
+4. `BuildSequenceReset` passa a incluir `43=Y` e `122` no gap-fill, o que vale também para o acceptor.
+
+**Saída:** Gap-fill bem formado para o initiator, que só envia mensagens administrativas. Não resolve reenvio de mensagens de aplicação (TD-08), validação do seqnum de entrada (TD-04) nem `Reject` (TD-06). Testes: `FixMessageBuilderTests` e `FixSession_WhenPeerSendsResendRequest_RepliesWithWellFormedGapFill`.
+
+---
+
+- [x] TD-02 — `PassThroughRewriter` com mudança de tamanho
+
+**Origem:** `notes/seqnum-rethink.md` §1. **Tamanho:** P a M. **Depende de:** T-13, T-22.
+**Entregue em:** commit `refactor(router)` desta branch, logo após `7e68d33`.
+
+**Objetivo:** O MsgSeqNum de saída deixa de depender da largura da tag 34 do frame de origem. Fim do `InvalidOperationException` quando a sessão passa de 4 para 5 dígitos, e fim do padding com espaços.
+
+**Entradas:** `notes/seqnum-rethink.md` §1, `b3-guidelines.md` §15, `design.md` §3.
+
+**Passos:**
+1. Novo `PassThroughRewriter.TryRewriteTo(source, destination, newSeqNum, out written)`: copia o frame gravando a tag 34 com os dígitos exatos e recalcula `9` (BodyLength) e `10` (CheckSum). Zero allocation. Constante `MaxGrowthBytes` (32) para a folga do destino.
+2. `Rewrite` in-place continua só para largura igual, usado pelo `RouterEngine` para recomputar o checksum. Largura diferente devolve `false` e nunca preenche com espaços.
+3. `FixAcceptedSession.TryEnqueue` aluga `RawBuffer.Length + MaxGrowthBytes` no PassThrough e `Prepare` usa `TryRewriteTo`. A cópia que já existia passa a ser a da própria reescrita, sem custo extra.
+4. Testes: `PassThroughRewriterTests` (largura maior, menor, BodyLength ganhando dígito, destino pequeno, frame malformado) e regressão em `FixOutboundDispatcherTests` com o contador em 37581 e frame de origem `34=1`. Benchmark `TryRewriteToWithResize`.
+5. Atualizar `b3-guidelines.md` §15 e `design.md` §3 (reescrita de 9, 34 e 10 por cópia no egress FIX).
+
+**Saída:** O dispatcher FIX entrega frames válidos (BodyLength e CheckSum corretos, tag 34 sem espaços) com qualquer seqnum de sessão.
+
+---
+
+- [ ] TD-03 — Alinhar `b3-guidelines.md` ao que os PDFs da B3 dizem
+
+**Origem:** `notes/seqnum-rethink.md` §2. **Tamanho:** P. **Depende de:** nenhuma.
+
+**Objetivo:** O steering não contradiz a spec da B3 nem apresenta como regra da B3 o que é decisão do projeto.
+
+**Entradas:** `notes/seqnum-rethink.md` §2, `b3-guidelines.md` §1 e §13, `docs/EntryPointMessageSpecs.pdf`.
+
+**Passos:**
+1. §1: remover `NextExpectedMsgSeqNum` (789) do Logon, campo retirado na v1.5.1 da spec.
+2. §13: marcar a regra "Logout com MsgSeqNum too low leva a reset e `141=Y`" como decisão do projeto, não da B3, ou removê-la.
+3. Conferir nos PDFs a exigência de reenvio real versus gap-fill e de campos obrigatórios do Logon (COD, credenciais), e registrar o resultado no steering. Esse resultado destrava TD-05 e TD-08.
+
+**Saída:** Steering consistente com os PDFs, com a dúvida de certificação respondida por escrito.
+
+---
+
+- [ ] TD-04 — Initiator valida e persiste o MsgSeqNum de entrada e de saída
+
+**Origem:** `notes/seqnum-rethink.md` §7.1 itens 1 e 5, §7.2 item 7, §3. **Tamanho:** G. **Depende de:** TD-01, TD-03.
+
+**Objetivo:** O `FixSession` sabe qual MsgSeqNum espera do counterpart, reage a buracos e repetições, e sobrevive a restart sem voltar a 1 por acaso.
+
+**Entradas:** `notes/seqnum-rethink.md` §3, §4 e §7, `b3-guidelines.md` §12 e §13, `SequenceNumberStore`.
+
+**Passos:**
+1. Reaproveitar ou generalizar `SequenceNumberStore` para guardar saída e entrada do initiator, com data de pregão no arquivo.
+2. Validar o `34` recebido: maior que o esperado envia `ResendRequest`; menor sem `PossDupFlag=Y` envia `Logout` e desconecta; menor com `PossDupFlag=Y` ignora.
+3. Tratar `SequenceReset` recebido (gap-fill e reset), aplicando `NewSeqNo` ao contador de entrada.
+4. Reset diário conforme a regra de dia de pregão definida em TD-03, e `141=Y` no primeiro Logon do dia.
+5. Testes de integração contra o simulador DropCopy.
+
+**Saída:** Reconectar depois de restart não perde nem repete mensagens, e o `Logon` indica reset só quando ele acontece.
+
+---
+
+- [ ] TD-05 — Logon completo: credenciais, COD e `ResetSeqNumFlag`
+
+**Origem:** `notes/seqnum-rethink.md` §7.1 item 4. **Tamanho:** M. **Depende de:** TD-03, TD-04.
+
+**Objetivo:** `BuildLogon` envia os campos que a B3 exige, configuráveis por sessão.
+
+**Entradas:** `notes/seqnum-rethink.md` §7.1, `b3-guidelines.md` §1, `SessionOptions`, `FixMessageBuilder.BuildLogon`, `docs/secrets.md`.
+
+**Passos:**
+1. `SessionOptions` ganha `Username` (553), `Password` (554, via `ISecretResolver`), `CancelOnDisconnectType` (35002), `CODTimeoutWindow` (35003) e o controle de `141`.
+2. `BuildLogon` inclui os campos presentes e nunca registra a senha em log.
+3. Conferir o eco de `141` e o `HeartBtInt` na resposta de Logon (§7.2 item 8).
+
+**Saída:** Logon aceito pela B3 em homologação com COD configurado.
+
+---
+
+- [ ] TD-06 — Validação de entrada e `Reject` (35=3) no initiator
+
+**Origem:** `notes/seqnum-rethink.md` §7.2 itens 6 e 8. **Tamanho:** M. **Depende de:** TD-04.
+
+**Objetivo:** Frames malformados ou fora das regras de sessão geram `Reject` em vez de entrarem no pipeline.
+
+**Entradas:** `notes/seqnum-rethink.md` §7.2, `FixFrameScanner`, `b3-guidelines.md` §4.
+
+**Passos:**
+1. Validar `BodyLength`, `CheckSum`, `BeginString`, `SenderCompID`/`TargetCompID` e `SendingTime` (tolerância configurável).
+2. Responder `Reject` com `RefSeqNum`, `RefTagID`, `SessionRejectReason` e `Text`.
+3. Contadores de rejeição na métrica de sessão.
+
+**Saída:** Frame inválido do counterpart é rejeitado e contado, sem chegar ao router.
+
+---
+
+- [ ] TD-07 — Acceptor FIX: seqnum de entrada, `Logout` na recusa e detecção de silêncio
+
+**Origem:** `notes/seqnum-rethink.md` §4 e §7.3. **Tamanho:** M. **Depende de:** TD-03.
+
+**Objetivo:** O `FixAcceptedSession` trata o cliente como um counterpart de sessão FIX, não só como um socket.
+
+**Entradas:** `notes/seqnum-rethink.md` §4 e §7.3, `FixAcceptedSession`, `FixOutboundDispatcher`.
+
+**Passos:**
+1. Decidir a política (tolerante ou estrita) e validar o `34` recebido, guardando o esperado.
+2. Recusa de Logon responde `Logout` com `Text` antes de fechar. Resposta de Logon ecoa `141=Y` quando o cliente pede.
+3. Respeitar o `HeartBtInt` do cliente e fechar a sessão após silêncio de `HeartBtInt` mais tolerância, com `TestRequest` antes.
+4. `ResendRequest` respeita `EndSeqNo`.
+
+**Saída:** Cliente que reconecta com seqnum incoerente recebe resposta explícita, e peer morto é derrubado pelo router.
+
+---
+
+- [ ] TD-08 — Reenvio real de mensagens de aplicação ou gap-fill definitivo
+
+**Origem:** `notes/seqnum-rethink.md` §7.1 item 3 e §4. **Tamanho:** G. **Depende de:** TD-03, TD-04, T-45.
+
+**Objetivo:** Fechar a decisão sobre reenvio com base no que TD-03 apurou da B3 e no `replay-rethink.md`.
+
+**Entradas:** resultado de TD-03, `notes/replay-rethink.md`, `notes/seqnum-rethink.md` §4.
+
+**Passos:**
+1. Se a B3 exige reenvio: store de mensagens enviadas e reenvio com `PossDupFlag=Y` (43) e `OrigSendingTime` (122); gap-fill só para administrativas.
+2. Se não exige: documentar gap-fill como comportamento definitivo no `design.md`.
+3. Alinhar a chave de replay (`replay_seq`) com a política de seqnum.
+
+**Saída:** Decisão escrita e implementada, com teste do cenário A4 do roteiro de certificação.
+
+---
+
+- [ ] TD-09 — Flush do `SequenceNumberStore` por mensagem (configurável)
+
+**Origem:** `notes/seqnum-rethink.md` §7.4. **Tamanho:** P. **Depende de:** TD-04.
+
+**Objetivo:** Crash entre dois flushes de 5 s não repete seqnums já enviados, quando o operador escolhe essa garantia.
+
+**Entradas:** `SequenceNumberStore`, `FixOutboundDispatcherOptions`.
+
+**Passos:**
+1. Opção de flush por mensagem ou por intervalo, com o intervalo atual como padrão.
+2. Medir o custo no benchmark do hot path antes de mudar o padrão.
+
+**Saída:** Opção documentada em `design.md` §6 e coberta por teste de restart abrupto.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```
@@ -1090,4 +1264,15 @@ T-22 + T-25 + T-27 + T-31
 T-51 + T-45
  └── T-52 (replay na sessão WS)
       └── T-53 (testes WS)
+
+Fase 11 (melhorias e débitos)
+T-11 ── TD-01 (GapFill no ResendRequest) [feito]
+T-13 + T-22 ── TD-02 (rewriter com mudança de tamanho) [feito]
+TD-03 (steering x PDFs B3)
+ ├── TD-04 (seqnum no initiator) ◄── TD-01
+ │    ├── TD-05 (Logon completo)
+ │    ├── TD-06 (validação e Reject)
+ │    ├── TD-08 (reenvio real ou gap-fill) ◄── T-45
+ │    └── TD-09 (flush por mensagem)
+ └── TD-07 (acceptor FIX)
 ```

@@ -126,7 +126,7 @@ O `RouterEngine` é o coração do sistema. É stateless do ponto de vista de ro
 **Lookup de Roteamento:** A cada chegada de `IngressFrame`, o router resolve o `RouteContext` para o `SessionId`. Trata-se de um único lookup no dicionário, sem locks necessários graças à coleção frozen imutável.
 
 **Despacho por DeliveryMode:**
-- No modo `PassThrough`: o router invoca o `PassThroughRewriter`, que opera no `Span<byte>` bruto, encontrando e reescrevendo apenas a `tag 34` (MsgSeqNum) e a `tag 10` (CheckSum) usando um scanner de campos zero-allocation.
+- No modo `PassThrough`: o router invoca o `PassThroughRewriter`, que opera no `Span<byte>` bruto, encontrando e reescrevendo apenas a `tag 34` (MsgSeqNum) e a `tag 10` (CheckSum) usando um scanner de campos zero-allocation. No egress FIX, onde o seqnum da sessão de saída pode ter largura diferente da do frame de origem, `TryRewriteTo` copia o frame para o buffer da sessão gravando a tag 34 com os dígitos exatos e recalculando também a `tag 9` (BodyLength). A cópia já existia, então não há custo extra.
 - No modo `Parse`: o router invoca o `FixTokenizer`, que produz um `FixMessage` — um `ref struct` que encapsula um array stack-allocated ou poolizado de entradas `FixField` (pares tag-valor como pares `int`/`ReadOnlySpan<byte>`). Nenhuma alocação de string gerenciada ocorre.
 
 **FanOut:** Para cada dispatcher registrado no span `RouteContext.Dispatchers`, o router chama `TryWrite` no `Channel<DispatchPayload>` do dispatcher. Isso é não bloqueante por design. Se um channel estiver cheio, o overflow é registrado no channel de auditoria (também via `TryWrite`) e a mensagem é descartada apenas para aquele dispatcher. Os demais dispatchers do fan-out não são afetados.
@@ -693,7 +693,7 @@ NexusRouter/
         ├─► [FrozenDictionary<SessionId, RouteContext> lookup]  — O(1), sem lock
         │
         ├─► [DeliveryMode == PassThrough?]
-        │       │ Sim → PassThroughRewriter.Rewrite(Span<byte>)  — in-place, sem alloc
+        │       │ Sim → PassThroughRewriter.Rewrite(Span<byte>)  — in-place (largura igual), sem alloc
         │       │ Não → FixTokenizer.Tokenize(...)               — stack-alloc, sem heap alloc
         │
         ├─► [Aluga buffer do ArrayPool, copia frame, encapsula em DispatchPayload do ObjectPool]

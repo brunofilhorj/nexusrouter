@@ -234,7 +234,7 @@ internal sealed class FixAcceptedSession
             long sequence = _sequence.Next();
             int capacity = payload.DeliveryMode == DeliveryMode.Parse
                 ? Math.Max(payload.RawBuffer.Memory.Length + 128, AdminMessageBytes)
-                : Math.Max(payload.RawBuffer.Memory.Length, 1);
+                : payload.RawBuffer.Memory.Length + PassThroughRewriter.MaxGrowthBytes;
             rented = ArrayPool<byte>.Shared.Rent(capacity);
             int written = Prepare(payload, sequence, rented);
             if (!_outbound.Writer.TryWrite(new OutboundFrame(rented, written)))
@@ -305,14 +305,13 @@ internal sealed class FixAcceptedSession
             {
                 IMemoryOwner<byte> raw = payload.RawBuffer
                     ?? throw new InvalidOperationException("O payload FIX outbound não tem buffer.");
-                ReadOnlyMemory<byte> source = raw.Memory;
-                source.Span.CopyTo(destination);
-                if (!PassThroughRewriter.Rewrite(destination.AsSpan(0, source.Length), sequence))
+                if (!PassThroughRewriter.TryRewriteTo(raw.Memory.Span, destination, sequence, out int written))
                 {
-                    throw new InvalidOperationException("O MsgSeqNum outbound não coube no campo 34.");
+                    throw new InvalidOperationException(
+                        "O frame PassThrough não pôde ser reescrito com o MsgSeqNum outbound (tags 9, 34 ou 10 ausentes ou inválidas).");
                 }
 
-                return source.Length;
+                return written;
             }
 
             case DeliveryMode.Parse:
