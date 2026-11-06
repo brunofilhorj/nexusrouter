@@ -115,9 +115,11 @@ public sealed class ProbeController : IHostedService
         {
             await DisconnectAsync(transport, ct).ConfigureAwait(false);
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
+        catch (Exception)
         {
             // Shutdown path: adapters report their own faults through LastError; keep closing the rest.
+            // A cancelled token means the host gave up waiting. That must not crash the process on exit,
+            // so cancellation is swallowed here too.
         }
     }
 

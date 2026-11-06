@@ -1,11 +1,15 @@
 /**
- * Static Kafka and Rabbit screens. Endpoint text matches FR-UI-10.
+ * Kafka and Rabbit screens. The static endpoint text (FR-UI-10) shows until
+ * the adapter reports its effective endpoint.
  */
 
 import type { JSX } from 'react';
 import ConnectionCard from '../components/ConnectionCard';
 import EventTable from '../components/EventTable';
 import StatsRow from '../components/StatsRow';
+import { useAdapter } from '../state/useAdapter';
+import { useStore } from '../state/store';
+import { lastEventLabel } from './format';
 import styles from './Screen.module.css';
 
 /** Broker transports that share this screen. */
@@ -27,18 +31,37 @@ export interface BrokerScreenProps {
   transport: BrokerTransport;
 }
 
-/** Kafka or Rabbit: connection card, counters, empty event table. */
+/** Kafka or Rabbit: connection card, counters and the event table. */
 export function BrokerScreen({ transport }: BrokerScreenProps): JSX.Element {
   const headingId = `${transport}-screen-title`;
+  const view = useAdapter(transport);
+  const { buffers } = useStore();
+  const counters = view.adapter?.counters;
+  const endpoint = view.adapter?.endpoint ? view.adapter.endpoint : ENDPOINTS[transport];
 
   return (
     <section className={styles.screen} aria-labelledby={headingId}>
       <h2 id={headingId} className={styles.title}>
         {TITLES[transport]}
       </h2>
-      <ConnectionCard endpoint={ENDPOINTS[transport]} />
-      <StatsRow />
-      <EventTable />
+      <ConnectionCard
+        endpoint={endpoint}
+        state={view.state}
+        stateLabel={view.stateLabel}
+        lastError={view.lastError}
+        busy={view.busy}
+        onConnect={view.onConnect}
+        onDisconnect={view.onDisconnect}
+      />
+      <StatsRow
+        received={counters?.received}
+        perSecond={counters ? Math.round(counters.ratePerSecond * 10) / 10 : undefined}
+        lastEvent={lastEventLabel(counters?.lastReceivedAt)}
+        parseFailures={counters?.parseFailures}
+        sampled={counters?.sampled}
+        dropped={counters?.dropped}
+      />
+      <EventTable events={buffers[transport]} />
     </section>
   );
 }

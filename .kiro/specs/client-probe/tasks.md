@@ -23,6 +23,7 @@ Ao concluir uma tarefa, marque `- [x]`. As entradas referenciam `requirements.md
 | Fase 5 | Adapters Kafka e Rabbit | T-07 → T-08 |
 | Fase 6 | Iniciador FIX | T-09 → T-10 |
 | Fase 7 | Tela WebSocket no contrato da §3.3.1 | T-11 → T-12 |
+| Fase 8 | Ligar a UI aos adapters (Kafka, Rabbit, FIX) | T-13 → T-13a |
 
 A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste é irmão, na mesma solução, e não referencia o NexusRouter.
 
@@ -244,6 +245,55 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ---
 
+## Fase 8 — Ligar a UI aos Adapters
+
+- [x] T-13 — Ligar `ConnectionCard`, contadores e tabela ao `/v1/connect`, `/v1/disconnect` e `/v1/state`
+
+**Objetivo:** Fechar a lacuna entre T-05 (cliente HTTP e store, "sem ligar adapter") e T-06 a T-10 (adapters prontos). Hoje os botões Conectar e Desconectar das telas Kafka, Rabbit e FIX são `disabled` fixo e nenhuma tela mostra estado, contadores ou eventos reais.
+
+**Entradas:** `requirements.md` (FR-UI-06 a FR-UI-10, FR-API-01 a FR-API-06, NFR-SEC-01), `design.md` (Seções 5.2, 5.3 e 5.4), `ClientApp/src/api/client.ts`, `ClientApp/src/state/config.ts`, `ClientApp/src/state/store.ts`
+
+**Passos:**
+1. `ConnectionCard` recebe `onConnect`, `onDisconnect` e `busy` opcionais. Conectar fica habilitado em `disconnected` e `faulted`; Desconectar em `connecting`, `live` e `faulted`; os dois ficam desabilitados enquanto há uma requisição em voo. Sem os callbacks (tela WebSocket, T-11) os botões continuam desabilitados.
+2. Montar o `profile` a partir de `loadConfig()` e `getSecrets()` em `state/profile.ts`: Kafka (`bootstrapServers` = `host:port`, `topic`, `groupId`), Rabbit (`host`, `port`, `exchange`, `routingKey`, `password` só se preenchida) e FIX (`host`, `port`, `senderCompId`, `targetCompId`). A senha vai só no corpo do `POST` e nunca para `localStorage`.
+3. `store.ts` ganha o snapshot dos adapters (`/v1/state`) e o estado da API. Um poll de 1 s em `state/poll.ts` atualiza o snapshot; o poll roda também logo após cada connect e disconnect. O badge da API na topbar passa a refletir o sucesso ou a falha do poll.
+4. `BrokerScreen` e `FixScreen` leem o adapter do transporte: estado com rótulo em pt-BR (Desconectado, Conectando, Ao vivo, Com falha), endpoint efetivo (o texto estático de FR-UI-10 só aparece enquanto o endpoint vem vazio), último erro, `StatsRow` e `EventTable` com o buffer do transporte. A tela FIX mostra `SenderCompID`, `TargetCompID` e os números de sequência quando `session` existir.
+5. Erro `ApiError` de connect ou disconnect (400, 409) aparece no campo "Último erro" do card, com a `message` do corpo. Nada de segredo em log, `console` ou mensagem.
+
+**Saída:** Com o router e o compose no ar, Conectar na tela Kafka leva o estado a "Ao vivo" e os contadores e a tabela passam a andar; Desconectar volta a "Desconectado". Rabbit e FIX se comportam do mesmo modo. A tela WebSocket continua com os botões desabilitados. `npm run typecheck` e `npm run build` verdes. Nenhum segredo em `localStorage`.
+
+---
+
+- [x] T-13a — Estado "Com falha", erro obsoleto, shutdown e espera do consumer Kafka
+
+**Objetivo:** Corrigir o que apareceu no teste manual da T-13. Depois de alguns Conectar e Desconectar, e com o simulador parado, a tela Kafka mostrou "Desconectado" com o último erro `1/1 brokers are down`, mesmo com o broker saudável. O shutdown caiu com exceção sem tratamento, e as mensagens do Kafka demoravam alguns segundos para aparecer depois de Conectar, ao contrário do FIX. Há cinco causas distintas.
+
+**Entradas:** `requirements.md` (FR-ADP, FR-UI-07), `design.md` (Seções 3.1 e 5.2), `ClientProbe/Probe/ProbeAdapterBase.cs`, `ClientProbe/Kafka/KafkaConsumerAdapter.cs`, `ClientApp/src/components/ConnectionCard.tsx`, `.kiro/steering/coding-standards.md`
+
+**Causas encontradas:**
+- A. `ConnectionCard` mantinha Desconectar desabilitado em `faulted`. Só restava Conectar.
+- B. `ProbeAdapterBase.SetState` só limpa `LastError` ao entrar em `Connecting`. Um Desconectar limpo deixa o erro antigo ao lado de "Desconectado".
+- D. No shutdown, `ProbeController.StopAsync` lançava `TaskCanceledException` sem tratamento (`Unhandled exception` no log) quando o token do host já estava cancelado.
+- C. `KafkaConsumerAdapter.OnBrokerError` trata `Local_AllBrokersDown` como falha. A librdkafka emite esse código quando a conexão com o broker cai e reconecta sozinha. O adapter só volta a `Live` quando chega uma mensagem; com o simulador parado, o estado fica `Faulted` para sempre.
+
+- E. `KafkaConsumerAdapter` marcava `Live` logo após `Subscribe`, antes de o broker atribuir partições. Nesse intervalo a tela dizia "Ao vivo" sem receber nada, e com offset `Latest` o que o router publicava se perdia. O `groupId` fixo ainda fazia o consumer retomar do offset gravado, em vez de ir ao fim do tópico.
+
+**Passos (todos feitos):**
+1. `ConnectionCard`: Desconectar habilitado também em `faulted`. A T-13 foi ajustada para refletir isso.
+2. `ProbeAdapterBase.SetState`: ao entrar em `Disconnected`, limpar `LastError`. `Faulted` continua gravando o erro e `Live` continua não mexendo nele. Novos `SetLastError` e `ClearError` mudam só o texto, sem mudar o estado.
+3. `KafkaConsumerPolicy.Classify` (novo, `Kafka/KafkaConsumerPolicy.cs`): erro fatal sempre vai a `Faulted`. `Local_AllBrokersDown` vai a `Faulted` só em `Connecting` (não achou o broker), vira nota em `LastError` em `Live` (a librdkafka reconecta sozinha) e é ignorado nos demais estados. A nota some quando chega o próximo frame.
+4. Corrida entre consumers: `_consumer` passa a `volatile` e `IsCurrent(consumer)` descarta erros e atribuições de um consumer já substituído antes de tocar o estado da conexão nova.
+5. `ProbeController.CloseQuietlyAsync`: o filtro `when (!ct.IsCancellationRequested)` deixava `TaskCanceledException` escapar quando o host cancelava o token no shutdown, e o processo caía com "Unhandled exception" em `StopAsync`. O catch agora engole qualquer exceção, cancelamento incluído.
+6. Estado honesto: o adapter fica em `Connecting` até `SetPartitionsAssignedHandler` disparar com ao menos uma partição, e então vai a `Live` e limpa o erro. Antes de uma atribuição, `Live` não existe.
+7. Menos espera ao reconectar: com `AutoOffsetReset` `Latest`, cada Conectar usa um grupo de uso único (`<groupId>-<8 hex>`) e `EnableAutoCommit=false`. Não há membro antigo para esperar nem offset gravado para retomar. Com `Earliest` o `groupId` configurado é mantido, para o operador poder reproduzir e retomar. O efeito é que o grupo do modal vira prefixo no modo `Latest`.
+8. Testes em `ClientProbe.Tests` (14 novos): `ProbeAdapterBaseTests` (Disconnected limpa o erro, erro explícito é mantido, Live não limpa, `SetLastError` não muda o estado), `KafkaConsumerPolicyTests` (classificação por estado e `EffectiveGroupId`) e `StopAsync_TokenAlreadyCancelled_DoesNotThrow`.
+
+**Limites da verificação:** o fluxo com broker real (atribuição de partições, `Connecting` → `Live`, nota de `AllBrokersDown`) não tem teste automatizado, porque `KafkaConsumerAdapter` exige um broker. A decisão está isolada em `KafkaConsumerPolicy` e testada; o encaixe no adapter depende do teste manual.
+
+**Saída:** Conectar no Kafka mostra "Conectando" até as partições chegarem e depois "Ao vivo". Parar o simulador por mais de 10 minutos não deixa a tela em "Com falha" por causa de `AllBrokersDown`. Desconectar não deixa erro antigo. O shutdown não lança exceção. `dotnet test utils/client/ClientProbe.slnx` (35 testes) e `npm run typecheck` verdes.
+
+---
+
 ## Grafo de Dependências
 
 ```
@@ -254,6 +304,7 @@ T-01 (utils/sim)
                                     ├── T-09 → T-10 (FIX)
                                     └── T-11 (WebSocket na página)
                                           └── T-12 (README; pode citar T-07..T-11)
+T-05 + T-06 + T-07..T-10 ──► T-13 (UI ligada aos adapters Kafka, Rabbit e FIX) ──► T-13a (estado Com falha e erro obsoleto)
 ```
 
 T-07, T-08 e T-09 dependem de T-06 e não dependem entre si. Executar uma por vez no mesmo working tree. T-11 não espera T-49 do `nexusrouter`; a verificação ao vivo do acceptor espera.

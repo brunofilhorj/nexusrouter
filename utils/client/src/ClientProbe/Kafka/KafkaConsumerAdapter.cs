@@ -5,15 +5,18 @@ using Microsoft.Extensions.Options;
 namespace ClientProbe.Kafka;
 /// <summary>
 /// Consumes the raw FIX frame that the NexusRouter publishes to Kafka (null key, ASCII FIX value).
-/// Each record goes through <see cref="ProbeAdapterBase.OnFrame"/>. Broker failures move the adapter
-/// to <see cref="ProbeState.Faulted"/> and never reach the host.
+/// Each record goes through <see cref="ProbeAdapterBase.OnFrame"/>. The adapter stays in
+/// <see cref="ProbeState.Connecting"/> until the broker assigns partitions, then goes
+/// <see cref="ProbeState.Live"/>. Fatal broker failures move it to <see cref="ProbeState.Faulted"/> and never
+/// reach the host; the transient "all brokers down" report is only noted once the consumer is live
+/// (see <see cref="KafkaConsumerPolicy"/>).
 /// </summary>
 public sealed class KafkaConsumerAdapter : ProbeAdapterBase
 {
     private static readonly TimeSpan PollTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan FaultBackoff = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
-    private IConsumer<Ignore, byte[]>? _consumer;
+    private volatile IConsumer<Ignore, byte[]>? _consumer;
     private CancellationTokenSource? _loopCts;
     private Task? _loop;
     /// <summary>Creates the adapter.</summary>
@@ -106,11 +109,16 @@ public sealed class KafkaConsumerAdapter : ProbeAdapterBase
                 {
                     SetState(ProbeState.Live);
                 }
+                if (LastError is not null)
+                {
+                    // A frame arrived, so an earlier "brokers are down" report is over.
+                    ClearError();
+                }
                 OnFrame(result.Message?.Value ?? []);
             }
             catch (ConsumeException ex)
             {
-                Fault(ex.Error);
+                Fault(consumer, ex.Error);
                 WaitBackoff(ct);
             }
             catch (OperationCanceledException)
@@ -128,21 +136,49 @@ public sealed class KafkaConsumerAdapter : ProbeAdapterBase
         }
     }
 
-    private void OnBrokerError(IConsumer<Ignore, byte[]> consumer, Error error)
+    // Runs on the consume thread. The partitions are the signal that frames can now arrive.
+    private void OnPartitionsAssigned(IConsumer<Ignore, byte[]> consumer, List<TopicPartition> partitions)
     {
-        if (error.IsFatal || error.Code == ErrorCode.Local_AllBrokersDown)
+        if (!IsCurrent(consumer) || partitions.Count == 0)
         {
-            Fault(error);
+            return;
+        }
+
+        if (State is ProbeState.Connecting or ProbeState.Faulted)
+        {
+            SetState(ProbeState.Live);
+            ClearError();
         }
     }
 
-    private void Fault(Error error)
+    private void OnBrokerError(IConsumer<Ignore, byte[]> consumer, Error error)
     {
-        if (_loopCts is { IsCancellationRequested: false })
+        if (!IsCurrent(consumer))
+        {
+            return;
+        }
+
+        switch (KafkaConsumerPolicy.Classify(State, error.IsFatal, error.Code))
+        {
+            case KafkaErrorAction.Fault:
+                Fault(consumer, error);
+                break;
+            case KafkaErrorAction.Note:
+                SetLastError(error.Reason);
+                break;
+        }
+    }
+
+    private void Fault(IConsumer<Ignore, byte[]> consumer, Error error)
+    {
+        // An error from a consumer that was already replaced must not touch the new connection.
+        if (IsCurrent(consumer) && _loopCts is { IsCancellationRequested: false })
         {
             SetState(ProbeState.Faulted, error.Reason);
         }
     }
+
+    private bool IsCurrent(IConsumer<Ignore, byte[]> consumer) => ReferenceEquals(consumer, _consumer);
 
     private static void WaitBackoff(CancellationToken ct)
     {
