@@ -1,12 +1,29 @@
 using ClientProbe;
 using ClientProbe.Endpoints;
+using ClientProbe.Fix;
 using ClientProbe.Hosting;
+using ClientProbe.Kafka;
+using ClientProbe.Probe;
+using ClientProbe.Rabbit;
+using ClientProbe.Telemetry;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services
     .AddOptions<ClientProbeOptions>()
     .Bind(builder.Configuration.GetSection(ClientProbeOptions.SectionName));
+
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<TelemetryHub>();
+builder.Services.AddSingleton<ITelemetryPublisher>(sp => sp.GetRequiredService<TelemetryHub>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryHub>());
+builder.Services.AddSingleton<IProbeAdapter, KafkaConsumerAdapter>();
+builder.Services.AddSingleton<IProbeAdapter, RabbitConsumerAdapter>();
+builder.Services.AddSingleton<IProbeAdapter, FixInitiatorAdapter>();
+builder.Services.AddSingleton<ProbeProfileParser>();
+builder.Services.AddSingleton<ProbeController>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ProbeController>());
+builder.Services.AddHostedService<CounterBroadcaster>();
 
 var urls = builder.Configuration[$"{ClientProbeOptions.SectionName}:Urls"];
 builder.WebHost.UseUrls(string.IsNullOrWhiteSpace(urls) ? ClientProbeOptions.DefaultUrls : urls);
