@@ -159,7 +159,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ---
 
-- [ ] T-08 — `RabbitConsumerAdapter`
+- [x] T-08 — `RabbitConsumerAdapter`
 
 **Objetivo:** Fila exclusiva ligada à exchange em que o router publica.
 
