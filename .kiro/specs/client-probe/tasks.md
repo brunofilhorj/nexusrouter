@@ -51,7 +51,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 2 — Csproj Único e Mesma Origem
 
-- [ ] T-02 — Criar a solução isolada e o csproj com `ClientApp`
+- [x] T-02 — Criar a solução isolada e o csproj com `ClientApp`
 
 **Objetivo:** Um projeto de aplicação publicável, com barreira de herança e a pasta do Vite dentro do csproj.
 
