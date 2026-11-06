@@ -18,7 +18,6 @@ namespace NexusRouter.Ingress.Sessions;
 public sealed class FixSessionStateMachine
 {
     private static readonly byte[] HeartbeatReply = "35=0\x01"u8.ToArray();
-    private static readonly byte[] SequenceResetReply = "35=4\x01"u8.ToArray();
     private static readonly byte[] LogoutReply = "35=5\x01"u8.ToArray();
 
     private readonly TimeProvider _timeProvider;
@@ -165,17 +164,13 @@ public sealed class FixSessionStateMachine
     }
 
     /// <summary>
-    /// Registra um ResendRequest recebido e devolve um SequenceReset de gap-fill.
+    /// Registra um ResendRequest recebido como evidência de vida da sessão.
     /// </summary>
-    /// <returns>Stub <c>35=4</c> seguido de SOH. A sessão envia esse frame.</returns>
     /// <remarks>
-    /// Aloca uma cópia pequena. O frame ainda não traz <c>GapFillFlag</c>, intervalo de sequência nem checksum.
+    /// Não monta resposta. O SequenceReset-GapFill depende do contador de saída e é montado pela sessão
+    /// com <see cref="FixMessageBuilder.BuildSequenceReset"/>.
     /// </remarks>
-    public byte[] HandleResendRequest()
-    {
-        RecordInboundMessage();
-        return Copy(SequenceResetReply);
-    }
+    public void HandleResendRequest() => RecordInboundMessage();
 
     /// <summary>
     /// Registra um Logout recebido e devolve o Logout de resposta.

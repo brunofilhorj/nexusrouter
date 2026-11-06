@@ -188,3 +188,69 @@ quando o seqnum ultrapassar de novo a largura do campo 34 dos frames de origem.
   `src/NexusRouter.Egress/Fix/{FixAcceptedSession,FixOutboundDispatcher,SequenceNumberStore}.cs`,
   `src/NexusRouter.Ingress/Sessions/{FixSession,FixMessageBuilder,FixSessionStateMachine}.cs`.
 - Probe: `utils/client/src/ClientProbe/Fix/FixInitiatorAdapter.cs`.
+
+---
+
+## 7. Comparativo com o QuickFIX (lacunas de camada de sessão)
+
+> **Status:** análise de 2026-11-06. Branch de trabalho: `feature/fix-session-seqnum-quickfix-gaps`.
+> **Base:** leitura de `FixSession` (até `ReportConnectionFailure`; o final do arquivo não foi lido),
+> `FixSessionStateMachine`, `FixMessageBuilder`, `FixAcceptedSession`, `SequenceNumberStore`,
+> o trecho de Logon do `FixOutboundDispatcher` e o steering da B3.
+> O comportamento do QuickFIX vem de conhecimento da lib, sem consulta à documentação.
+> Os PDFs da B3 não foram relidos: o que a certificação exige precisa de confirmação.
+
+O QuickFIX é um motor de camada de sessão completo. O router tem uma camada de sessão mínima,
+desenhada para repassar frames. Hoje ela cobre só o caminho feliz.
+
+### 7.1 Bloqueantes prováveis para certificação (initiator contra a B3)
+
+| # | Lacuna | Evidência no código | QuickFIX |
+|---|---|---|---|
+| 1 | MsgSeqNum recebido não é validado | `FixSession.Dispatch` não compara o `34` com um valor esperado | Mantém `NextTargetMsgSeqNum`. Alto: `ResendRequest`. Baixo sem `PossDup`: `Logout` e desconexão. Baixo com `PossDup=Y`: ignora |
+| 2 | `ResendRequest` recebido gera frame inválido | `HandleAdmin` caso `'2'` chama `SendOutbound(_stateMachine.HandleResendRequest())`, que escreve os bytes `35=4<SOH>` sem 8, 9, 34, 49, 56, 52, 123, 36 e 10 | Responde com `SequenceReset` ou reenvio completos |
+| | **Corrigido** | `FixSession.HandleResendRequest` lê `BeginSeqNo` (7) e `EndSeqNo` (16) e responde com um `SequenceReset-GapFill` completo (`BuildSequenceReset`): header, `34`=BeginSeqNo, `43=Y`, `122`, `123=Y`, `36`, `9` e `10` válidos. `NewSeqNo` é o próximo seqnum de saída, limitado por `EndSeqNo+1`. Pedido sem BeginSeqNo válido ou além do já enviado é ignorado com aviso. O stub `35=4<SOH>` saiu do `FixSessionStateMachine`. O `BuildSequenceReset` passou a incluir `43=Y` e `122` no gap-fill, o que também vale para o acceptor | Deixa de enviar lixo ao counterpart, que derrubaria a sessão. Gap-fill é a resposta correta aqui porque o `FixSession` só envia mensagens administrativas. **Não resolve** o reenvio de mensagens de aplicação (item 3), a validação do seqnum de entrada (item 1) nem o `Reject` de pedido malformado (item 6). Testes novos: `FixMessageBuilderTests` e `FixSession_WhenPeerSendsResendRequest_RepliesWithWellFormedGapFill` |
+| 3 | Sem store de mensagens enviadas, logo sem reenvio | O router só emite gap-fill (acceptor) ou o stub acima (initiator) | `FileStore` guarda as mensagens. Reenvia com `PossDupFlag=Y` (43) e `OrigSendingTime` (122). Gap-fill só para mensagens administrativas |
+| 4 | Logon sem credenciais nem COD | `BuildLogon` envia só `98` e `108`. `SessionOptions` não tem `Username` (553), `Password` (554), `CancelOnDisconnectType` (35002), `CODTimeoutWindow` (35003) nem `141` | Campos extras configuráveis por sessão |
+| 5 | Seqnums do initiator só em memória e sem reset diário | `_nextOutboundSequence` não é gravado. Restart volta a 1 sem `141=Y`. Não há seqnum de entrada | `ResetOnLogon`, schedule (`StartTime`/`EndTime`/`NonStopSession`) e timestamp de criação do store zeram na virada |
+
+Itens 3 e 4: a exigência exata da B3 (reenvio real ou gap-fill; lista de campos obrigatórios do Logon)
+precisa ser confirmada nos PDFs. O cenário A4 do roteiro de Drop Copy pede `ResendRequest`.
+
+### 7.2 Lacunas importantes, menos prováveis de bloquear
+
+| # | Lacuna | Detalhe |
+|---|---|---|
+| 6 | Sem `Reject` (35=3) nem validação de entrada | `FixFrameScanner` só localiza o trailer `10=NNN`. Não confere `BodyLength` nem o valor do checksum. Não valida `BeginString`, `CompID` nem `SendingTime`. O QuickFIX tem `CheckCompID`, `CheckLatency` e `MaxLatency`. O steering cita ±2 s em `TransactTime` |
+| 7 | `SequenceReset` (35=4) recebido não é tratado no initiator | O caso cai no `default` do `HandleAdmin`. O `NewSeqNo` não é aplicado a nenhum contador de entrada, que também não existe |
+| 8 | Logon recebido é aceito sem conferência | Qualquer `35=A` em `LogonSent` vira `Active`. Não confere `CompID`, `HeartBtInt` nem eco de `141`. O QuickFIX adota o `HeartBtInt` do counterpart |
+
+### 7.3 Acceptor (risco menor: probe e clientes internos)
+
+- Logon recusado fecha o socket sem `Logout` nem texto. O QuickFIX responde com `Logout`.
+- A resposta de Logon não ecoa `141=Y` quando o cliente pede reset.
+- O `HeartBtInt` do cliente é ignorado. O acceptor usa o valor das options.
+- Não há detecção de silêncio: o `HeartbeatLoopAsync` só envia heartbeat. Peer morto só é detectado pelo TCP.
+- `ResendRequest` ignora `EndSeqNo` (16). O gap-fill não leva `PossDupFlag` nem `OrigSendingTime`.
+  O `NewSeqNo` é sempre o próximo número da sessão.
+- O seqnum de entrada não é validado (§4).
+
+### 7.4 Persistência
+
+- O flush do `SequenceNumberStore` é a cada 5 s. O `FileStore` do QuickFIX grava por mensagem (configurável).
+  Um crash pode repetir seqnums já enviados.
+
+### 7.5 Pontos fortes do router em relação ao QuickFIX
+
+- Hot path do PassThrough sem alocação e sem reserialização.
+- TLS, reconexão com backoff e detecção de `TestRequest` sem resposta no initiator.
+
+### 7.6 Ordem sugerida de correção
+
+1. Corrigir o frame de `ResendRequest` (item 2). Pequeno e independe das decisões abertas.
+2. Validar o MsgSeqNum de entrada no initiator, com persistência (itens 1 e 5).
+3. Completar o Logon: credenciais, COD e `141` (item 4).
+4. Decidir entre reenvio real e gap-fill, conforme a exigência da B3 (item 3).
+5. Rewriter com mudança de tamanho (§1 desta nota).
+
+Os itens 2, 4, 6, 7 e 8 não estavam no escopo proposto em §5.

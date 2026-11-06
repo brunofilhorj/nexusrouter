@@ -144,7 +144,9 @@ public static class FixMessageBuilder
     /// <param name="options">BeginString e comp IDs.</param>
     /// <param name="msgSeqNum">MsgSeqNum (tag 34) desta mensagem. No GapFill é o início do buraco, não o próximo número da sessão.</param>
     /// <param name="newSeqNo">NewSeqNo (tag 36). O próximo MsgSeqNum que a sessão vai enviar.</param>
-    /// <param name="gapFill">Quando <see langword="true"/>, GapFillFlag (tag 123) sai como Y.</param>
+    /// <param name="gapFill">
+    /// Quando <see langword="true"/>, GapFillFlag (tag 123) sai como Y, junto com PossDupFlag (43=Y) e OrigSendingTime (122).
+    /// </param>
     /// <returns>Slice preenchido, incluindo o checksum.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
     /// <exception cref="ArgumentException">BeginString ou comp ID é inválido.</exception>
@@ -160,8 +162,18 @@ public static class FixMessageBuilder
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSeqNo);
 
-        Span<byte> extra = stackalloc byte[48];
-        int length = AppendLiteral(extra, 0, gapFill ? "123=Y\x01"u8 : "123=N\x01"u8);
+        Span<byte> extra = stackalloc byte[96];
+        int length = 0;
+        if (gapFill)
+        {
+            // O gap-fill substitui mensagens já enviadas: FIX exige PossDupFlag=Y e OrigSendingTime.
+            length = AppendLiteral(extra, length, "43=Y\x01"u8);
+            length = AppendLiteral(extra, length, "122="u8);
+            length = AppendSendingTime(extra, length);
+            length = AppendSoh(extra, length);
+        }
+
+        length = AppendLiteral(extra, length, gapFill ? "123=Y\x01"u8 : "123=N\x01"u8);
         length = AppendLiteral(extra, length, "36="u8);
         if (!Utf8Formatter.TryFormat(newSeqNo, extra[length..], out int width))
         {
