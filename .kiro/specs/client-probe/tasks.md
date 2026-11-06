@@ -105,7 +105,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ---
 
-- [ ] T-05 — Modal, store e cliente HTTP relativo
+- [x] T-05 — Modal, store e cliente HTTP relativo
 
 **Objetivo:** Configuração por aba e o contrato de fetch, ainda sem ligar adapter.
 

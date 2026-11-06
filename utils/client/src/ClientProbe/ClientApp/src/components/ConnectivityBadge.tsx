@@ -5,10 +5,12 @@
  */
 
 import type { JSX } from 'react';
+import { useStore } from '../state/store';
 import styles from './ConnectivityBadge.module.css';
 
 /** Badge for API and `/v1/ws` on the same origin. */
 export function ConnectivityBadge(): JSX.Element {
+  const { telemetryOpen } = useStore();
   return (
     <section className={styles.badge} aria-labelledby="connectivity-badge-heading">
       <h2 id="connectivity-badge-heading" className={styles.heading}>
@@ -19,9 +21,9 @@ export function ConnectivityBadge(): JSX.Element {
           <span className={styles.dot} aria-hidden="true" />
           <span className={styles.label}>API</span>
         </li>
-        <li className={styles.item} data-channel="ws" data-status="unknown">
+        <li className={styles.item} data-channel="ws" data-status={telemetryOpen ? 'up' : 'down'}>
           <span className={styles.dot} aria-hidden="true" />
-          <span className={styles.label}>/v1/ws</span>
+          <span className={styles.label}>/v1/ws {telemetryOpen ? 'aberto' : 'fechado'}</span>
         </li>
       </ul>
     </section>
