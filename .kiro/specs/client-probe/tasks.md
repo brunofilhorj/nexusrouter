@@ -123,7 +123,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 4 — Contrato e Telemetria
 
-- [ ] T-06 — `IProbeAdapter`, `ProbeController`, `TelemetryHub` e os POST
+- [x] T-06 — `IProbeAdapter`, `ProbeController`, `TelemetryHub` e os POST
 
 **Objetivo:** Ligar e desligar um transporte, com broadcast que não bloqueia.
 
