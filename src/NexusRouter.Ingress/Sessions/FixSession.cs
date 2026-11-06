@@ -54,6 +54,7 @@ public sealed class FixSession : IHostedService
     private int _closeExpected;
     private int _peerLogout;
     private int _sawInboundSinceTestRequest;
+    private int _socketShutdown;
 
     /// <summary>
     /// Cria a sessão com as dependências do ciclo de transporte.
@@ -280,6 +281,7 @@ public sealed class FixSession : IHostedService
             Volatile.Write(ref _peerLogout, 0);
             Volatile.Write(ref _testRequestSentTicks, 0);
             Volatile.Write(ref _sawInboundSinceTestRequest, 0);
+            Volatile.Write(ref _socketShutdown, 0);
             Volatile.Write(ref _activeSocket, socket);
             Volatile.Write(ref _activeSecureStream, secureStream);
             _logger.LogInformation(
@@ -656,6 +658,14 @@ public sealed class FixSession : IHostedService
             return;
         }
 
+        // Socket já encerrado (peer mudo, Logout do peer ou timeout de Logon): o Logout não seria entregue.
+        // Enviá-lo publicaria LogoutSent sem envio real, ou repetiria o Logout que já respondeu ao peer.
+        if (Volatile.Read(ref _socketShutdown) == 1)
+        {
+            _logger.LogDebug("Sessão {SessionId} não envia Logout: o socket já foi encerrado", _sessionId.Value);
+            return;
+        }
+
         try
         {
             TryEnterLogoutSent();
@@ -865,6 +875,7 @@ public sealed class FixSession : IHostedService
             return;
         }
 
+        Volatile.Write(ref _socketShutdown, 1);
         try
         {
             socket.Shutdown(SocketShutdown.Both);
@@ -873,6 +884,11 @@ public sealed class FixSession : IHostedService
         {
             // A outra ponta já fechou o socket.
         }
+
+        // No Windows, Shutdown não acorda um ReceiveAsync pendente: ele só termina quando o peer envia FIN ou RST.
+        // Com o peer mudo (o caso do TestRequest sem resposta) a sessão ficaria presa. Close aborta o receive, e o
+        // FillPipeAsync já trata esse erro como esperado quando _closeExpected ou _shutdownAfterAdminReply valem 1.
+        socket.Close();
     }
 
     private void ReportConnectionFailure(Exception exception)
