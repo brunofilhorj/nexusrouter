@@ -258,10 +258,10 @@ O SimPanel é uma **ferramenta de operador**, não um produto de cliente. O dese
 
 ## 5. Estrutura do Projeto
 
-O simulador inteiro vive sob `sim/`, dividido em `backend/` (.NET) e `frontend/` (React + Vite). As duas pilhas são independentes entre si e **completamente isoladas** do NexusRouter (ver Seção 5.1).
+O simulador inteiro vive sob `utils/sim/`, dividido em `backend/` (.NET) e `frontend/` (React + Vite). As duas pilhas são independentes entre si e **completamente isoladas** do NexusRouter (ver Seção 5.1).
 
 ```
-sim/
+utils/sim/
 ├── README.md                              # como subir backend + frontend e testar (ver Seção 5.2)
 ├── backend/
 │   ├── DropCopySimulator.slnx
@@ -314,24 +314,24 @@ sim/
 
 ### 5.1 Isolamento total do NexusRouter
 
-O simulador **não** tem nenhuma relação de build, pipeline ou referência com o NexusRouter. O critério de aceite é concreto: **excluir a pasta `sim/` não pode alterar em nada a build principal** (`dotnet build NexusRouter.slnx`) nem a CI existente.
+O simulador **não** tem nenhuma relação de build, pipeline ou referência com o NexusRouter. O critério de aceite é concreto: **excluir a pasta `utils/sim/` não pode alterar em nada a build principal** (`dotnet build NexusRouter.slnx`) nem a CI existente.
 
 | Ponto de acoplamento potencial | Como é neutralizado |
 |--------------------------------|---------------------|
-| Herança de `Directory.Build.props` / `Directory.Packages.props` da raiz | `sim/backend/` tem as suas próprias; o MSBuild para de subir a árvore ao encontrá-las. O simulador define o próprio TFM, warnings e versões de NuGet, sem herdar nada da raiz. |
-| Solução principal `NexusRouter.slnx` | Lista projetos explicitamente (sem glob); nunca inclui `sim/`. O simulador tem a sua `sim/backend/DropCopySimulator.slnx`. |
+| Herança de `Directory.Build.props` / `Directory.Packages.props` da raiz | `utils/sim/backend/` tem as suas próprias; o MSBuild para de subir a árvore ao encontrá-las. O simulador define o próprio TFM, warnings e versões de NuGet, sem herdar nada da raiz. |
+| Solução principal `NexusRouter.slnx` | Lista projetos explicitamente (sem glob); nunca inclui `utils/sim/`. O simulador tem a sua `utils/sim/backend/DropCopySimulator.slnx`. |
 | CI `.github/workflows/build-and-test.yml` e deploys | Operam sobre `NexusRouter.slnx` por caminho explícito. O simulador **não** adiciona nem altera nenhum step nesses workflows. CI própria do simulador está fora do escopo desta spec. |
 | Dependência de código / assemblies do core | **Nenhuma.** Sem `ProjectReference` ao NexusRouter. A lógica de wire (framing/checksum) é cópia enxuta local. `docs/FIX44Entrypoint.xml` e as steering servem só como referência de leitura. |
 | Teste de fidelidade (T-34) | Usa um cliente FIX 4.4 mínimo próprio (`MinimalFixClient`), **não** o `FixSession` do NexusRouter. O round-trip contra o NexusRouter real é um procedimento manual do README (Seção 5.2), não um teste linkado. |
 
-### 5.2 README do simulador (`sim/README.md`)
+### 5.2 README do simulador (`utils/sim/README.md`)
 
 Segue o baseline de documentação MonteBravo e ensina a usar os **dois** projetos no teste:
 1. **Pré-requisitos:** .NET 10 SDK; Node 20+.
-2. **Backend:** `dotnet run --project sim/backend/src/DropCopySim.Host` — acceptor FIX em `localhost:9876`, controle HTTP/WS em `localhost:8099`.
-3. **Frontend:** `npm install && npm run dev` em `sim/frontend/` — painel em `localhost:5173`.
+2. **Backend:** `dotnet run --project utils/sim/backend/src/DropCopySim.Host` — acceptor FIX em `localhost:9876`, controle HTTP/WS em `localhost:8099`.
+3. **Frontend:** `npm install && npm run dev` em `utils/sim/frontend/` — painel em `localhost:5173`.
 4. **Round-trip com o NexusRouter real (verificação de fidelidade manual):** apontar uma `Session` do NexusRouter para `localhost:9876` (`SenderCompId=CLIENT1`, `TargetCompId=ENTRYPOINT-FIRM-0001`, `FrameDecoder=Fix44`, `DeliveryMode=Parse`), subir o NexusRouter, operar a simulação pelo painel e confirmar no log de auditoria / TimescaleDB a ausência de `Reject`.
-5. **Testes do simulador:** `dotnet test sim/backend/DropCopySimulator.slnx`.
+5. **Testes do simulador:** `dotnet test utils/sim/backend/DropCopySimulator.slnx`.
 
 ---
 

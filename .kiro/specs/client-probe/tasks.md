@@ -30,7 +30,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 1 — Mover o Simulador
 
-- [ ] T-01 — `git mv sim utils/sim` e acertar os caminhos do layout
+- [x] T-01 — `git mv sim utils/sim` e acertar os caminhos do layout
 
 **Objetivo:** Simulador e client passam a ser utilitários irmãos. O histórico segue o arquivo.
 

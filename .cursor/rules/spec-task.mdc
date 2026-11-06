@@ -12,7 +12,7 @@ Antes de implementar:
 
 Build/testes por spec:
 - `nexusrouter` → `NexusRouter.slnx` (raiz)
-- `dropcopy-simulator` → `sim/backend/DropCopySimulator.slnx`
+- `dropcopy-simulator` → `utils/sim/backend/DropCopySimulator.slnx`
 Rode `dotnet build -warnaserror` + `dotnet test` da solução correspondente até passar sem falhas nem avisos.
 
 Ao final:
