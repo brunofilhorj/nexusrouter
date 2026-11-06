@@ -88,7 +88,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 3 — UI Estática
 
-- [ ] T-04 — Topbar, tema, menu e quatro telas
+- [x] T-04 — Topbar, tema, menu e quatro telas
 
 **Objetivo:** A casca do ClientPanel, no visual do SimPanel, sem adapter ao vivo.
 
