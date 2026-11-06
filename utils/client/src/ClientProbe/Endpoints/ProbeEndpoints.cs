@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using ClientProbe.Fix;
 using ClientProbe.Probe;
 using ClientProbe.Telemetry;
 
@@ -181,7 +182,8 @@ internal static class ProbeEndpoints
             adapter.State.ToString(),
             adapter.Endpoint,
             adapter.LastError,
-            new CounterStateResponse(c.Received, c.GetRate(now), c.LastReceivedAt, c.ParseFailures, c.Sampled, c.Dropped));
+            new CounterStateResponse(c.Received, c.GetRate(now), c.LastReceivedAt, c.ParseFailures, c.Sampled, c.Dropped),
+            (adapter as IFixSessionSource)?.Session);
     }
 }
 
@@ -204,12 +206,14 @@ internal sealed record ProbeStateResponse(IReadOnlyList<AdapterStateResponse> Ad
 /// <param name="Endpoint">Effective endpoint. Empty while disconnected.</param>
 /// <param name="LastError">Last error, or null when there is none.</param>
 /// <param name="Counters">Receive and sampling counters.</param>
+/// <param name="Session">FIX session identity and sequence numbers; null for other transports.</param>
 internal sealed record AdapterStateResponse(
     string Transport,
     string State,
     string Endpoint,
     string? LastError,
-    CounterStateResponse Counters);
+    CounterStateResponse Counters,
+    FixSessionSnapshot? Session = null);
 
 /// <summary>Counters reported for one adapter.</summary>
 /// <param name="Received">Frames received from the broker or session.</param>
