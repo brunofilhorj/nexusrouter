@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net.Sockets;
@@ -53,6 +54,7 @@ public sealed class FixSession : IHostedService
     private int _closeExpected;
     private int _peerLogout;
     private int _sawInboundSinceTestRequest;
+    private int _socketShutdown;
 
     /// <summary>
     /// Cria a sessão com as dependências do ciclo de transporte.
@@ -279,6 +281,7 @@ public sealed class FixSession : IHostedService
             Volatile.Write(ref _peerLogout, 0);
             Volatile.Write(ref _testRequestSentTicks, 0);
             Volatile.Write(ref _sawInboundSinceTestRequest, 0);
+            Volatile.Write(ref _socketShutdown, 0);
             Volatile.Write(ref _activeSocket, socket);
             Volatile.Write(ref _activeSecureStream, secureStream);
             _logger.LogInformation(
@@ -456,7 +459,7 @@ public sealed class FixSession : IHostedService
                 SendAdmin(OutboundAdmin.Heartbeat, testReqId[..testReqIdLength]);
                 return;
             case (byte)'2':
-                SendOutbound(_stateMachine.HandleResendRequest());
+                HandleResendRequest(raw);
                 return;
             case (byte)'5':
                 _stateMachine.HandleLogout();
@@ -537,22 +540,68 @@ public sealed class FixSession : IHostedService
         return false;
     }
 
-    private void SendOutbound(ReadOnlySpan<byte> payload)
+    /// <summary>
+    /// Responde a um ResendRequest com um SequenceReset-GapFill.
+    /// </summary>
+    /// <remarks>
+    /// Esta sessão só envia mensagens administrativas (Logon, Heartbeat, TestRequest, Logout), que a spec FIX manda
+    /// substituir por gap-fill em vez de retransmitir. Por isso o intervalo pedido inteiro vira um único SequenceReset.
+    /// O pedido sem BeginSeqNo válido é ignorado com aviso: a sessão ainda não gera Reject (35=3).
+    /// </remarks>
+    private void HandleResendRequest(ReadOnlySequence<byte> raw)
     {
-        if (payload.IsEmpty)
+        _stateMachine.HandleResendRequest();
+        if (!TryReadSequenceField(raw, "7="u8, out long beginSeqNo) || beginSeqNo <= 0)
         {
+            _logger.LogWarning("Sessão {SessionId} recebeu ResendRequest sem BeginSeqNo válido", _sessionId.Value);
             return;
         }
 
-        _outboundGate.Wait();
+        // EndSeqNo ausente ou 0 significa "até o fim" (FIX 4.4).
+        if (!TryReadSequenceField(raw, "16="u8, out long endSeqNo) || endSeqNo < 0)
+        {
+            endSeqNo = 0;
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
         try
         {
-            WriteSocket(payload);
+            _outboundGate.Wait();
+            try
+            {
+                long nextSequence = Volatile.Read(ref _nextOutboundSequence) + 1;
+                if (beginSeqNo >= nextSequence)
+                {
+                    _logger.LogWarning(
+                        "Sessão {SessionId} recebeu ResendRequest a partir de {BeginSeqNo}, ainda não enviado (próximo {NextSeqNo})",
+                        _sessionId.Value,
+                        beginSeqNo,
+                        nextSequence);
+                    return;
+                }
+
+                long newSeqNo = endSeqNo > 0 && endSeqNo + 1 < nextSequence ? endSeqNo + 1 : nextSequence;
+                Span<byte> message = FixMessageBuilder.BuildSequenceReset(rented, _options, beginSeqNo, newSeqNo, gapFill: true);
+                WriteSocket(message);
+            }
+            finally
+            {
+                _outboundGate.Release();
+            }
         }
         finally
         {
-            _outboundGate.Release();
+            ArrayPool<byte>.Shared.Return(rented);
         }
+    }
+
+    private static bool TryReadSequenceField(ReadOnlySequence<byte> raw, ReadOnlySpan<byte> tag, out long value)
+    {
+        value = 0;
+        Span<byte> digits = stackalloc byte[20];
+        return TryCopyField(raw, tag, digits, out int length)
+            && Utf8Parser.TryParse(digits[..length], out value, out int consumed)
+            && consumed == length;
     }
 
     private void SendAdmin(OutboundAdmin kind, ReadOnlySpan<byte> testReqId)
@@ -606,6 +655,14 @@ public sealed class FixSession : IHostedService
 
         if (Volatile.Read(ref _activeSocket) is null)
         {
+            return;
+        }
+
+        // Socket já encerrado (peer mudo, Logout do peer ou timeout de Logon): o Logout não seria entregue.
+        // Enviá-lo publicaria LogoutSent sem envio real, ou repetiria o Logout que já respondeu ao peer.
+        if (Volatile.Read(ref _socketShutdown) == 1)
+        {
+            _logger.LogDebug("Sessão {SessionId} não envia Logout: o socket já foi encerrado", _sessionId.Value);
             return;
         }
 
@@ -818,6 +875,7 @@ public sealed class FixSession : IHostedService
             return;
         }
 
+        Volatile.Write(ref _socketShutdown, 1);
         try
         {
             socket.Shutdown(SocketShutdown.Both);
@@ -826,6 +884,11 @@ public sealed class FixSession : IHostedService
         {
             // A outra ponta já fechou o socket.
         }
+
+        // No Windows, Shutdown não acorda um ReceiveAsync pendente: ele só termina quando o peer envia FIN ou RST.
+        // Com o peer mudo (o caso do TestRequest sem resposta) a sessão ficaria presa. Close aborta o receive, e o
+        // FillPipeAsync já trata esse erro como esperado quando _closeExpected ou _shutdownAfterAdminReply valem 1.
+        socket.Close();
     }
 
     private void ReportConnectionFailure(Exception exception)

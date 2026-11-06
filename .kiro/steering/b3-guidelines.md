@@ -334,11 +334,11 @@ Formatado como: exatamente 3 dígitos ASCII, com zero à esquerda (ex.: "037", "
 O campo `CheckSum` (tag 10) é sempre o último campo em uma mensagem FIX, seguido por `SOH (0x01)`.
 
 **Regra Crítica:** Ao reescrever `MsgSeqNum (34)` no modo `PassThrough`:
-1. Reescrever o valor da tag 34 in-place (mesmo número de bytes ou preencher com espaços).
-2. Recomputar o checksum sobre todo o buffer modificado.
-3. Escrever o novo checksum de 3 dígitos no campo `10=XXX` in-place.
-4. NÃO modificar BodyLength (tag 9) se a reescrita do SeqNum mantiver a mesma contagem de bytes.
-5. Se o novo SeqNum tiver mais dígitos que o original, BodyLength TAMBÉM DEVE ser atualizado — esta é uma restrição conhecida. Projete o `PassThroughRewriter` para lidar com isso reservando espaço de preenchimento.
+1. Gravar a tag 34 com os dígitos exatos do novo valor. Nunca preencher com espaços: a tag 34 é um inteiro (SeqNum) e nenhum PDF da B3 prevê padding.
+2. Se o número de dígitos mudar, `PassThroughRewriter.TryRewriteTo` copia o frame para um buffer de destino com folga (`MaxGrowthBytes`) e grava a tag 34 com a nova largura.
+3. Recalcular BodyLength (tag 9) sempre que a reescrita mudar a contagem de bytes. `TryRewriteTo` recalcula a tag 9 em toda chamada.
+4. Recomputar o checksum sobre todo o buffer final e escrever os 3 dígitos em `10=XXX`.
+5. A reescrita in-place (`Rewrite`) só vale quando a largura da tag 34 não muda. Largura diferente devolve `false` e deixa o buffer intacto.
 
 ---
 

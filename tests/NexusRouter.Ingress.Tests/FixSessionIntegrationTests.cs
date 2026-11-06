@@ -124,10 +124,61 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
+    [Theory]
+    [InlineData("7=1", "16=0")]
+    [InlineData("7=1", "16=1")]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenPeerSendsResendRequest_RepliesWithWellFormedGapFill(string beginField, string endField)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30);
+        TcpClient? peer = null;
+
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            byte[] logon = await ReadFixFrameAsync(stream);
+            Assert.Equal("A", GetFieldValue(logon, 35));
+
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement());
+            await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
+
+            await SendFixFrameAsync(
+                stream,
+                CreateFixFrame("35=2", "49=EXCHANGE", "56=CLIENT", "34=2", "52=20260101-12:00:02", beginField, endField));
+
+            byte[] reply = await ReadFixFrameAsync(stream);
+
+            Assert.Equal("4", GetFieldValue(reply, 35));
+            Assert.Equal("1", GetFieldValue(reply, 34));
+            Assert.Equal("Y", GetFieldValue(reply, 123));
+            Assert.Equal("Y", GetFieldValue(reply, 43));
+            Assert.Equal("2", GetFieldValue(reply, 36));
+            GetFieldValue(reply, 122);
+            FixMessageBuilderTests.AssertValidBodyLengthAndChecksum(reply);
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static FixSession CreateSession(
         int port,
         ChannelWriter<AuditRecord> auditWriter,
-        IReconnectPolicy reconnectPolicy) =>
+        IReconnectPolicy reconnectPolicy,
+        int heartBtInt = 1) =>
         new(
             new SessionOptions
             {
@@ -137,7 +188,7 @@ public sealed class FixSessionIntegrationTests
                 SenderCompId = "CLIENT",
                 TargetCompId = "EXCHANGE",
                 BeginString = "FIX.4.4",
-                HeartBtInt = 1,
+                HeartBtInt = heartBtInt,
                 MissedHeartbeatThreshold = 1,
                 LogonTimeout = TimeSpan.FromSeconds(5),
                 ShutdownTimeoutSeconds = 2,

@@ -89,6 +89,35 @@ public sealed class FixOutboundDispatcherTests
     }
 
     [Fact]
+    public async Task SendAsync_WhenSessionSequenceHasMoreDigitsThanSourceFrame_DeliversValidFrame()
+    {
+        string directory = TempDirectory();
+        Directory.CreateDirectory(directory);
+        // O frame de origem tem "34=1". A sessão retomada está em 5 dígitos.
+        await File.WriteAllTextAsync(Path.Combine(directory, "fix-acceptor_OMS1.seq"), "37581");
+        int port = FreePort();
+        FixOutboundDispatcher dispatcher = await StartAsync(directory, port, allowed: []);
+        try
+        {
+            using TcpClient client = await ConnectAsync(port, "OMS1");
+            Stream stream = client.GetStream();
+            Assert.Equal("37582", Field(await ReadFrameAsync(stream), 34));
+
+            Assert.True(dispatcher.TryEnqueue(Payload(ExecutionReport())));
+
+            byte[] report = await ReadFrameAsync(stream);
+            Assert.Equal("37583", Field(report, 34));
+            Assert.Equal(Field(report, 9), BodyLength(report).ToString());
+            Assert.Equal(Checksum(report).ToString("000"), Field(report, 10));
+        }
+        finally
+        {
+            await dispatcher.StopAsync(CancellationToken.None);
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task Logon_WhenSenderIsNotAllowed_ClosesTheSocket()
     {
         string directory = TempDirectory();
@@ -251,6 +280,26 @@ public sealed class FixOutboundDispatcherTests
         }
 
         throw new InvalidOperationException($"A tag {tag} não está no frame.");
+    }
+
+    // Bytes depois do SOH do campo 9 até o SOH que antecede "10=", inclusive.
+    private static int BodyLength(byte[] frame)
+    {
+        int bodyStart = Array.IndexOf(frame, (byte)1, Encoding.ASCII.GetString(frame).IndexOf("\u00019=", StringComparison.Ordinal) + 1) + 1;
+        int checksumTag = Encoding.ASCII.GetString(frame).LastIndexOf("\u000110=", StringComparison.Ordinal);
+        return checksumTag + 1 - bodyStart;
+    }
+
+    private static int Checksum(byte[] frame)
+    {
+        int checksumTag = Encoding.ASCII.GetString(frame).LastIndexOf("\u000110=", StringComparison.Ordinal);
+        int sum = 0;
+        for (int i = 0; i <= checksumTag; i++)
+        {
+            sum += frame[i];
+        }
+
+        return sum % 256;
     }
 
     private static bool TryTakeFrame(ReadOnlySpan<byte> buffer, out int frameLength)
