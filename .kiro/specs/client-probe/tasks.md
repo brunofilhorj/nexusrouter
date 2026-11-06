@@ -69,7 +69,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ---
 
-- [ ] T-03 — Servir a página, `/v1/state` e `/v1/ws` em `:8100`
+- [x] T-03 — Servir a página, `/v1/state` e `/v1/ws` em `:8100`
 
 **Objetivo:** Uma origem para a SPA, a API e a telemetria. Sem eventos ainda.
 
