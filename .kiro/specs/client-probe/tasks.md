@@ -177,7 +177,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 6 — Iniciador FIX
 
-- [ ] T-09 — `FixFrameScanner` e `FixSessionWriter`
+- [x] T-09 — `FixFrameScanner` e `FixSessionWriter`
 
 **Objetivo:** Recortar e escrever frames FIX 4.4 sem importar o simulador nem o NexusRouter.
 
