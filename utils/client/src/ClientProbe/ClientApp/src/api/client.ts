@@ -23,6 +23,8 @@ export interface AdapterState {
   endpoint: string;
   lastError: string | null;
   counters: CounterState;
+  /** FIX session identity and sequence numbers (FR-UI-09). Only for `fix` while a session exists. */
+  session?: { senderCompId: string; targetCompId: string; msgSeqNum: number; lastReceivedSeqNum: number } | null;
 }
 
 /** Snapshot of the three adapters. */

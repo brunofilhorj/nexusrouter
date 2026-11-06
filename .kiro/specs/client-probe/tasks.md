@@ -192,7 +192,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ---
 
-- [ ] T-10 — `FixInitiatorAdapter`
+- [x] T-10 — `FixInitiatorAdapter`
 
 **Objetivo:** Sessão de prova contra `fix-acceptor-01`.
 
