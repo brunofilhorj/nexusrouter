@@ -143,7 +143,7 @@ A aplicação é **um** csproj. `ClientApp` mora dentro dele. O projeto de teste
 
 ## Fase 5 — Kafka e Rabbit
 
-- [ ] T-07 — `KafkaConsumerAdapter`
+- [x] T-07 — `KafkaConsumerAdapter`
 
 **Objetivo:** Consumir o frame FIX cru publicado pelo `KafkaMessageDispatcher`.
 
