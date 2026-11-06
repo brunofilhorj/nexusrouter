@@ -2,10 +2,11 @@
  * ClientPanel shell: topbar, dispatcher menu, and one static screen.
  * The hash (`#/kafka`, `#/rabbit`, `#/fix`, `#/ws`) selects the screen and
  * survives a refresh. An empty hash opens Kafka. No react-router.
- * The gear is the modal trigger; the modal itself arrives in T-05.
+ * The gear is the modal trigger; the modal is a side drawer, not an overlay.
  */
 
 import { useEffect, useState, type JSX } from 'react';
+import ConfigModal from './components/ConfigModal';
 import ConnectivityBadge from './components/ConnectivityBadge';
 import DispatcherNav from './components/DispatcherNav';
 import ThemeToggle from './components/ThemeToggle';
@@ -13,6 +14,8 @@ import BrokerScreen from './screens/BrokerScreen';
 import FixScreen from './screens/FixScreen';
 import { screenFromHash, type ScreenId } from './screens/screens';
 import WebSocketScreen from './screens/WebSocketScreen';
+import { setScreen, useStore } from './state/store';
+import { startTelemetry } from './ws/telemetry';
 import './theme/tokens.css';
 import styles from './App.module.css';
 
@@ -22,9 +25,11 @@ function currentScreen(): ScreenId {
 }
 
 function App(): JSX.Element {
-  const [screen, setScreen] = useState<ScreenId>(currentScreen);
+  const { screen } = useStore();
+  const [configOpen, setConfigOpen] = useState(false);
 
   useEffect(() => {
+    setScreen(currentScreen());
     const onHashChange = (): void => {
       setScreen(currentScreen());
     };
@@ -33,6 +38,8 @@ function App(): JSX.Element {
       window.removeEventListener('hashchange', onHashChange);
     };
   }, []);
+
+  useEffect(() => startTelemetry(), []);
 
   return (
     <div className={styles.app}>
@@ -49,6 +56,10 @@ function App(): JSX.Element {
           className={styles.gear}
           aria-label="Abrir configuração"
           title="Configuração"
+          aria-expanded={configOpen}
+          onClick={() => {
+            setConfigOpen((open) => !open);
+          }}
         >
           <span aria-hidden="true">⚙️</span>
         </button>
@@ -63,6 +74,13 @@ function App(): JSX.Element {
           {screen === 'ws' ? <WebSocketScreen /> : null}
         </main>
       </div>
+      {configOpen ? (
+        <ConfigModal
+          onClose={() => {
+            setConfigOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
