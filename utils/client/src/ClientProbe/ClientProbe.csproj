@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>ClientProbe</RootNamespace>
+    <AssemblyName>ClientProbe</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <Description>ClientProbe host — publishes the Vite ClientApp into wwwroot.</Description>
+    <SpaRoot>$(MSBuildProjectDirectory)/ClientApp/</SpaRoot>
+    <DefaultItemExcludes>$(DefaultItemExcludes);ClientApp/node_modules/**;ClientApp/dist/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <Target Name="NpmInstallClientApp"
+          BeforeTargets="BuildClientApp"
+          Condition="!Exists('$(SpaRoot)node_modules')">
+    <Exec WorkingDirectory="$(SpaRoot)"
+          Command="npm install"
+          IgnoreStandardErrorWarningFormat="true" />
+  </Target>
+
+  <Target Name="BuildClientApp"
+          BeforeTargets="ResolveProjectStaticWebAssets"
+          Inputs="$(SpaRoot)package.json;$(SpaRoot)package-lock.json;$(SpaRoot)index.html;$(SpaRoot)vite.config.ts;$(SpaRoot)tsconfig.json;$(SpaRoot)src/**/*"
+          Outputs="$(MSBuildProjectDirectory)/wwwroot/index.html">
+    <Exec WorkingDirectory="$(SpaRoot)"
+          Command="npm run build"
+          IgnoreStandardErrorWarningFormat="true" />
+    <ItemGroup>
+      <_ClientAppDist Include="$(SpaRoot)dist/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ClientAppDist)"
+          DestinationFiles="@(_ClientAppDist->'$(MSBuildProjectDirectory)/wwwroot/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
