@@ -1,0 +1,102 @@
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.title {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  align-items: baseline;
+}
+
+.row {
+  display: contents;
+}
+
+.row dt {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.row dd {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--state-neutral);
+}
+
+.state::before {
+  content: '';
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.state[data-state='disconnected'] {
+  color: var(--state-neutral);
+}
+
+.state[data-state='connecting'] {
+  color: var(--state-warn);
+}
+
+.state[data-state='live'] {
+  color: var(--state-ok);
+}
+
+.state[data-state='faulted'] {
+  color: var(--state-danger);
+}
+
+.note {
+  margin: 0.75rem 0 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--state-warn);
+  background: var(--state-warn-bg);
+  border-radius: 6px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.actions button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  padding: 0.4rem 0.85rem;
+  font-weight: 600;
+}
+
+.actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
