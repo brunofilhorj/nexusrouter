@@ -3,6 +3,7 @@
  * Switching screens never clears the other buffers (FR-UI-08).
  */
 import { useSyncExternalStore } from 'react';
+import type { AdapterState, ProbeTransport } from '../api/client';
 import type { ProbeEventRow } from '../components/EventTable';
 import type { ScreenId } from '../screens/screens';
 
@@ -22,12 +23,18 @@ export interface StoreState {
   buffers: EventBuffers;
   /** True while the `/v1/ws` socket is open. */
   telemetryOpen: boolean;
+  /** Last `GET /v1/state` snapshot per transport. Empty until the first answer. */
+  adapters: Partial<Record<ProbeTransport, AdapterState>>;
+  /** True when the last `/v1/state` poll succeeded; null before the first poll. */
+  apiUp: boolean | null;
 }
 
 let state: StoreState = {
   screen: 'kafka',
   buffers: { kafka: [], rabbit: [], fix: [], ws: [] },
   telemetryOpen: false,
+  adapters: {},
+  apiUp: null,
 };
 
 const listeners = new Set<() => void>();
@@ -75,6 +82,22 @@ export function clearBuffer(transport: TransportId): void {
 export function setTelemetryOpen(telemetryOpen: boolean): void {
   if (state.telemetryOpen !== telemetryOpen) {
     update({ ...state, telemetryOpen });
+  }
+}
+
+/** Stores a successful `/v1/state` answer and marks the API as up. */
+export function setAdapters(list: readonly AdapterState[]): void {
+  const adapters: Partial<Record<ProbeTransport, AdapterState>> = {};
+  for (const adapter of list) {
+    adapters[adapter.transport] = adapter;
+  }
+  update({ ...state, adapters, apiUp: true });
+}
+
+/** Marks the API as unreachable after a failed poll. Keeps the last snapshot. */
+export function setApiDown(): void {
+  if (state.apiUp !== false) {
+    update({ ...state, apiUp: false });
   }
 }
 

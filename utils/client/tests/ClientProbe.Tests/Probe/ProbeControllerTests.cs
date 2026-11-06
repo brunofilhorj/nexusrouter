@@ -93,4 +93,14 @@ public sealed class ProbeControllerTests
         Assert.Equal(1, rabbit.Disconnects);
         Assert.Equal(1, fix.Disconnects);
     }
+
+    [Fact]
+    public async Task StopAsync_TokenAlreadyCancelled_DoesNotThrow()
+    {
+        var (controller, _, _, _) = Create();
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await controller.StopAsync(cts.Token);
+    }
 }

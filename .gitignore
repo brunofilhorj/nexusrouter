@@ -488,3 +488,5 @@ docker-compose.override.yml
 appsettings.Local.json
 appsettings.*.Local.json
 secrets.json
+# NexusRouter — runtime state written by the Host (FIX sequence numbers)
+src/NexusRouter.Host/data/

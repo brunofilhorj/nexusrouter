@@ -57,7 +57,7 @@ public abstract class ProbeAdapterBase : IProbeAdapter
     /// <inheritdoc />
     public abstract Task DisconnectAsync(CancellationToken ct);
 
-    /// <summary>Moves to <paramref name="state"/>. A non-null <paramref name="error"/> replaces <see cref="LastError"/>; null keeps it, except on <see cref="ProbeState.Connecting"/> which clears it.</summary>
+    /// <summary>Moves to <paramref name="state"/>. A non-null <paramref name="error"/> replaces <see cref="LastError"/>; null keeps it, except on <see cref="ProbeState.Connecting"/> and <see cref="ProbeState.Disconnected"/> which clear it.</summary>
     /// <param name="state">New state.</param>
     /// <param name="error">Error text, when the change is a fault.</param>
     protected void SetState(ProbeState state, string? error = null)
@@ -66,13 +66,20 @@ public abstract class ProbeAdapterBase : IProbeAdapter
         {
             _lastError = error;
         }
-        else if (state == ProbeState.Connecting)
+        else if (state is ProbeState.Connecting or ProbeState.Disconnected)
         {
             _lastError = null;
         }
 
         Volatile.Write(ref _state, (int)state);
     }
+
+    /// <summary>Records a non-terminal warning in <see cref="LastError"/> without changing the state.</summary>
+    /// <param name="error">Warning text.</param>
+    protected void SetLastError(string error) => _lastError = error;
+
+    /// <summary>Clears <see cref="LastError"/> without changing the state.</summary>
+    protected void ClearError() => _lastError = null;
 
     /// <summary>Sets the effective endpoint. Pass an empty string after disconnect.</summary>
     /// <param name="endpoint">Endpoint text without credentials.</param>

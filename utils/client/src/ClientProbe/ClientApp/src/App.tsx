@@ -14,6 +14,7 @@ import BrokerScreen from './screens/BrokerScreen';
 import FixScreen from './screens/FixScreen';
 import { screenFromHash, type ScreenId } from './screens/screens';
 import WebSocketScreen from './screens/WebSocketScreen';
+import { startStatePolling } from './state/poll';
 import { setScreen, useStore } from './state/store';
 import { startTelemetry } from './ws/telemetry';
 import './theme/tokens.css';
@@ -40,6 +41,7 @@ function App(): JSX.Element {
   }, []);
 
   useEffect(() => startTelemetry(), []);
+  useEffect(() => startStatePolling(), []);
 
   return (
     <div className={styles.app}>

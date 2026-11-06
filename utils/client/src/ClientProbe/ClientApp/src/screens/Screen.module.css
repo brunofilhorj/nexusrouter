@@ -10,3 +10,10 @@
   font-size: 1.05rem;
   font-weight: 600;
 }
+
+.session {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

@@ -1,7 +1,8 @@
 /**
  * Connection card for one dispatcher screen: endpoint, labelled state,
- * last error, and connect / disconnect. Buttons stay disabled until a live
- * adapter is wired.
+ * last error, and connect / disconnect. A button is enabled only when its
+ * callback is given and the state allows it; a card without callbacks (the
+ * WebSocket screen) keeps both disabled.
  */
 
 import { useId, type JSX } from 'react';
@@ -22,6 +23,12 @@ export interface ConnectionCardProps {
   lastError?: string | null;
   /** Optional note under the fields (WebSocket egress). */
   note?: string;
+  /** True while a connect or disconnect request is in flight. */
+  busy?: boolean;
+  /** Connect action. Without it the Connect button stays disabled. */
+  onConnect?: () => void;
+  /** Disconnect action. Without it the Disconnect button stays disabled. */
+  onDisconnect?: () => void;
 }
 
 /** Connection summary with connect and disconnect actions. */
@@ -31,8 +38,13 @@ export function ConnectionCard({
   stateLabel = 'Desconectado',
   lastError = null,
   note,
+  busy = false,
+  onConnect,
+  onDisconnect,
 }: ConnectionCardProps): JSX.Element {
   const headingId = useId();
+  const canConnect = onConnect !== undefined && !busy && (state === 'disconnected' || state === 'faulted');
+  const canDisconnect = onDisconnect !== undefined && !busy && (state === 'connecting' || state === 'live' || state === 'faulted');
 
   return (
     <section className={styles.card} aria-labelledby={headingId}>
@@ -57,10 +69,10 @@ export function ConnectionCard({
       </dl>
       {note ? <p className={styles.note}>{note}</p> : null}
       <div className={styles.actions}>
-        <button type="button" disabled>
+        <button type="button" disabled={!canConnect} onClick={onConnect}>
           Conectar
         </button>
-        <button type="button" disabled>
+        <button type="button" disabled={!canDisconnect} onClick={onDisconnect}>
           Desconectar
         </button>
       </div>
