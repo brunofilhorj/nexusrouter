@@ -2,8 +2,8 @@
 
 Simulador do gateway FIX 4.4 (B3 EntryPoint) para testar o NexusRouter sem depender da B3.
 
-É composto por duas pilhas independentes, ambas sob `sim/` e **completamente isoladas** do
-NexusRouter (remover `sim/` não altera a build principal nem a CI):
+É composto por duas pilhas independentes, ambas sob `utils/sim/` e **completamente isoladas** do
+NexusRouter (remover `utils/sim/` não altera a build principal nem a CI):
 
 - **`backend/`** — `DropCopySim.Host`: acceptor FIX (TCP), API de controle (Minimal API) e WebSocket
   de telemetria. Lógica de protocolo e geração em `DropCopySim.Core`.
@@ -23,7 +23,7 @@ acceptor e ingere as mensagens como se fossem o DropCopy real da B3.
 | Node.js    | 20 LTS ou superior | frontend |
 | npm        | acompanha o Node | frontend |
 
-O backend tem CPM e `Directory.Build.props` próprios dentro de `sim/backend/`, então não herda nada
+O backend tem CPM e `Directory.Build.props` próprios dentro de `utils/sim/backend/`, então não herda nada
 da raiz do repositório.
 
 ---
@@ -37,7 +37,7 @@ depende da API e do WebSocket.
 
 ```bash
 # a partir da raiz do repositório
-dotnet run --project sim/backend/src/DropCopySim.Host
+dotnet run --project utils/sim/backend/src/DropCopySim.Host
 ```
 
 Ao subir, o processo expõe:
@@ -52,7 +52,7 @@ Esses valores vêm de `appsettings.json` (seção `DropCopySim`) e podem ser sob
 ### 2. Frontend (SimPanel)
 
 ```bash
-cd sim/frontend
+cd utils/sim/frontend
 npm install
 npm run dev
 ```
@@ -60,7 +60,7 @@ npm run dev
 O Vite serve o painel em `http://localhost:5173`. A origem `http://localhost:5173` já está liberada
 no CORS do backend por padrão (`DropCopySim:Control:AllowedOrigins`).
 
-Scripts disponíveis no `sim/frontend`:
+Scripts disponíveis no `utils/sim/frontend`:
 
 | Script | O que faz |
 |--------|-----------|
@@ -78,7 +78,7 @@ Scripts disponíveis no `sim/frontend`:
 
 ### Configuração do backend
 
-Toda a configuração fica em `sim/backend/src/DropCopySim.Host/appsettings.json`, sob a chave
+Toda a configuração fica em `utils/sim/backend/src/DropCopySim.Host/appsettings.json`, sob a chave
 `DropCopySim`. Sobrescreva por `appsettings.Development.json`, variáveis de ambiente
 (`DropCopySim__Acceptor__ListenPort=...`) ou argumentos de linha de comando.
 
@@ -104,7 +104,7 @@ Toda a configuração fica em `sim/backend/src/DropCopySim.Host/appsettings.json
 O frontend lê variáveis de ambiente do Vite (prefixo `VITE_`). Copie o exemplo e ajuste:
 
 ```bash
-cd sim/frontend
+cd utils/sim/frontend
 cp .env.example .env.local   # no Windows/bash use: cp, ou copie manualmente
 ```
 
@@ -147,10 +147,10 @@ O painel suporta **tema claro e escuro**, com escuro como padrão e preferência
 
 ```bash
 # testes do backend (unitários do Core + integração via cliente FIX mínimo)
-dotnet test sim/backend/DropCopySimulator.slnx
+dotnet test utils/sim/backend/DropCopySimulator.slnx
 
 # checagem de tipos do frontend
-cd sim/frontend && npm run typecheck
+cd utils/sim/frontend && npm run typecheck
 ```
 
 Os testes de integração usam um cliente FIX 4.4 mínimo próprio; **não** há `ProjectReference` para
@@ -180,7 +180,7 @@ constante** (`CryptographicOperations.FixedTimeEquals`), evitando vazamento por 
 ```bash
 # Define o token apenas no ambiente do processo (nunca em arquivo versionado).
 export SIM_CONTROL_TOKEN="um-segredo-forte"
-dotnet run --project sim/backend/src/DropCopySim.Host
+dotnet run --project utils/sim/backend/src/DropCopySim.Host
 
 # Chamada autenticada:
 curl -H "Authorization: Bearer um-segredo-forte" http://localhost:8099/
