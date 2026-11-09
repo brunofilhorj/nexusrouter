@@ -52,6 +52,9 @@ Logo, N clientes opted-in = N cópias. 10 clientes = 10x a mesma mensagem.
 
 ## 2. Filtro de roteamento por tag de negócio (distinto da projeção de campos)
 
+> **Decisão de 2026-11-06 (`notes/session-log-rethink.md`):** fora do backlog. Não há task
+> para este item. Mantido abaixo só como registro histórico.
+
 **Observação.** Filtrar por tag **não** no nível de payload. Dois eixos ortogonais:
 
 - **Projeção de payload** (o WebSocket já faz com `fields`): a mensagem vai, porém
