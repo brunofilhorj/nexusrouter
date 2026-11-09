@@ -18,6 +18,7 @@
     <ProjectReference Include="..\NexusRouter.Router\NexusRouter.Router.csproj" />
     <ProjectReference Include="..\NexusRouter.Egress\NexusRouter.Egress.csproj" />
     <ProjectReference Include="..\NexusRouter.Audit\NexusRouter.Audit.csproj" />
+    <ProjectReference Include="..\NexusRouter.SessionLog\NexusRouter.SessionLog.csproj" />
   </ItemGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>

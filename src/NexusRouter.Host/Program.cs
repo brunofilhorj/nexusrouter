@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Host.Extensions;
 using NexusRouter.Router;
+using NexusRouter.SessionLog;
 
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -20,7 +21,7 @@ namespace NexusRouter.Host;
 /// Usa <see cref="WebApplication"/> para expor o endpoint <c>/metrics</c> (scrape Prometheus)
 /// enquanto mantém o pipeline FIX intacto via Generic Host.
 /// A ordem de registro dos tiers define a ordem inversa de shutdown:
-/// Ingress para primeiro → Egress drena → Audit writer drena por último.
+/// Ingress para primeiro, Egress drena, o log de sessão faz o flush final e grava o marcador limpo, e o Audit drena por último.
 /// </remarks>
 internal static class Program
 {
@@ -70,6 +71,7 @@ internal static class Program
             {
                 metrics
                     .AddMeter(NexusRouterMetrics.MeterName)
+                    .AddMeter(SessionLogMetrics.MeterName)
                     .AddPrometheusExporter();
             })
             .WithTracing(tracing =>
@@ -103,10 +105,10 @@ internal static class Program
 
         _ = otelBuilder; // referência explícita para suprimir CS0219 se o compilador otimizar.
 
-        // Tiers do NexusRouter — ordem define sequência inversa de shutdown.
-        // Sequência de shutdown: Ingress → Egress → Audit (Audit último a registrar, primeiro a parar).
+        // Registration order is the reverse of shutdown: Ingress, Egress, session log, Audit.
         builder.Services
             .AddNexusRouterAudit(builder.Configuration)
+            .AddNexusRouterSessionLog(builder.Configuration)
             .AddNexusRouterEgress(builder.Configuration)
             .AddNexusRouterRouter(builder.Configuration)
             .AddNexusRouterIngress(builder.Configuration);

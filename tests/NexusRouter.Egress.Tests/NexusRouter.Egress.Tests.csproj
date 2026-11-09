@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\NexusRouter.Domain\NexusRouter.Domain.csproj" />
     <ProjectReference Include="..\..\src\NexusRouter.Egress\NexusRouter.Egress.csproj" />
+    <ProjectReference Include="..\..\src\NexusRouter.SessionLog\NexusRouter.SessionLog.csproj" />
   </ItemGroup>
 
 </Project>

@@ -20,7 +20,6 @@ public sealed class FixOutboundDispatcherOptionsTests
             ListenPort = options.ListenPort,
             SenderCompId = options.SenderCompId,
             BeginString = options.BeginString,
-            SequenceStoreDirectory = options.SequenceStoreDirectory,
         };
 
         Assert.Throws<ArgumentException>(() => options.EnsureValid());
@@ -33,6 +32,5 @@ public sealed class FixOutboundDispatcherOptionsTests
             ListenPort = 6001,
             SenderCompId = "NEXUS",
             BeginString = "FIX.4.4",
-            SequenceStoreDirectory = "seq",
         };
 }

@@ -24,7 +24,6 @@ public sealed class WebSocketDispatcherOptionsTests
             Id = "ws-1",
             ListenAddress = "app.local",
             ListenPort = 6002,
-            SequenceStoreDirectory = "/var/lib/seq",
         };
 
         ValidateOptionsResult result = options.Validate(null);
@@ -41,7 +40,6 @@ public sealed class WebSocketDispatcherOptionsTests
             Id = "ws-1",
             ListenAddress = "0.0.0.0",
             ListenPort = 0,
-            SequenceStoreDirectory = "/var/lib/seq",
         };
 
         ValidateOptionsResult result = options.Validate(null);
@@ -59,7 +57,6 @@ public sealed class WebSocketDispatcherOptionsTests
             ListenAddress = "0.0.0.0",
             ListenPort = 6002,
             AllowedOrigins = ["invalid-origin-no-scheme"],
-            SequenceStoreDirectory = "/var/lib/seq",
         };
 
         ValidateOptionsResult result = options.Validate(null);
@@ -76,7 +73,6 @@ public sealed class WebSocketDispatcherOptionsTests
             Id = "ws-1",
             ListenAddress = "0.0.0.0",
             ListenPort = 6002,
-            SequenceStoreDirectory = "/var/lib/seq",
             Tls = new TlsOptions
             {
                 Enabled = true,
@@ -97,7 +93,6 @@ public sealed class WebSocketDispatcherOptionsTests
             ListenAddress = "0.0.0.0",
             ListenPort = 6002,
             AllowedOrigins = ["https://app.example.com"],
-            SequenceStoreDirectory = "/var/lib/nexusrouter/seq",
             HeartbeatIntervalSeconds = 30,
             MissedHeartbeatLimit = 2,
             LogonTimeoutSeconds = 5,

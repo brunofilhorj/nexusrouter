@@ -1098,7 +1098,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-04 — Log de sessão em arquivo: segmentos, índice e estado por consumidor
+- [x] TD-04 — Log de sessão em arquivo: segmentos, índice e estado por consumidor
 
 **Origem:** `notes/session-log-rethink.md` §2, §3, §5. **Tamanho:** G. **Depende de:** TD-03. **Substitui parte de:** TD-09 (flush) e a persistência de seqnum do `SequenceNumberStore`.
 

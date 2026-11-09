@@ -58,7 +58,6 @@ public sealed class ServiceCollectionExtensionsTests
             ["NexusRouter:Dispatchers:2:ListenPort"] = "9801",
             ["NexusRouter:Dispatchers:2:SenderCompId"] = "NEXUS_ACCEPTOR",
             ["NexusRouter:Dispatchers:2:BeginString"] = "FIX.4.4",
-            ["NexusRouter:Dispatchers:2:SequenceStoreDirectory"] = "/tmp/sequences",
 
             ["NexusRouter:Audit:ChannelCapacity"] = "32768",
             ["NexusRouter:Audit:OverflowMode"] = "DropOldest",
@@ -103,6 +102,7 @@ public sealed class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         services.AddLogging();
 
+        services.AddNexusRouterSessionLog(config);
         services.AddNexusRouterEgress(config);
 
         using ServiceProvider sp = services.BuildServiceProvider();
@@ -128,6 +128,7 @@ public sealed class ServiceCollectionExtensionsTests
 
         // Router precisa de Audit (AuditChannelSingleton) e Egress (IMessageDispatcher)
         services.AddNexusRouterAudit(config);
+        services.AddNexusRouterSessionLog(config);
         services.AddNexusRouterEgress(config);
         services.AddNexusRouterRouter(config);
 
@@ -152,6 +153,7 @@ public sealed class ServiceCollectionExtensionsTests
         services.AddLogging();
 
         services.AddNexusRouterAudit(config);
+        services.AddNexusRouterSessionLog(config);
         services.AddNexusRouterEgress(config);
         services.AddNexusRouterRouter(config);
         services.AddNexusRouterIngress(config);
@@ -175,6 +177,7 @@ public sealed class ServiceCollectionExtensionsTests
 
         // Ordem canônica do design: Audit -> Egress -> Router -> Ingress
         services.AddNexusRouterAudit(config);
+        services.AddNexusRouterSessionLog(config);
         services.AddNexusRouterEgress(config);
         services.AddNexusRouterRouter(config);
         services.AddNexusRouterIngress(config);

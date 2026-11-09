@@ -20,6 +20,7 @@ using NexusRouter.Host.Configuration;
 using NexusRouter.Ingress.Decoders;
 using NexusRouter.Ingress.Sessions;
 using NexusRouter.Router;
+using NexusRouter.SessionLog;
 
 using IngressSessionOptions = NexusRouter.Ingress.Sessions.SessionOptions;
 using HostSessionOptions = NexusRouter.Host.Configuration.SessionOptions;
@@ -204,6 +205,30 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton<IMessageRouter>(sp => sp.GetRequiredService<RouterEngine>());
 
+        return services;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Session log
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers the session log so it stops after the dispatchers drain and before audit drains.
+    /// </summary>
+    /// <param name="services">DI container.</param>
+    /// <param name="configuration">Application configuration.</param>
+    /// <returns>The same <paramref name="services"/> for chaining.</returns>
+    public static IServiceCollection AddNexusRouterSessionLog(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
+        services.AddSingleton(options.SessionLog);
+        services.AddSingleton<SessionLogManager>();
+        services.AddSingleton<ISessionLog>(sp => sp.GetRequiredService<SessionLogManager>());
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionLogManager>());
         return services;
     }
 
@@ -475,7 +500,6 @@ public static class ServiceCollectionExtensions
                 ListenPort = config.ListenPort,
                 SenderCompId = config.SenderCompId,
                 BeginString = config.BeginString,
-                SequenceStoreDirectory = config.SequenceStoreDirectory,
                 AllowedSenderCompIds = config.AllowedSenderCompIds,
                 HeartBtInt = config.HeartBtInt,
                 LogonTimeout = TimeSpan.FromSeconds(config.LogonTimeoutSeconds),
@@ -491,7 +515,8 @@ public static class ServiceCollectionExtensions
             ILogger<FixOutboundDispatcher> logger = sp.GetRequiredService<ILogger<FixOutboundDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
-            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
+            ISessionLog sessionLog = sp.GetRequiredService<ISessionLog>();
+            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool, secretResolver, sessionLog);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());
