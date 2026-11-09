@@ -52,6 +52,10 @@ public sealed class ServiceCollectionExtensionsTests
             ["NexusRouter:Dispatchers:1:PasswordEnvVar"] = "RABBIT_PASS",
             ["NexusRouter:Dispatchers:1:Exchange"] = "orders-exchange",
 
+            ["NexusRouter:SessionLog:Directory"] = Path.Combine(Path.GetTempPath(), "nexusrouter-host-tests"),
+            ["NexusRouter:SessionLog:SegmentSizeMB"] = "1",
+            ["NexusRouter:SessionLog:IndexSlotsPerSegment"] = "1000",
+
             ["NexusRouter:Dispatchers:2:Id"] = "FIX_DISPATCHER",
             ["NexusRouter:Dispatchers:2:Type"] = "FixOutbound",
             ["NexusRouter:Dispatchers:2:ListenAddress"] = "127.0.0.1",

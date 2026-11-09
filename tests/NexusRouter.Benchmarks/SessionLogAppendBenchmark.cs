@@ -10,6 +10,7 @@ using BenchmarkDotNet.Running;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using NexusRouter.Domain.Enums;
+using NexusRouter.Domain.Models;
 using NexusRouter.SessionLog;
 
 namespace NexusRouter.Benchmarks;
@@ -26,6 +27,7 @@ public class SessionLogAppendBenchmark
     private SessionLogStream _stream = null!;
     private long _seq = 1;
     private string _directory = "";
+    private readonly DispatchPayload _payload = new();
 
     /// <summary>
     /// Opens a touched segment before the measured loop.
@@ -72,15 +74,20 @@ public class SessionLogAppendBenchmark
     private static double ToMicroseconds(long ticks) => ticks * 1_000_000d / Stopwatch.Frequency;
 
     /// <summary>
-    /// Appends one 300-byte frame into a page that is already resident.
+    /// Appends one 300-byte frame and stores the resulting <see cref="LogRef"/> on the payload.
     /// </summary>
+    /// <returns>The published reference.</returns>
     [Benchmark]
-    public void Append()
+    public LogRef Append()
     {
-        if (!_stream.Append(_frame, _seq++, 1).IsOk)
+        AppendResult result = _stream.Append(_frame, _seq++, 1);
+        if (!result.IsOk)
         {
             throw new InvalidOperationException("Append failed.");
         }
+
+        _payload.LogRef = result.Ref;
+        return _payload.LogRef;
     }
 
     /// <summary>

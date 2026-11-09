@@ -106,6 +106,7 @@ public sealed class RouterEngine : IMessageRouter
         payload.RawBuffer = owner;
         payload.IngressTimestampTicks = frame.IngressTimestampTicks;
         payload.RoutingSequence = Interlocked.Increment(ref _routingSequence);
+        payload.LogRef = frame.LogRef;
 
         switch (route.DeliveryMode)
         {

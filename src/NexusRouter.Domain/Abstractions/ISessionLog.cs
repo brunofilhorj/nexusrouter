@@ -41,4 +41,12 @@ public interface ISessionLog
     /// <param name="dispatcherId">Broker dispatcher id.</param>
     /// <returns>The cursor state.</returns>
     IConsumerState OpenBroker(string dispatcherId);
+
+    /// <summary>
+    /// Copies the clients already opened for <paramref name="dispatcherId"/>.
+    /// </summary>
+    /// <param name="dispatcherId">Dispatcher that owns the clients.</param>
+    /// <param name="destination">Receives as many bindings as fit. May be empty.</param>
+    /// <returns>The total number of known clients, which can be greater than <paramref name="destination"/>.</returns>
+    int CopyClients(string dispatcherId, Span<ClientBinding> destination);
 }

@@ -20,6 +20,7 @@ public sealed class DispatchPayloadPoolTests
         payload.IngressTimestampTicks = 10;
         payload.RoutingSequence = 20;
         payload.EgressTimestampTicks = 30;
+        payload.LogRef = new LogRef(1, 2, 3);
         byte[] msgType = "D"u8.ToArray();
         var fields = new[] { new FixField(11, "client-order"u8.ToArray()) };
         payload.SetParsedMessage(msgType, fields);
@@ -32,6 +33,7 @@ public sealed class DispatchPayloadPoolTests
         Assert.Equal(0, payload.IngressTimestampTicks);
         Assert.Equal(0, payload.RoutingSequence);
         Assert.Equal(0, payload.EgressTimestampTicks);
+        Assert.Equal(default, payload.LogRef);
         Assert.False(payload.HasParsedMessage);
         Assert.False(payload.TryGetParsedMessage(out _));
         Assert.Equal(0, rawBuffer.DisposeCount);

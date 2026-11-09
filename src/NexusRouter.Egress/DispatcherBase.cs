@@ -31,6 +31,8 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     private readonly Channel<DispatchPayload> _channel;
     private readonly DispatchPayloadPool _payloadPool;
     private readonly ILogger _logger;
+    private readonly StreamCatchUp? _catchUp;
+    private Func<DispatchPayload, CancellationToken, ValueTask>? _send;
     private int _healthy;
     private CancellationTokenSource? _consumeCts;
     private Task? _consumeTask;
@@ -45,6 +47,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     /// <param name="channelCapacity">Quantidade máxima de payloads no channel.</param>
     /// <param name="payloadPool">Pool compartilhado de envelopes.</param>
     /// <param name="logger">Log do loop de consumo.</param>
+    /// <param name="catchUp">Cursor do log. Nulo desliga o catch-up e entrega cada payload do channel.</param>
     /// <exception cref="ArgumentException"><paramref name="dispatcherId"/> é vazio.</exception>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="channelCapacity"/> não é positivo.</exception>
@@ -53,7 +56,8 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
         TOptions options,
         int channelCapacity,
         DispatchPayloadPool payloadPool,
-        ILogger logger)
+        ILogger logger,
+        StreamCatchUp? catchUp = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dispatcherId);
         ArgumentNullException.ThrowIfNull(options);
@@ -65,6 +69,7 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
         Options = options;
         _payloadPool = payloadPool;
         _logger = logger;
+        _catchUp = catchUp;
         _channel = Channel.CreateBounded<DispatchPayload>(new BoundedChannelOptions(channelCapacity)
         {
             // Wait + TryWrite devolve false com o channel cheio, e o chamador continua dono do buffer.
@@ -90,6 +95,11 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
     /// Log da implementação. A publicação não escreve o frame FIX aqui.
     /// </summary>
     protected ILogger Logger => _logger;
+
+    /// <summary>
+    /// Mensagens já no log e ainda não entregues. Zero quando o catch-up está desligado.
+    /// </summary>
+    public long Lag => _catchUp?.Lag ?? 0;
 
     /// <summary>
     /// <see langword="true"/> depois de <see cref="StartAsync"/> preparar o destino e antes de um erro fatal ou de <see cref="StopAsync"/>.
@@ -220,31 +230,21 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
         }
     }
 
+    private Func<DispatchPayload, CancellationToken, ValueTask> Send => _send ??= SendAsync;
+
     private async Task ConsumeAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await foreach (DispatchPayload payload in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            if (_catchUp is null)
             {
-                try
-                {
-                    await SendAsync(payload, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    ReportDispatchError(ex);
-                }
-                finally
-                {
-                    ReleasePayload(payload);
-                }
+                await ConsumeChannelAsync(cancellationToken).ConfigureAwait(false);
             }
-
-            ReleasePending();
+            else
+            {
+                await _catchUp.DrainIdleAsync(Send, cancellationToken).ConfigureAwait(false);
+                await ConsumeWithCatchUpAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -257,6 +257,90 @@ public abstract class DispatcherBase<TOptions> : IMessageDispatcher
             ReleasePending();
             ReportDispatchError(ex);
         }
+    }
+
+    private async Task ConsumeChannelAsync(CancellationToken cancellationToken)
+    {
+        await foreach (DispatchPayload payload in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                await SendAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                ReportDispatchError(ex);
+            }
+            finally
+            {
+                ReleasePayload(payload);
+            }
+        }
+
+        ReleasePending();
+    }
+
+    private async Task ConsumeWithCatchUpAsync(CancellationToken cancellationToken)
+    {
+        StreamCatchUp catchUp = _catchUp ?? throw new InvalidOperationException($"O dispatcher {DispatcherId} não tem catch-up.");
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            using var idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            idle.CancelAfter(catchUp.IdleMilliseconds);
+            bool pending;
+            try
+            {
+                pending = await _channel.Reader.WaitToReadAsync(idle.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                await catchUp.DrainIdleAsync(Send, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (!pending)
+            {
+                break;
+            }
+
+            while (_channel.Reader.TryRead(out DispatchPayload? payload))
+            {
+                if (payload is null)
+                {
+                    continue;
+                }
+
+                var stopping = false;
+                try
+                {
+                    await catchUp.AcceptAsync(payload, Send, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    stopping = true;
+                }
+                catch (Exception ex)
+                {
+                    ReportDispatchError(ex);
+                }
+                finally
+                {
+                    ReleasePayload(payload);
+                }
+
+                if (stopping)
+                {
+                    ReleasePending();
+                    return;
+                }
+            }
+        }
+
+        ReleasePending();
     }
 
     private void ReleasePending()

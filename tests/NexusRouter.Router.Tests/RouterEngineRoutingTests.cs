@@ -73,7 +73,7 @@ public sealed class RouterEngineRoutingTests
     }
 
     [Fact]
-    public void Route_WhenOneDispatcherChannelIsFull_DeliversToOtherAndAuditsDrop()
+    public void Route_WhenOneDispatcherChannelIsFull_DeliversToOtherAndCountsLag()
     {
         var sessionId = new SessionId("FULL-CHANNEL");
         var fullDispatcher = new ChannelDispatcher("full");
@@ -85,21 +85,70 @@ public sealed class RouterEngineRoutingTests
             DeliveryMode.PassThrough,
             fullDispatcher,
             availableDispatcher);
+        var lagReasons = new List<string>();
+        using MeterListener listener = CreateLagListener(lagReasons);
+        listener.Start();
         byte[] frameBytes = FixMessageTestData.CreateValidFrame(sequenceNumber: 12);
-        IngressFrame frame = CreateFrame(sessionId, frameBytes);
+        var logRef = new LogRef(3, 1, 12);
+        IngressFrame frame = CreateFrame(sessionId, frameBytes, logRef);
 
         harness.Router.Route(in frame);
 
         Assert.True(availableDispatcher.Reader.TryRead(out DispatchPayload? acceptedPayload));
         Assert.Equal(frameBytes, acceptedPayload!.RawBuffer!.Memory.ToArray());
+        Assert.Equal(logRef, acceptedPayload.LogRef);
         Assert.True(fullDispatcher.Reader.TryRead(out DispatchPayload? stillQueued));
         Assert.Same(placeholder, stillQueued);
         Assert.True(harness.AuditChannel.Reader.TryRead(out AuditRecord? auditRecord));
-        Assert.True(auditRecord!.WasDropped);
-        Assert.Equal("Channel do dispatcher cheio", auditRecord.DropReason);
-        Assert.Equal(new[] { "full" }, auditRecord.DispatcherIds);
+        Assert.False(auditRecord!.WasDropped);
+        Assert.Equal(new[] { "available" }, auditRecord.DispatcherIds);
+        Assert.Equal(new[] { "channel_full" }, lagReasons);
 
         ReleasePayload(harness.PayloadPool, acceptedPayload);
+    }
+
+    [Fact]
+    public void Route_WhenRouteHasNoDispatcher_CountsLagInsteadOfDropping()
+    {
+        var sessionId = new SessionId("NO-DISPATCHER");
+        using var harness = CreateHarness(
+            sessionId,
+            DeliveryMode.PassThrough,
+            registerRoute: true);
+        var lagReasons = new List<string>();
+        var dropReasons = new List<string>();
+        using MeterListener lagListener = CreateLagListener(lagReasons);
+        using MeterListener dropListener = CreateDropListener(dropReasons);
+        lagListener.Start();
+        dropListener.Start();
+        byte[] frameBytes = FixMessageTestData.CreateValidFrame(sequenceNumber: 4);
+        IngressFrame frame = CreateFrame(sessionId, frameBytes);
+
+        harness.Router.Route(in frame);
+
+        Assert.Equal(new[] { "no_dispatcher" }, lagReasons);
+        Assert.Empty(dropReasons);
+    }
+
+    [Fact]
+    public void Route_CopiesLogRefOntoEveryFanOutPayload()
+    {
+        var sessionId = new SessionId("LOG-REF");
+        var firstDispatcher = new ChannelDispatcher("first");
+        var secondDispatcher = new ChannelDispatcher("second");
+        using var harness = CreateHarness(sessionId, DeliveryMode.PassThrough, firstDispatcher, secondDispatcher);
+        var logRef = new LogRef(2, 4, 9);
+        byte[] frameBytes = FixMessageTestData.CreateValidFrame(sequenceNumber: 9);
+        IngressFrame frame = CreateFrame(sessionId, frameBytes, logRef);
+
+        harness.Router.Route(in frame);
+
+        Assert.True(firstDispatcher.Reader.TryRead(out DispatchPayload? firstPayload));
+        Assert.True(secondDispatcher.Reader.TryRead(out DispatchPayload? secondPayload));
+        Assert.Equal(logRef, firstPayload!.LogRef);
+        Assert.Equal(logRef, secondPayload!.LogRef);
+        ReleasePayload(harness.PayloadPool, firstPayload);
+        ReleasePayload(harness.PayloadPool, secondPayload!);
     }
 
     [Fact]
@@ -161,8 +210,8 @@ public sealed class RouterEngineRoutingTests
         payloadPool.Return(payload);
     }
 
-    private static IngressFrame CreateFrame(SessionId sessionId, byte[] bytes) =>
-        new(sessionId, new ReadOnlySequence<byte>(bytes), Stopwatch.GetTimestamp(), bytes.Length);
+    private static IngressFrame CreateFrame(SessionId sessionId, byte[] bytes, LogRef logRef = default) =>
+        new(sessionId, new ReadOnlySequence<byte>(bytes), Stopwatch.GetTimestamp(), bytes.Length, logRef);
 
     private static RouterHarness CreateHarness(
         SessionId sessionId,
@@ -234,6 +283,37 @@ public sealed class RouterEngineRoutingTests
                 if (tags[i].Key == "reason" && tags[i].Value is string reason)
                 {
                     dropReasons.Add(reason);
+                }
+            }
+        });
+        return listener;
+    }
+
+    private static MeterListener CreateLagListener(List<string> lagReasons)
+    {
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, meterListener) =>
+            {
+                if (instrument.Meter.Name == NexusRouterMetrics.MeterName
+                    && instrument.Name == "dispatcher_lag_signaled_total")
+                {
+                    meterListener.EnableMeasurementEvents(instrument);
+                }
+            },
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
+        {
+            if (instrument.Name != "dispatcher_lag_signaled_total")
+            {
+                return;
+            }
+
+            for (int i = 0; i < tags.Length; i++)
+            {
+                if (tags[i].Key == "reason" && tags[i].Value is string reason)
+                {
+                    lagReasons.Add(reason);
                 }
             }
         });

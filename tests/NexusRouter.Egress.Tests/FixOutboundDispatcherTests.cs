@@ -5,6 +5,7 @@ using System.Text;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
+using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
@@ -114,6 +115,78 @@ public sealed class FixOutboundDispatcherTests
         finally
         {
             await running.DisposeAsync();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_WhenKnownClientIsOffline_PublishesTheIndexAndSkipsTheSocket()
+    {
+        string directory = TempDirectory();
+        int port = FreePort();
+        var log = new SessionLogManager(
+            new SessionLogOptions
+            {
+                Directory = directory,
+                SegmentSizeMB = 1,
+                IndexSlotsPerSegment = 100_000,
+                FlushIntervalMs = 60_000,
+                RetentionTradingDays = 5,
+            },
+            NullLogger<SessionLogManager>.Instance);
+        await log.StartAsync(CancellationToken.None);
+        ISessionLogStream stream = log.OpenStream("B3");
+        byte[] frame = ExecutionReport();
+        AppendResult appended = stream.Append(frame, inSeq: 7, ingressTs: 1);
+        Assert.True(appended.IsOk);
+        log.OpenClient("fix-acceptor", "OMS1");
+        var dispatcher = new FixOutboundDispatcher(
+            "fix-acceptor",
+            new FixOutboundDispatcherOptions
+            {
+                ListenAddress = "127.0.0.1",
+                ListenPort = port,
+                SenderCompId = "NEXUS",
+                BeginString = "FIX.4.4",
+                AllowedSenderCompIds = [],
+                HeartBtInt = 30,
+                LogonTimeout = TimeSpan.FromSeconds(2),
+            },
+            NullLogger<FixOutboundDispatcher>.Instance,
+            new DispatchPayloadPool(),
+            ThrowingSecretResolver.Instance,
+            log);
+        try
+        {
+            await dispatcher.StartAsync(CancellationToken.None);
+            DispatchPayload payload = Payload(frame);
+            payload.LogRef = appended.Ref;
+            Assert.True(dispatcher.TryEnqueue(payload));
+
+            ClientBinding binding = log.OpenClient("fix-acceptor", "OMS1");
+            var deadline = DateTime.UtcNow.AddSeconds(2);
+            IndexReadResult published = IndexReadResult.NotYet;
+            while (DateTime.UtcNow < deadline)
+            {
+                published = binding.Index.TryGet(1, out _);
+                if (published == IndexReadResult.Published)
+                {
+                    break;
+                }
+
+                await Task.Delay(15);
+            }
+
+            Assert.Equal(2, binding.Index.NextOut);
+            Assert.Equal(IndexReadResult.Published, published);
+
+            using TcpClient client = await ConnectAsync(port, "OMS1");
+            Assert.Equal("2", Field(await ReadFrameAsync(client.GetStream()), 34));
+        }
+        finally
+        {
+            await dispatcher.StopAsync(CancellationToken.None);
+            await log.StopAsync(CancellationToken.None);
             DeleteDirectory(directory);
         }
     }

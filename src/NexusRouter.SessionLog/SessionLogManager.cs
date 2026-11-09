@@ -191,6 +191,33 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     }
 
     /// <inheritdoc />
+    public int CopyClients(string dispatcherId, Span<ClientBinding> destination)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dispatcherId);
+        string prefix = dispatcherId + "/";
+        lock (_gate)
+        {
+            int total = 0;
+            foreach ((string key, ClientBinding binding) in _clients)
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (total < destination.Length)
+                {
+                    destination[total] = binding;
+                }
+
+                total++;
+            }
+
+            return total;
+        }
+    }
+
+    /// <inheritdoc />
     public IConsumerState OpenBroker(string dispatcherId)
     {
         SessionLogPaths.EnsureKey(dispatcherId, nameof(dispatcherId));

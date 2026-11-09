@@ -33,6 +33,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     /// <param name="partitionStrategy">
     /// Estratégia já construída. Quando nula, a opção <see cref="KafkaDispatcherOptions.PartitionStrategy"/> define a estratégia.
     /// </param>
+    /// <param name="catchUp">Cursor do log de sessão. Nulo entrega só o que chegar pelo channel.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public KafkaMessageDispatcher(
@@ -41,8 +42,9 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         ILogger<KafkaMessageDispatcher> logger,
         DispatchPayloadPool payloadPool,
         ISecretResolver secretResolver,
-        IKafkaPartitionStrategy? partitionStrategy = null)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
+        IKafkaPartitionStrategy? partitionStrategy = null,
+        StreamCatchUp? catchUp = null)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         _secretResolver = secretResolver;

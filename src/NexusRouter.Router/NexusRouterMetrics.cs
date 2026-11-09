@@ -28,8 +28,11 @@ public sealed class NexusRouterMetrics : IDisposable
     /// <summary>Total de mensagens despachadas com sucesso, por DispatcherId.</summary>
     public Counter<long> MessagesDispatched { get; }
 
-    /// <summary>Total de mensagens descartadas (channel cheio ou sem rota), com tag de motivo.</summary>
+    /// <summary>Total de mensagens descartadas por ausência de rota, com tag de motivo.</summary>
     public Counter<long> MessagesDropped { get; }
+
+    /// <summary>Vezes em que o fan-out liberou o buffer e deixou a mensagem no log.</summary>
+    public Counter<long> DispatcherLagSignaled { get; }
 
     // ── Histograma ───────────────────────────────────────────────────────────
 
@@ -46,9 +49,11 @@ public sealed class NexusRouterMetrics : IDisposable
 
     // Referência mantida para evitar GC do instrumento observável.
     private readonly ObservableGauge<int> _channelDepthGauge;
+    private readonly ObservableGauge<long> _lagGauge;
 
     // Lista de callbacks para cada dispatcher registrado.
     private readonly List<(string DispatcherId, Func<int> GetDepth)> _depthCallbacks = [];
+    private readonly List<(string DispatcherId, Func<long> GetLag)> _lagCallbacks = [];
 
     /// <summary>
     /// Cria o <see cref="Meter"/> e registra todos os instrumentos.
@@ -70,7 +75,18 @@ public sealed class NexusRouterMetrics : IDisposable
         MessagesDropped = _meter.CreateCounter<long>(
             "messages_dropped_total",
             unit: "{messages}",
-            description: "Total de mensagens descartadas por channel cheio ou ausência de rota.");
+            description: "Total de mensagens descartadas por ausência de rota.");
+
+        DispatcherLagSignaled = _meter.CreateCounter<long>(
+            "dispatcher_lag_signaled_total",
+            unit: "{messages}",
+            description: "Mensagens que ficaram no log porque a rota não tinha dispatcher ou o channel recusou.");
+
+        _lagGauge = _meter.CreateObservableGauge<long>(
+            "dispatcher_lag",
+            observeValues: ObserveLag,
+            unit: "{messages}",
+            description: "Distância entre o seq committed do stream e o próximo seq que o dispatcher ainda vai entregar.");
 
         HotPathLatencyMicroseconds = _meter.CreateHistogram<double>(
             "hotpath_latency_microseconds",
@@ -101,6 +117,18 @@ public sealed class NexusRouterMetrics : IDisposable
         _depthCallbacks.Add((dispatcherId, getDepth));
     }
 
+    /// <summary>
+    /// Registra a distância entre <c>committed</c> e o cursor do dispatcher.
+    /// </summary>
+    /// <param name="dispatcherId">Identificador único do dispatcher.</param>
+    /// <param name="getLag">Função que devolve quantas mensagens o dispatcher ainda não entregou.</param>
+    public void RegisterLag(string dispatcherId, Func<long> getLag)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(dispatcherId);
+        ArgumentNullException.ThrowIfNull(getLag);
+        _lagCallbacks.Add((dispatcherId, getLag));
+    }
+
     /// <inheritdoc/>
     public void Dispose() => _meter.Dispose();
 
@@ -111,6 +139,14 @@ public sealed class NexusRouterMetrics : IDisposable
         foreach ((string id, Func<int> get) in _depthCallbacks)
         {
             yield return new Measurement<int>(get(), new KeyValuePair<string, object?>("dispatcher_id", id));
+        }
+    }
+
+    private IEnumerable<Measurement<long>> ObserveLag()
+    {
+        foreach ((string id, Func<long> get) in _lagCallbacks)
+        {
+            yield return new Measurement<long>(get(), new KeyValuePair<string, object?>("dispatcher_id", id));
         }
     }
 }

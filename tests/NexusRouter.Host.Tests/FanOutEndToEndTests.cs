@@ -153,6 +153,10 @@ public sealed class FanOutEndToEndTests
             ["NexusRouter:Dispatchers:1:Exchange"] = RabbitExchange,
             ["NexusRouter:Dispatchers:1:RoutingKey"] = RabbitRoutingKey,
             ["NexusRouter:Dispatchers:1:ChannelCapacity"] = "1024",
+            ["NexusRouter:SessionLog:Directory"] = Path.Combine(Path.GetDirectoryName(auditPath) ?? Path.GetTempPath(), "sessionlog"),
+            ["NexusRouter:SessionLog:SegmentSizeMB"] = "1",
+            ["NexusRouter:SessionLog:IndexSlotsPerSegment"] = "1000",
+            ["NexusRouter:SessionLog:FlushIntervalMs"] = "60000",
             ["NexusRouter:Audit:ChannelCapacity"] = "1024",
             ["NexusRouter:Audit:OverflowMode"] = "DropOldest",
             ["NexusRouter:Audit:BatchSize"] = "100",
@@ -184,6 +188,7 @@ public sealed class FanOutEndToEndTests
         builder.Configuration.AddInMemoryCollection(configuration);
         builder.Services
             .AddNexusRouterAudit(builder.Configuration)
+            .AddNexusRouterSessionLog(builder.Configuration)
             .AddNexusRouterEgress(builder.Configuration)
             .AddNexusRouterRouter(builder.Configuration)
             .AddNexusRouterIngress(builder.Configuration);
@@ -247,7 +252,7 @@ public sealed class FanOutEndToEndTests
         while (payloads.Count < MessageCount && DateTime.UtcNow < deadline)
         {
             ConsumeResult<Ignore, byte[]>? result = consumer.Consume(TimeSpan.FromMilliseconds(200));
-            if (result?.Message?.Value is { Length: > 0 } value)
+            if (result?.Message?.Value is { Length: > 0 } value && IsExecutionReport(value))
             {
                 payloads.Add(value);
             }
@@ -286,7 +291,11 @@ public sealed class FanOutEndToEndTests
                 continue;
             }
 
-            payloads.Add(delivery.Body.ToArray());
+            byte[] body = delivery.Body.ToArray();
+            if (IsExecutionReport(body))
+            {
+                payloads.Add(body);
+            }
         }
 
         if (payloads.Count < MessageCount)
@@ -295,6 +304,20 @@ public sealed class FanOutEndToEndTests
         }
 
         return payloads;
+    }
+
+    private static bool IsExecutionReport(ReadOnlySpan<byte> frame)
+    {
+        string message = Encoding.ASCII.GetString(frame);
+        foreach (string field in message.Split('\x01', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (field.StartsWith("35=", StringComparison.Ordinal))
+            {
+                return field.Equals("35=8", StringComparison.Ordinal);
+            }
+        }
+
+        return false;
     }
 
     private static void AssertPayloads(List<byte[]> payloads, string destination)

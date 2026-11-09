@@ -32,6 +32,7 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
     /// <param name="logger">Log de conexão e de reconexão.</param>
     /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
     /// <param name="secretResolver">Resolve as credenciais pelas chaves em <paramref name="options"/>, sob demanda.</param>
+    /// <param name="catchUp">Cursor do log de sessão. Nulo entrega só o que chegar pelo channel.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public RabbitMQMessageDispatcher(
@@ -39,8 +40,9 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         RabbitMQDispatcherOptions options,
         ILogger<RabbitMQMessageDispatcher> logger,
         DispatchPayloadPool payloadPool,
-        ISecretResolver secretResolver)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
+        ISecretResolver secretResolver,
+        StreamCatchUp? catchUp = null)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         _secretResolver = secretResolver;

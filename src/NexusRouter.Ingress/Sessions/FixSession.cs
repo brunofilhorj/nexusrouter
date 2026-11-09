@@ -37,6 +37,7 @@ public sealed class FixSession : IHostedService
     private readonly ChannelWriter<AuditRecord> _auditChannel;
     private readonly ISecretResolver _secretResolver;
     private readonly ILogger<FixSession> _logger;
+    private readonly ISessionLogStream _sessionLog;
     private readonly FixSessionStateMachine _stateMachine = new();
     private readonly SessionId _sessionId;
     private readonly SemaphoreSlim _outboundGate = new(1, 1);
@@ -66,6 +67,7 @@ public sealed class FixSession : IHostedService
     /// <param name="auditChannel">Canal não bloqueante para falhas de conexão.</param>
     /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="logger">Log estruturado da sessão.</param>
+    /// <param name="sessionLog">Log de sessão. O frame original é gravado antes da máquina de estados.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     /// <exception cref="ArgumentException">Host, comp IDs ou BeginString são inválidos.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A porta, o HeartBtInt, o limite de heartbeats ou o timeout de Logon é inválido.</exception>
@@ -76,7 +78,8 @@ public sealed class FixSession : IHostedService
         IMessageRouter router,
         ChannelWriter<AuditRecord> auditChannel,
         ISecretResolver secretResolver,
-        ILogger<FixSession> logger)
+        ILogger<FixSession> logger,
+        ISessionLog sessionLog)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(frameDecoder);
@@ -85,6 +88,7 @@ public sealed class FixSession : IHostedService
         ArgumentNullException.ThrowIfNull(auditChannel);
         ArgumentNullException.ThrowIfNull(secretResolver);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(sessionLog);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.SessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Host);
         if (options.Port is < 1 or > 65535)
@@ -121,6 +125,7 @@ public sealed class FixSession : IHostedService
         _secretResolver = secretResolver;
         _logger = logger;
         _sessionId = new SessionId(options.SessionId);
+        _sessionLog = sessionLog.OpenStream(options.SessionId);
     }
 
     /// <summary>
@@ -398,13 +403,56 @@ public sealed class FixSession : IHostedService
     {
         while (_frameDecoder.TryDecode(ref buffer, out IngressFrame decoded))
         {
+            LogRef logRef = AppendOriginal(in decoded);
             var frame = new IngressFrame(
                 _sessionId,
                 decoded.RawBuffer,
                 decoded.IngressTimestampTicks,
-                decoded.FrameLength);
+                decoded.FrameLength,
+                logRef);
             Dispatch(in frame);
         }
+    }
+
+    private LogRef AppendOriginal(in IngressFrame decoded)
+    {
+        if (!TryReadSequenceField(decoded.RawBuffer, "34="u8, out long inSeq) || inSeq <= 0)
+        {
+            return default;
+        }
+
+        ReadOnlySequence<byte> raw = decoded.RawBuffer;
+        if (raw.Length == 0)
+        {
+            return default;
+        }
+
+        int length = raw.Length > int.MaxValue ? int.MaxValue : (int)raw.Length;
+        if (decoded.FrameLength > 0 && decoded.FrameLength < length)
+        {
+            length = decoded.FrameLength;
+        }
+
+        AppendResult result;
+        if (raw.IsSingleSegment)
+        {
+            result = _sessionLog.Append(raw.FirstSpan[..length], inSeq, decoded.IngressTimestampTicks);
+        }
+        else
+        {
+            byte[] rented = ArrayPool<byte>.Shared.Rent(length);
+            try
+            {
+                raw.Slice(0, length).CopyTo(rented);
+                result = _sessionLog.Append(rented.AsSpan(0, length), inSeq, decoded.IngressTimestampTicks);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+
+        return result.IsOk ? result.Ref : default;
     }
 
     private void Dispatch(in IngressFrame frame)
