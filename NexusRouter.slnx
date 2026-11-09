@@ -6,6 +6,7 @@
     <Project Path="src/NexusRouter.Host/NexusRouter.Host.csproj" />
     <Project Path="src/NexusRouter.Ingress/NexusRouter.Ingress.csproj" />
     <Project Path="src/NexusRouter.Router/NexusRouter.Router.csproj" />
+    <Project Path="src/NexusRouter.SessionLog/NexusRouter.SessionLog.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NexusRouter.Benchmarks/NexusRouter.Benchmarks.csproj" />
@@ -15,5 +16,6 @@
     <Project Path="tests/NexusRouter.Host.Tests/NexusRouter.Host.Tests.csproj" />
     <Project Path="tests/NexusRouter.Ingress.Tests/NexusRouter.Ingress.Tests.csproj" />
     <Project Path="tests/NexusRouter.Router.Tests/NexusRouter.Router.Tests.csproj" />
+    <Project Path="tests/NexusRouter.SessionLog.Tests/NexusRouter.SessionLog.Tests.csproj" />
   </Folder>
 </Solution>

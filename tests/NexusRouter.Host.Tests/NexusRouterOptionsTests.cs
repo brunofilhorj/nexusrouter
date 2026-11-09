@@ -5,6 +5,7 @@ using NexusRouter.Audit;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Egress.Kafka;
 using NexusRouter.Host.Configuration;
+using NexusRouter.SessionLog;
 
 using AuditOptions = NexusRouter.Host.Configuration.AuditOptions;
 using KafkaDispatcherOptions = NexusRouter.Host.Configuration.KafkaDispatcherOptions;
@@ -34,7 +35,7 @@ public sealed class NexusRouterOptionsTests
             Sessions = [],
             Dispatchers = options.Dispatchers,
             Clients = options.Clients,
-            Replay = options.Replay,
+            SessionLog = options.SessionLog,
             Audit = options.Audit,
         };
 
@@ -53,7 +54,7 @@ public sealed class NexusRouterOptionsTests
             Sessions = options.Sessions,
             Dispatchers = [],
             Clients = options.Clients,
-            Replay = options.Replay,
+            SessionLog = options.SessionLog,
             Audit = options.Audit,
         };
 
@@ -170,7 +171,7 @@ public sealed class NexusRouterOptionsTests
             ["NexusRouter:Dispatchers:1:Type"] = "WebSocket",
             ["NexusRouter:Dispatchers:1:ListenAddress"] = "0.0.0.0",
             ["NexusRouter:Dispatchers:1:ListenPort"] = "6002",
-            ["NexusRouter:Dispatchers:1:SequenceStoreDirectory"] = "/var/lib/seq",
+            ["NexusRouter:SessionLog:Directory"] = "data/sessionlog",
 
             ["NexusRouter:Audit:ChannelCapacity"] = "32768",
             ["NexusRouter:Audit:Sinks:0:Type"] = "Serilog",
@@ -247,7 +248,6 @@ public sealed class NexusRouterOptionsTests
                     ListenPort = 6001,
                     SenderCompId = "NEXUS",
                     BeginString = "FIX.4.4",
-                    SequenceStoreDirectory = "/var/lib/nexusrouter/seq",
                     ChannelCapacity = 8192,
                 },
                 new RabbitMQDispatcherOptions
@@ -274,7 +274,6 @@ public sealed class NexusRouterOptionsTests
                     MaxFields = 64,
                     MaxOutboundFrameBytes = 65536,
                     SessionChannelCapacity = 1024,
-                    SequenceStoreDirectory = "/var/lib/nexusrouter/seq",
                     ChannelCapacity = 8192,
                 },
             ],
@@ -298,11 +297,9 @@ public sealed class NexusRouterOptionsTests
                     TokenEnvVar = "NEXUS_WS_CLIENT_TOKEN",
                 },
             ],
-            Replay = new ReplayOptions
+            SessionLog = new SessionLogOptions
             {
-                ChannelCapacity = 65536,
-                BatchSize = 1000,
-                FlushIntervalMs = 100,
+                Directory = "data/sessionlog",
             },
             Audit = new AuditOptions
             {

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
 using NexusRouter.Audit;
+using NexusRouter.SessionLog;
 
 namespace NexusRouter.Host.Configuration;
 
@@ -28,9 +29,9 @@ public sealed class NexusRouterOptions : IValidateOptions<NexusRouterOptions>
     public List<ClientOptions> Clients { get; init; } = [];
 
     /// <summary>
-    /// Configuração do motor de replay de mensagens.
+    /// File session log. Replaces the replay channel.
     /// </summary>
-    public ReplayOptions Replay { get; init; } = new();
+    public SessionLogOptions SessionLog { get; init; } = new();
 
     /// <summary>
     /// Configuração do cold path de auditoria e sinks.
@@ -52,13 +53,13 @@ public sealed class NexusRouterOptions : IValidateOptions<NexusRouterOptions>
         ValidateSessions(options.Sessions, dispatchersById, failures);
         ValidateClients(options.Clients, dispatchersById, failures);
 
-        if (options.Replay is null)
+        if (options.SessionLog is null)
         {
-            failures.Add("Replay é obrigatório.");
+            failures.Add("SessionLog é obrigatório.");
         }
         else
         {
-            ConfigurationChecks.Append(failures, nameof(options.Replay), options.Replay.Validate(null, options.Replay));
+            ConfigurationChecks.Append(failures, nameof(options.SessionLog), options.SessionLog.Validate(null, options.SessionLog));
         }
 
         if (options.Audit is null)
@@ -207,7 +208,7 @@ public sealed class NexusRouterOptions : IValidateOptions<NexusRouterOptions>
 
         List<SessionOptions> sessions = root.GetSection("Sessions").Get<List<SessionOptions>>() ?? [];
         List<ClientOptions> clients = root.GetSection("Clients").Get<List<ClientOptions>>() ?? [];
-        ReplayOptions replay = root.GetSection("Replay").Get<ReplayOptions>() ?? new ReplayOptions();
+        SessionLogOptions sessionLog = root.GetSection("SessionLog").Get<SessionLogOptions>() ?? new SessionLogOptions();
 
         List<DispatcherOptions> dispatchers = BindDispatchers(root.GetSection("Dispatchers"));
         AuditOptions audit = BindAudit(root.GetSection("Audit"));
@@ -217,7 +218,7 @@ public sealed class NexusRouterOptions : IValidateOptions<NexusRouterOptions>
             Sessions = sessions,
             Dispatchers = dispatchers,
             Clients = clients,
-            Replay = replay,
+            SessionLog = sessionLog,
             Audit = audit,
         };
     }

@@ -11,6 +11,7 @@ using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
 using NexusRouter.Egress.Fix;
 using NexusRouter.Ingress.Sessions;
+using NexusRouter.SessionLog;
 
 namespace NexusRouter.Egress.Tests;
 
@@ -21,7 +22,8 @@ public sealed class FixOutboundDispatcherTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        FixOutboundDispatcher dispatcher = await StartAsync(directory, port, allowed: []);
+        await using var running = await StartAsync(directory, port, allowed: []);
+        FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
             using TcpClient first = await ConnectAsync(port, "OMS1");
@@ -46,7 +48,7 @@ public sealed class FixOutboundDispatcherTests
         }
         finally
         {
-            await dispatcher.StopAsync(CancellationToken.None);
+            await running.DisposeAsync();
             DeleteDirectory(directory);
         }
     }
@@ -56,8 +58,8 @@ public sealed class FixOutboundDispatcherTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        FixOutboundDispatcher dispatcher = await StartAsync(directory, port, allowed: []);
-        FixOutboundDispatcher? restarted = null;
+        await using var running = await StartAsync(directory, port, allowed: []);
+        FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
             using var client = await ConnectAsync(port, "OMS1");
@@ -69,21 +71,17 @@ public sealed class FixOutboundDispatcherTests
             byte[] logout = await ReadLogoutOnStopAsync(dispatcher, stream);
             Assert.Equal("5", Field(logout, 35));
             Assert.Equal("3", Field(logout, 34));
+            await running.Log.StopAsync(CancellationToken.None);
 
             int restartedPort = FreePort();
-            restarted = await StartAsync(directory, restartedPort, allowed: []);
+            await using var restarted = await StartAsync(directory, restartedPort, allowed: []);
             using var again = await ConnectAsync(restartedPort, "OMS1");
             byte[] logon = await ReadFrameAsync(again.GetStream());
             Assert.Equal("4", Field(logon, 34));
         }
         finally
         {
-            await dispatcher.StopAsync(CancellationToken.None);
-            if (restarted is not null)
-            {
-                await restarted.StopAsync(CancellationToken.None);
-            }
-
+            await running.DisposeAsync();
             DeleteDirectory(directory);
         }
     }
@@ -92,11 +90,14 @@ public sealed class FixOutboundDispatcherTests
     public async Task SendAsync_WhenSessionSequenceHasMoreDigitsThanSourceFrame_DeliversValidFrame()
     {
         string directory = TempDirectory();
-        Directory.CreateDirectory(directory);
-        // O frame de origem tem "34=1". A sessão retomada está em 5 dígitos.
-        await File.WriteAllTextAsync(Path.Combine(directory, "fix-acceptor_OMS1.seq"), "37581");
+        Directory.CreateDirectory(Path.Combine(directory, "clients", "fix-acceptor", "OMS1"));
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "clients", "fix-acceptor", "OMS1", "state.json"),
+            """{"nextOut":37582,"nextInExpected":1,"epoch":0,"updatedAt":"2026-11-09T00:00:00+00:00"}""");
+        await File.WriteAllTextAsync(Path.Combine(directory, "clean"), string.Empty);
         int port = FreePort();
-        FixOutboundDispatcher dispatcher = await StartAsync(directory, port, allowed: []);
+        await using var running = await StartAsync(directory, port, allowed: []);
+        FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
             using TcpClient client = await ConnectAsync(port, "OMS1");
@@ -112,7 +113,7 @@ public sealed class FixOutboundDispatcherTests
         }
         finally
         {
-            await dispatcher.StopAsync(CancellationToken.None);
+            await running.DisposeAsync();
             DeleteDirectory(directory);
         }
     }
@@ -122,7 +123,8 @@ public sealed class FixOutboundDispatcherTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        FixOutboundDispatcher dispatcher = await StartAsync(directory, port, allowed: ["OMS1"]);
+        await using var running = await StartAsync(directory, port, allowed: ["OMS1"]);
+        FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
             using var client = new TcpClient();
@@ -137,13 +139,24 @@ public sealed class FixOutboundDispatcherTests
         }
         finally
         {
-            await dispatcher.StopAsync(CancellationToken.None);
+            await running.DisposeAsync();
             DeleteDirectory(directory);
         }
     }
 
-    private static async Task<FixOutboundDispatcher> StartAsync(string directory, int port, IReadOnlyList<string> allowed)
+    private static async Task<RunningAcceptor> StartAsync(string directory, int port, IReadOnlyList<string> allowed)
     {
+        var log = new SessionLogManager(
+            new SessionLogOptions
+            {
+                Directory = directory,
+                SegmentSizeMB = 1,
+                IndexSlotsPerSegment = 100_000,
+                FlushIntervalMs = 60_000,
+                RetentionTradingDays = 5,
+            },
+            NullLogger<SessionLogManager>.Instance);
+        await log.StartAsync(CancellationToken.None);
         var dispatcher = new FixOutboundDispatcher(
             "fix-acceptor",
             new FixOutboundDispatcherOptions
@@ -152,17 +165,36 @@ public sealed class FixOutboundDispatcherTests
                 ListenPort = port,
                 SenderCompId = "NEXUS",
                 BeginString = "FIX.4.4",
-                SequenceStoreDirectory = directory,
                 AllowedSenderCompIds = allowed,
                 HeartBtInt = 30,
                 LogonTimeout = TimeSpan.FromSeconds(2),
             },
             NullLogger<FixOutboundDispatcher>.Instance,
             new DispatchPayloadPool(),
-            ThrowingSecretResolver.Instance);
+            ThrowingSecretResolver.Instance,
+            log);
         await dispatcher.StartAsync(CancellationToken.None);
         Assert.True(dispatcher.IsHealthy);
-        return dispatcher;
+        return new RunningAcceptor(dispatcher, log);
+    }
+
+    private sealed class RunningAcceptor : IAsyncDisposable
+    {
+        public RunningAcceptor(FixOutboundDispatcher dispatcher, SessionLogManager log)
+        {
+            Dispatcher = dispatcher;
+            Log = log;
+        }
+
+        public FixOutboundDispatcher Dispatcher { get; }
+
+        public SessionLogManager Log { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Dispatcher.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await Log.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
     }
 
     private static async Task<TcpClient> ConnectAsync(int port, string senderCompId)

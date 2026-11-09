@@ -32,11 +32,6 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
     public required string BeginString { get; init; }
 
     /// <summary>
-    /// Diretório dos arquivos de MsgSeqNum. Um arquivo por sessão aceita.
-    /// </summary>
-    public required string SequenceStoreDirectory { get; init; }
-
-    /// <summary>
     /// SenderCompID aceitos no Logon do cliente. Lista vazia aceita qualquer um cujo TargetCompID seja <see cref="SenderCompId"/>.
     /// </summary>
     public List<string> AllowedSenderCompIds { get; init; } = [];
@@ -99,7 +94,6 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
         ConfigurationChecks.Add(failures, ConfigurationChecks.Port(options.ListenPort, nameof(options.ListenPort)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.FixToken(options.SenderCompId, nameof(options.SenderCompId), required: true));
         ConfigurationChecks.Add(failures, ConfigurationChecks.FixToken(options.BeginString, nameof(options.BeginString), required: true));
-        ConfigurationChecks.Add(failures, ConfigurationChecks.Required(options.SequenceStoreDirectory, nameof(options.SequenceStoreDirectory)));
         AddAllowedSenders(options.AllowedSenderCompIds, failures);
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.HeartBtInt, nameof(options.HeartBtInt)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.LogonTimeoutSeconds, nameof(options.LogonTimeoutSeconds)));

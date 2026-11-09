@@ -64,11 +64,6 @@ public sealed class WebSocketDispatcherOptions : DispatcherOptions, IValidateOpt
     public int SessionChannelCapacity { get; init; } = 1024;
 
     /// <summary>
-    /// Diretório onde os contadores de sequence number outbound são persistidos.
-    /// </summary>
-    public required string SequenceStoreDirectory { get; init; }
-
-    /// <summary>
     /// Capacidade do channel de entrada do dispatcher.
     /// </summary>
     public int ChannelCapacity { get; init; } = 8192;
@@ -116,9 +111,6 @@ public sealed class WebSocketDispatcherOptions : DispatcherOptions, IValidateOpt
         ConfigurationChecks.Add(
             failures,
             ConfigurationChecks.Positive(options.SessionChannelCapacity, nameof(options.SessionChannelCapacity)));
-        ConfigurationChecks.Add(
-            failures,
-            ConfigurationChecks.Required(options.SequenceStoreDirectory, nameof(options.SequenceStoreDirectory)));
         ConfigurationChecks.Add(
             failures,
             ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));

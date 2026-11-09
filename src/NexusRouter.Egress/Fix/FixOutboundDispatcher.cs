@@ -5,6 +5,7 @@ using System.Net.Sockets;
 
 using Microsoft.Extensions.Logging;
 
+using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
@@ -35,6 +36,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private readonly ConcurrentSessionTable _sessions = new();
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
     private readonly ISecretResolver _secretResolver;
+    private readonly ISessionLog _sessionLog;
 
     private TcpListener? _listener;
     private CancellationTokenSource? _acceptCts;
@@ -50,18 +52,22 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     /// <param name="logger">Log de accept, Logon e sessão.</param>
     /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
     /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
+    /// <param name="sessionLog">Client index and consumer state. Replaces the per-session sequence file.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
-    /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="logger"/>, <paramref name="secretResolver"/> ou <paramref name="sessionLog"/> é nulo.</exception>
     public FixOutboundDispatcher(
         string dispatcherId,
         FixOutboundDispatcherOptions options,
         ILogger<FixOutboundDispatcher> logger,
         DispatchPayloadPool payloadPool,
-        ISecretResolver secretResolver)
+        ISecretResolver secretResolver,
+        ISessionLog sessionLog)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
+        ArgumentNullException.ThrowIfNull(sessionLog);
         _secretResolver = secretResolver;
+        _sessionLog = sessionLog;
         _acceptRetry = new ExponentialBackoffReconnectPolicy(
             options.AcceptRetryBaseDelay,
             options.AcceptRetryMaxDelay,
@@ -223,7 +229,6 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     {
         Stream? stream = null;
         FixAcceptedSession? session = null;
-        SequenceNumberStore? store = null;
         bool ownsSocket = true;
         try
         {
@@ -242,12 +247,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            store = new SequenceNumberStore(Options.SequenceStoreDirectory, Logger);
-            await store.LoadAsync(DispatcherId + "_" + logon.Value.SenderCompId, cancellationToken).ConfigureAwait(false);
-            if (logon.Value.ResetSequence)
-            {
-                await store.ResetAsync(cancellationToken).ConfigureAwait(false);
-            }
+            ClientBinding binding = logon.Value.ResetSequence
+                ? _sessionLog.ResetClient(DispatcherId, logon.Value.SenderCompId)
+                : _sessionLog.OpenClient(DispatcherId, logon.Value.SenderCompId);
 
             var sessionOptions = new SessionOptions
             {
@@ -264,7 +266,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 logon.Value.SenderCompId,
                 client,
                 stream,
-                store,
+                binding.Index,
                 sessionOptions,
                 Options.ChannelCapacity,
                 Options.HeartBtInt,
@@ -273,7 +275,6 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 OnSessionClosed,
                 Logger);
             ownsSocket = false;
-            store = null;
             stream = null;
             (bool adopted, FixAcceptedSession? replaced) = await AdoptAsync(session, cancellationToken).ConfigureAwait(false);
             if (!adopted)
@@ -312,11 +313,6 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             }
             else
             {
-                if (store is not null)
-                {
-                    await store.DisposeAsync().ConfigureAwait(false);
-                }
-
                 if (stream is not null)
                 {
                     await DisposeQuietlyAsync(stream, client).ConfigureAwait(false);

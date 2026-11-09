@@ -29,11 +29,6 @@ public sealed class FixOutboundDispatcherOptions
     public required string BeginString { get; init; }
 
     /// <summary>
-    /// Diretório dos arquivos de MsgSeqNum. Um arquivo por sessão aceita.
-    /// </summary>
-    public required string SequenceStoreDirectory { get; init; }
-
-    /// <summary>
     /// SenderCompID (tag 49) aceitos no Logon do cliente. Lista vazia aceita qualquer um cujo TargetCompID seja <see cref="SenderCompId"/>.
     /// </summary>
     public IReadOnlyList<string> AllowedSenderCompIds { get; init; } = [];
@@ -105,7 +100,6 @@ public sealed class FixOutboundDispatcherOptions
 
         ArgumentException.ThrowIfNullOrWhiteSpace(SenderCompId);
         ArgumentException.ThrowIfNullOrWhiteSpace(BeginString);
-        ArgumentException.ThrowIfNullOrWhiteSpace(SequenceStoreDirectory);
         ValidateToken(SenderCompId, nameof(SenderCompId));
         ValidateToken(BeginString, nameof(BeginString));
         ArgumentNullException.ThrowIfNull(AllowedSenderCompIds);

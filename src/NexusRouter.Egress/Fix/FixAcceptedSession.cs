@@ -5,6 +5,7 @@ using System.Threading.Channels;
 
 using Microsoft.Extensions.Logging;
 
+using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Ingress.Sessions;
@@ -24,7 +25,7 @@ internal sealed class FixAcceptedSession
 
     private readonly TcpClient _client;
     private readonly Stream _stream;
-    private readonly SequenceNumberStore _sequence;
+    private readonly IClientIndex _index;
     private readonly SessionOptions _options;
     private readonly byte[] _prelude;
     private readonly int _preludeLength;
@@ -49,7 +50,7 @@ internal sealed class FixAcceptedSession
     /// <param name="senderCompId">SenderCompID (tag 49) do cliente.</param>
     /// <param name="client">Socket já aceito.</param>
     /// <param name="stream">Stream do socket, já encapsulado em TLS quando for o caso.</param>
-    /// <param name="sequence">Contador desta sessão, já carregado.</param>
+    /// <param name="index">Outbound sequence and client index for this SenderCompID.</param>
     /// <param name="options">Comp IDs desta sessão. Sender é o NexusRouter. Target é o cliente.</param>
     /// <param name="channelCapacity">Tamanho da fila desta sessão.</param>
     /// <param name="heartBtInt">Intervalo do heartbeat, em segundos.</param>
@@ -60,7 +61,7 @@ internal sealed class FixAcceptedSession
         string senderCompId,
         TcpClient client,
         Stream stream,
-        SequenceNumberStore sequence,
+        IClientIndex index,
         SessionOptions options,
         int channelCapacity,
         int heartBtInt,
@@ -72,7 +73,7 @@ internal sealed class FixAcceptedSession
         SenderCompId = senderCompId;
         _client = client;
         _stream = stream;
-        _sequence = sequence;
+        _index = index;
         _options = options;
         HeartBtInt = heartBtInt;
         _prelude = prelude;
@@ -231,7 +232,7 @@ internal sealed class FixAcceptedSession
                 return false;
             }
 
-            long sequence = _sequence.Next();
+            long sequence = NextSequence(admin: false);
             int capacity = payload.DeliveryMode == DeliveryMode.Parse
                 ? Math.Max(payload.RawBuffer.Memory.Length + 128, AdminMessageBytes)
                 : payload.RawBuffer.Memory.Length + PassThroughRewriter.MaxGrowthBytes;
@@ -268,7 +269,7 @@ internal sealed class FixAcceptedSession
         byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
         try
         {
-            long sequence = _sequence.Next();
+            long sequence = NextSequence(admin: true);
             int written = FixMessageBuilder.BuildLogout(rented, _options, sequence).Length;
             await WritePipeAsync(rented.AsMemory(0, written), CancellationToken.None).ConfigureAwait(false);
         }
@@ -287,7 +288,7 @@ internal sealed class FixAcceptedSession
         byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
         try
         {
-            long sequence = _sequence.Next();
+            long sequence = NextSequence(admin: true);
             int written = FixMessageBuilder.BuildLogon(rented, _options, sequence).Length;
             await WritePipeAsync(rented.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
         }
@@ -349,7 +350,7 @@ internal sealed class FixAcceptedSession
         byte[]? rented = null;
         try
         {
-            long sequence = _sequence.Next();
+            long sequence = NextSequence(admin: true);
             rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
             int written = kind switch
             {
@@ -631,7 +632,7 @@ internal sealed class FixAcceptedSession
             return;
         }
 
-        long newSeqNo = _sequence.NextExpected;
+        long newSeqNo = _index.NextOut;
         if (beginSeqNo >= newSeqNo)
         {
             return;
@@ -673,7 +674,18 @@ internal sealed class FixAcceptedSession
         _client.Dispose();
         _connectionCts?.Dispose();
         _heartbeatCts?.Dispose();
-        await _sequence.StopAsync(cancellationToken).ConfigureAwait(false);
+        _ = cancellationToken;
+    }
+
+    private long NextSequence(bool admin)
+    {
+        long sequence = _index.ReserveSeq();
+        if (admin)
+        {
+            _index.PublishAdmin(sequence);
+        }
+
+        return sequence;
     }
 
     private static Task[] Collect(params Task?[] tasks)
