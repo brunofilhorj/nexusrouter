@@ -1,11 +1,13 @@
 using System.Buffers;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Text;
 using System.Threading.Channels;
 
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Abstractions;
+using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 
@@ -22,7 +24,8 @@ namespace NexusRouter.Router;
 /// deixaria o array preso no pool.
 /// Cada <see cref="IMessageDispatcher.TryEnqueue"/> que retorna <see langword="false"/> libera uma referência
 /// e grava um <see cref="AuditRecord"/> de overflow. Isso não lança exceção.
-/// Zero allocation. Safe to call on the hot path.
+/// Depois do handoff, o fan-out copia o frame para um <see cref="AuditRecord"/> e faz <c>TryWrite</c>.
+/// Essa cópia aloca o registro e o array de <see cref="AuditRecord.RawFix"/>. Não há await nem lock.
 /// </remarks>
 public sealed class FanOutEngine
 {
@@ -64,9 +67,11 @@ public sealed class FanOutEngine
     /// <param name="route">Rota já resolvida. Passada por referência para não copiar o array de dispatchers.</param>
     /// <param name="payload">Envelope preparado pelo router. No sucesso, o dispatcher passa a ser o dono.</param>
     /// <remarks>
-    /// Sem await e sem lock. Seguro para chamada no hot path.
+    /// Sem await e sem lock.
     /// Channel cheio libera o buffer daquele dispatcher e segue para os demais.
     /// O pool de payloads entra no construtor porque o fan-out aluga os envelopes extras.
+    /// O snapshot de auditoria aloca um <see cref="AuditRecord"/> e a cópia de <see cref="AuditRecord.RawFix"/>
+    /// depois que os dispatchers já receberam o buffer. O sink decide se persiste o bruto.
     /// </remarks>
     public void Dispatch(ref RouteContext route, DispatchPayload payload)
     {
@@ -82,7 +87,8 @@ public sealed class FanOutEngine
             return;
         }
 
-        if (payload.RawBuffer is null)
+        IMemoryOwner<byte>? rawBuffer = payload.RawBuffer;
+        if (rawBuffer is null)
         {
             _payloadPool.Return(payload);
             _logger.LogWarning(
@@ -91,45 +97,141 @@ public sealed class FanOutEngine
             return;
         }
 
+        RoutedSnapshot snapshot = Capture(payload, rawBuffer);
         ImmutableArray<IMessageDispatcher> dispatchers = route.Dispatchers;
+        var accepted = new string[dispatchers.Length];
+        int acceptedCount = 0;
+
         if (dispatchers.Length == 1)
         {
-            if (!Deliver(dispatchers[0], payload))
+            if (Deliver(dispatchers[0], payload))
+            {
+                accepted[acceptedCount++] = dispatchers[0].DispatcherId;
+            }
+            else
+            {
+                _payloadPool.Return(payload);
+            }
+        }
+        else
+        {
+            var shared = new RefCountedMemoryOwner(rawBuffer, initialRefCount: 1);
+            payload.RawBuffer = shared;
+
+            int extraCount = dispatchers.Length - 1;
+            DispatchPayload[] extras = ArrayPool<DispatchPayload>.Shared.Rent(extraCount);
+            for (int i = 0; i < extraCount; i++)
+            {
+                shared.AddRef();
+                DispatchPayload extra = _payloadPool.Get();
+                extras[i] = extra;
+                CopyPayload(payload, extra, shared);
+            }
+
+            if (Deliver(dispatchers[0], payload))
+            {
+                accepted[acceptedCount++] = dispatchers[0].DispatcherId;
+            }
+            else
             {
                 _payloadPool.Return(payload);
             }
 
-            return;
-        }
-
-        var shared = new RefCountedMemoryOwner(payload.RawBuffer, initialRefCount: 1);
-        payload.RawBuffer = shared;
-
-        int extraCount = dispatchers.Length - 1;
-        DispatchPayload[] extras = ArrayPool<DispatchPayload>.Shared.Rent(extraCount);
-        for (int i = 0; i < extraCount; i++)
-        {
-            shared.AddRef();
-            DispatchPayload extra = _payloadPool.Get();
-            extras[i] = extra;
-            CopyPayload(payload, extra, shared);
-        }
-
-        bool firstRejected = !Deliver(dispatchers[0], payload);
-        for (int i = 0; i < extraCount; i++)
-        {
-            if (!Deliver(dispatchers[i + 1], extras[i]))
+            for (int i = 0; i < extraCount; i++)
             {
-                _payloadPool.Return(extras[i]);
+                if (Deliver(dispatchers[i + 1], extras[i]))
+                {
+                    accepted[acceptedCount++] = dispatchers[i + 1].DispatcherId;
+                }
+                else
+                {
+                    _payloadPool.Return(extras[i]);
+                }
             }
+
+            ArrayPool<DispatchPayload>.Shared.Return(extras, clearArray: true);
         }
 
-        ArrayPool<DispatchPayload>.Shared.Return(extras, clearArray: true);
-        if (firstRejected)
+        EnqueueRouted(snapshot, accepted, acceptedCount);
+    }
+
+    private void EnqueueRouted(in RoutedSnapshot snapshot, string[] accepted, int acceptedCount)
+    {
+        string[] dispatcherIds = acceptedCount == accepted.Length
+            ? accepted
+            : accepted.AsSpan(0, acceptedCount).ToArray();
+
+        var record = new AuditRecord
         {
-            _payloadPool.Return(payload);
+            SessionId = snapshot.SessionId,
+            IngressTimestampTicks = snapshot.IngressTimestampTicks,
+            MsgType = snapshot.MsgType,
+            ClOrdId = snapshot.ClOrdId,
+            MsgSeqNum = snapshot.MsgSeqNum,
+            DeliveryMode = snapshot.DeliveryMode,
+            DispatcherIds = dispatcherIds,
+            EgressTimestampTicks = snapshot.EgressTimestampTicks,
+            RawFix = snapshot.RawFix,
+        };
+
+        if (!_auditWriter.TryWrite(record))
+        {
+            _logger.LogWarning(
+                "Registro de auditoria da sessão {SessionId} não entrou no channel.",
+                snapshot.SessionId.Value);
         }
     }
+
+    private static RoutedSnapshot Capture(DispatchPayload payload, IMemoryOwner<byte> owner)
+    {
+        ReadOnlySpan<byte> source = owner.Memory.Span;
+        var rawFix = new byte[source.Length];
+        source.CopyTo(rawFix);
+        long? sequence = PassThroughRewriter.TryReadMsgSeqNum(rawFix, out long parsed) ? parsed : null;
+        return new RoutedSnapshot(
+            payload.SessionId,
+            payload.IngressTimestampTicks,
+            payload.EgressTimestampTicks,
+            payload.DeliveryMode,
+            ReadTag(rawFix, "35="u8),
+            ReadTag(rawFix, "11="u8),
+            sequence,
+            rawFix);
+    }
+
+    private static string? ReadTag(ReadOnlySpan<byte> frame, ReadOnlySpan<byte> tag)
+    {
+        int start = 0;
+        while (start <= frame.Length)
+        {
+            int separator = frame[start..].IndexOf((byte)0x01);
+            int fieldLength = separator < 0 ? frame.Length - start : separator;
+            ReadOnlySpan<byte> field = frame.Slice(start, fieldLength);
+            if (field.StartsWith(tag))
+            {
+                return Encoding.ASCII.GetString(field[tag.Length..]);
+            }
+
+            if (separator < 0)
+            {
+                return null;
+            }
+
+            start += fieldLength + 1;
+        }
+
+        return null;
+    }
+
+    private readonly record struct RoutedSnapshot(
+        SessionId SessionId,
+        long IngressTimestampTicks,
+        long EgressTimestampTicks,
+        DeliveryMode DeliveryMode,
+        string? MsgType,
+        string? ClOrdId,
+        long? MsgSeqNum,
+        byte[] RawFix);
 
     /// <summary>
     /// Tenta enfileirar. No fracasso, libera o buffer e avisa a auditoria.
