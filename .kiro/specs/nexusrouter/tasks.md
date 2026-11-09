@@ -845,7 +845,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 ---
 
-- [ ] T-43 — Testes de Integração: Fan-Out End-to-End com Stubs de Kafka e RabbitMQ
+- [x] T-43 — Testes de Integração: Fan-Out End-to-End com Stubs de Kafka e RabbitMQ
 
 **Objetivo:** Verificar o pipeline completo desde a sessão inbound simulada até a entrega pelo dispatcher.
 
