@@ -22,12 +22,30 @@ Quando a spec e estas diretrizes conflitarem, a documentação oficial da B3 em 
 | `BeginString` | 8 | Sempre `FIX.4.4` para o B3 EntryPoint |
 | `SenderCompID` | 49 | Identificador atribuído ao cliente (fornecido pela B3 no onboarding) |
 | `TargetCompID` | 56 | Identificador do gateway B3 — depende do ambiente (`ENTRYPOINT-FIRM-0001`, etc.) |
-| `HeartBtInt` | 108 | Intervalo de heartbeat em segundos — **deve ser 20** para produção no B3 EntryPoint |
-| `Username` | 553 | Login do operador — fornecido pela B3 |
-| `Password` | 554 | Senha do operador — **deve vir de injeção de secrets, nunca hardcoded** |
+| `HeartBtInt` | 108 | Intervalo de heartbeat em segundos. Obrigatório no Logon. A B3 recomenda **30** (Message Specs §2.7 e Messaging Guidelines §4.5). 20 não é exigência da B3. |
 | `EncryptMethod` | 98 | Sempre `0` (None) — a B3 usa TLS na camada de transporte, não criptografia a nível FIX |
-| `ResetSeqNumFlag` | 141 | `Y` no primeiro Logon do dia de negociação; `N` na reconexão dentro da sessão |
-| `NextExpectedMsgSeqNum` | 789 | Enviado no Logon ao continuar uma sessão sem resetar sequence numbers |
+| `Text` | 58 | Obrigatório no Logon. Nome e versão certificada da solução cliente (Message Specs §2.7). |
+| `RawDataLength` / `RawData` | 95 / 96 | Credencial da sessão. A senha vai em `RawData` (96); 95 é o tamanho. Ver §1.1. |
+| `ResetSeqNumFlag` | 141 | Opcional. `Y` pede que os dois lados zerem o seqnum. A B3 derruba a sessão no fim do dia e o seqnum volta a 1 (Guidelines §3.4); o cliente envia `Y` no primeiro Logon do pregão. Reconexão no mesmo pregão não envia `Y`. |
+
+### 1.1 Logon (35=A) — o que os PDFs exigem
+
+Conferido em `docs/EntryPointMessageSpecs.pdf` v2.40 §2.7 e `docs/EntryPointMessagingGuidelines.pdf` v2.9.31 §3.5, §3.6 e §4.5. Em conflito com `docs/FIX44Entrypoint.xml`, o PDF prevalece. Este resultado destrava a TD-05.
+
+| Tag | Exigência da B3 | Uso no NexusRouter |
+|-----|-----------------|--------------------|
+| 98 `EncryptMethod` | Obrigatório. Sempre `0`. | Enviar sempre. |
+| 108 `HeartBtInt` | Obrigatório. Recomendado `30`. | Configurável; padrão 30. |
+| 58 `Text` | Obrigatório. Nome e versão certificada da solução. | Configurável por sessão. |
+| 95 / 96 | Opcionais. Presentes quando há autenticação. A senha vai em `RawData` (96). Guidelines §3.5. | Canal de credencial do initiator contra a B3. A senha vem de secret e não entra em log. |
+| 925 `NewPassword` | Opcional. Só cliente → B3, para trocar a senha (atual em 96, nova em 925). | Fora do Logon de sessão normal. |
+| 553 `Username` / 554 `Password` | **Ausentes** da tabela de Logon do PDF. O XML ainda as lista como opcionais. | Não usar como credencial da B3. |
+| 141 `ResetSeqNumFlag` | Opcional. | `Y` só no primeiro Logon do pregão. |
+| 35002 `CancelOnDisconnectType` | Opcional. Ausente ou `0`: COD desligado (Guidelines §3.6). | Configurável. Padrão `0`. |
+| 35003 `CODTimeoutWindow` | Opcional, em **milissegundos**. Ausente vale 0. Máximo 60000. A confirmação de Logon ecoa o valor em vigor. | Configurável, unidade milissegundo. |
+| 789 `NextExpectedMsgSeqNum` | **Removido do Logon** no change log da Message Specs, versão **1.3.1** (29/09/2011). A v1.5.1 não é a que retirou o campo. | Não enviar. |
+
+A nota `notes/seqnum-rethink.md` §2 atribuía a remoção do 789 à v1.5.1. O PDF registra a v1.3.1.
 
 ---
 
@@ -57,7 +75,7 @@ O B3 EntryPoint suporta cancelamento automático de ordens na desconexão de ses
 | | | `1` | Cancelar somente na desconexão |
 | | | `2` | Cancelar somente no logout |
 | | | `3` | Cancelar na desconexão OU no logout |
-| 35003 | `CODTimeoutWindow` | INT (segundos) | Período de carência antes do COD disparar. Padrão B3: 5 segundos. |
+| 35003 | `CODTimeoutWindow` | INT (milissegundos) | Janela antes do COD disparar. Ausente vale 0. Máximo 60000. Exemplo da B3: `30000` = 30 segundos (Guidelines §3.6). |
 
 **Regra de Implementação:** `CancelOnDisconnectType` deve ser configurável por sessão via `SessionOptions`. O padrão nos exemplos de configuração deve ser `0` (padrão seguro — sem cancelamentos não intencionais). O valor de COD enviado no Logon DEVE corresponder ao perfil de risco do operador e deve ser explicitamente documentado nos comentários de configuração.
 
@@ -280,10 +298,22 @@ A B3 suporta cancelamento em massa de ordens via `OrderMassActionRequest`:
 
 A B3 suporta dois mecanismos de recuperação:
 
-### 12.1 Gap-Fill FIX Padrão (`ResendRequest` / `SequenceReset`)
-- Retransmissão padrão de nível de sessão FIX 4.4.
-- Usado quando uma lacuna no `MsgSeqNum` é detectada.
-- A B3 responderá com `SequenceReset (GapFillFlag=Y)` para mensagens que não pode retransmitir.
+### 12.1 `ResendRequest` e gap-fill
+
+Conferido em Message Specs §2.3–§2.5, Messaging Guidelines §14.6 e no roteiro de certificação Drop Copy, cenário A4. Este resultado destrava a TD-08.
+
+A B3, ao atender um `ResendRequest`, retransmite as mensagens de **aplicação** do intervalo. O A4 é obrigatório: o cliente recebe a retransmissão e confere o SeqNum da primeira e da última mensagem. Gap-fill sozinho não satisfaz esse cenário.
+
+`SequenceReset` com `GapFillFlag=Y` substitui mensagens que não serão reenviadas. O comentário do campo na Message Specs cobre administrativas e também aplicação que não será reenviada. No Message Replay (Guidelines §14.6.2) a B3 não reenvia administrativas e sinaliza o salto com `ApplicationMessageReport`.
+
+Limite de 10.000 mensagens por pedido, com duas regras nos PDFs:
+
+- EntryPoint, Guidelines §14.6: o pedido acima do limite é aceito, só o limite é retransmitido, e o `SequenceReset` final traz `PossMissingApplMsg` (35033)=`Y`.
+- Drop Copy, seção de operabilidade: o pedido acima de 10.000 é rejeitado com `35=3` e o texto "Range of messages to resend is greater than maximum allowed - 10000 messages". Só um `ResendRequest` por vez.
+
+Os PDFs não obrigam o cliente de order entry a reenviar as próprias mensagens de aplicação quando a B3 pede resend: o `GapFillFlag` admite substituir aplicação que não será reenviada. O que a certificação cobra no A4 é o cliente **receber** o reenvio da bolsa.
+
+**Decisão para o acceptor (TD-08):** seguir o §14.6. Reenviar aplicação do log com `PossDupFlag=Y` (43) e `OrigSendingTime` (122). Administrativas viram gap-fill agrupado. Acima de 10.000, reenviar o limite e marcar `PossMissingApplMsg=Y`. O rejeite `35=3` do Drop Copy não se aplica a este acceptor.
 
 ### 12.2 Recuperação de Nível de Aplicação (`ApplicationMessageRequest` BW)
 - Usado para recuperar **mensagens de aplicação** por intervalo de `BusinessSeqNum` (não por SeqNum de sessão FIX).
@@ -301,7 +331,7 @@ A B3 suporta dois mecanismos de recuperação:
 |---------|----------------------|----------------------------|
 | `Reject (3)` com `SessionRejectReason=1` (tag inválida) | Registrar erro, não reconectar | Provavelmente um bug de código — alertar |
 | `Reject (3)` com `SessionRejectReason=5` (valor fora do range) | Registrar erro, não reconectar | Validar valores de campo antes do envio |
-| `Logout (5)` com `Text` contendo "MsgSeqNum too low" | Resetar SeqNum, reconectar com `ResetSeqNumFlag=Y` | Recuperação de dessincronização de sequência |
+| `Logout (5)` com `Text` contendo "MsgSeqNum too low" | Resetar SeqNum e reconectar com `ResetSeqNumFlag=Y` | **Decisão do projeto**, não regra da B3. Nenhum dos três PDFs descreve esse texto nem manda resetar com `141=Y`. O Logout da spec só tem `Text` (58) opcional. |
 | `Logout (5)` com `Text` contendo "Password will expire" | Registrar aviso, alertar operador | Usar `DaysBeforePwdExpiration (6931)` do Logon |
 | `ApplicationLogonRspCode (6930)` não zero | Logon falhou — não tentar novamente sem intervenção | Códigos: `0`=sucesso, `1`=credenciais inválidas, `2`=não autorizado |
 | Desconexão TCP (sem Logout) | Reconectar com exponential backoff | COD pode ter disparado — registrar e alertar |
@@ -316,7 +346,7 @@ A B3 suporta dois mecanismos de recuperação:
 | `SanityValidation (10031)` | Pode ser `Y` | Nunca `Y` |
 | `TargetCompID (56)` | ID do gateway de certificação atribuído pela B3 | ID do gateway de produção atribuído pela B3 |
 | Certificado TLS | CA de teste da B3 | CA de produção da B3 |
-| `HeartBtInt` | 20 (igual) | 20 (obrigatório) |
+| `HeartBtInt` | 30 (recomendado) | 30 (recomendado). A B3 não exige 20. |
 
 **Regra:** Mensagens com `TestMessageIndicator=Y` nunca devem ser roteadas para consumidores downstream de produção. O motor de roteamento deve filtrar essas mensagens para um dispatcher exclusivo de testes ou descartá-las com base na configuração de `DeliveryMode`.
 

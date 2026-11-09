@@ -1081,7 +1081,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-03 — Alinhar `b3-guidelines.md` ao que os PDFs da B3 dizem
+- [x] TD-03 — Alinhar `b3-guidelines.md` ao que os PDFs da B3 dizem
 
 **Origem:** `notes/seqnum-rethink.md` §2. **Tamanho:** P. **Depende de:** nenhuma.
 
