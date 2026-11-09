@@ -1121,7 +1121,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-04a — Fan-out grava no log antes de entregar; dispatcher vira consumidor com cursor
+- [x] TD-04a — Fan-out grava no log antes de entregar; dispatcher vira consumidor com cursor
 
 **Origem:** `notes/session-log-rethink.md` §1, §2, §4. **Tamanho:** G. **Depende de:** TD-04.
 

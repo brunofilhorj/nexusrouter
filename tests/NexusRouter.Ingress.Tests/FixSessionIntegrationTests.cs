@@ -198,9 +198,55 @@ public sealed class FixSessionIntegrationTests
             new NullRouter(),
             auditWriter,
             ThrowingSecretResolver.Instance,
-            NullLogger<FixSession>.Instance);
+            NullLogger<FixSession>.Instance,
+            new NullSessionLog());
 
     // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
+    private sealed class NullSessionLog : ISessionLog
+    {
+        public ISessionLogReader Reader { get; } = new NullReader();
+
+        public ISessionLogStream OpenStream(string sessionId) => new NullStream();
+
+        public ClientBinding OpenClient(string dispatcherId, string clientKey) =>
+            throw new NotSupportedException();
+
+        public ClientBinding ResetClient(string dispatcherId, string clientKey) =>
+            throw new NotSupportedException();
+
+        public IConsumerState OpenBroker(string dispatcherId) =>
+            throw new NotSupportedException();
+
+        public int CopyClients(string dispatcherId, Span<ClientBinding> destination) => 0;
+
+        private sealed class NullStream : ISessionLogStream
+        {
+            public ushort StreamId => 1;
+
+            public int Epoch => 0;
+
+            public long Committed => 0;
+
+            public long SyncRotationCount => 0;
+
+            public bool IsDegraded => false;
+
+            public AppendResult Append(ReadOnlySpan<byte> frame, long inSeq, long ingressTs) =>
+                AppendResult.Ok(new LogRef(StreamId, Epoch, inSeq));
+
+            public void BeginEpoch(int epoch, long baseSeq)
+            {
+            }
+        }
+
+        private sealed class NullReader : ISessionLogReader
+        {
+            public bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination) => false;
+
+            public long GetCommitted(ushort stream, int epoch) => 0;
+        }
+    }
+
     private sealed class ThrowingSecretResolver : ISecretResolver
     {
         public static readonly ThrowingSecretResolver Instance = new();

@@ -22,15 +22,13 @@ namespace NexusRouter.Router;
 /// Cada payload extra chama <see cref="RefCountedMemoryOwner.AddRef"/> antes de compartilhar o mesmo owner,
 /// então a contagem fica igual a N. O constructor não recebe N de uma vez: somar AddRef em cima de N
 /// deixaria o array preso no pool.
-/// Cada <see cref="IMessageDispatcher.TryEnqueue"/> que retorna <see langword="false"/> libera uma referência
-/// e grava um <see cref="AuditRecord"/> de overflow. Isso não lança exceção.
+/// Cada <see cref="IMessageDispatcher.TryEnqueue"/> que retorna <see langword="false"/> libera o buffer e conta lag.
+/// A mensagem já está no log de sessão. Isso não lança exceção.
 /// Depois do handoff, o fan-out copia o frame para um <see cref="AuditRecord"/> e faz <c>TryWrite</c>.
 /// Essa cópia aloca o registro e o array de <see cref="AuditRecord.RawFix"/>. Não há await nem lock.
 /// </remarks>
 public sealed class FanOutEngine
 {
-    private const string ChannelFullDropReason = "Channel do dispatcher cheio";
-
     private readonly ChannelWriter<AuditRecord> _auditWriter;
     private readonly DispatchPayloadPool _payloadPool;
     private readonly ILogger<FanOutEngine> _logger;
@@ -68,7 +66,7 @@ public sealed class FanOutEngine
     /// <param name="payload">Envelope preparado pelo router. No sucesso, o dispatcher passa a ser o dono.</param>
     /// <remarks>
     /// Sem await e sem lock.
-    /// Channel cheio libera o buffer daquele dispatcher e segue para os demais.
+    /// Rota vazia ou channel cheio libera o buffer, conta lag e segue. A mensagem permanece no log.
     /// O pool de payloads entra no construtor porque o fan-out aluga os envelopes extras.
     /// O snapshot de auditoria aloca um <see cref="AuditRecord"/> e a cópia de <see cref="AuditRecord.RawFix"/>
     /// depois que os dispatchers já receberam o buffer. O sink decide se persiste o bruto.
@@ -80,9 +78,10 @@ public sealed class FanOutEngine
         if (route.Dispatchers.IsDefault || route.Dispatchers.Length == 0)
         {
             ReleaseOwnedBuffer(payload);
+            RecordLag(dispatcherId: string.Empty, reason: "no_dispatcher");
             _payloadPool.Return(payload);
             _logger.LogDebug(
-                "Sessão {SessionId} não tem dispatcher. A mensagem não foi encaminhada.",
+                "Sessão {SessionId} não tem dispatcher. A mensagem ficou no log.",
                 payload.SessionId.Value);
             return;
         }
@@ -234,7 +233,7 @@ public sealed class FanOutEngine
         byte[] RawFix);
 
     /// <summary>
-    /// Tenta enfileirar. No fracasso, libera o buffer e avisa a auditoria.
+    /// Tenta enfileirar. No fracasso, libera o buffer e conta lag. A mensagem permanece no log.
     /// </summary>
     /// <returns><see langword="true"/> quando o dispatcher aceitou o payload.</returns>
     private bool Deliver(IMessageDispatcher? dispatcher, DispatchPayload payload)
@@ -248,43 +247,23 @@ public sealed class FanOutEngine
         }
 
         ReleaseOwnedBuffer(payload);
-        WriteOverflow(payload, dispatcher);
+        string dispatcherId = dispatcher?.DispatcherId ?? string.Empty;
+        RecordLag(dispatcherId, reason: "channel_full");
+        _logger.LogWarning(
+            "Dispatcher {DispatcherId} recusou mensagem da sessão {SessionId}. O channel está cheio e a mensagem ficou no log.",
+            dispatcherId,
+            payload.SessionId.Value);
         return false;
     }
 
-    private void WriteOverflow(DispatchPayload payload, IMessageDispatcher? dispatcher)
+    private void RecordLag(string dispatcherId, string reason)
     {
-        string dispatcherId = dispatcher?.DispatcherId ?? string.Empty;
-        _logger.LogWarning(
-            "Dispatcher {DispatcherId} recusou mensagem da sessão {SessionId}. O channel está cheio.",
-            dispatcherId,
-            payload.SessionId.Value);
-
-        // Contabiliza descarte — TagList é struct, sem alocação.
-        TagList droppedTags = new TagList
+        TagList tags = new TagList
         {
             { "dispatcher_id", dispatcherId },
-            { "reason", "channel_full" },
+            { "reason", reason },
         };
-        _metrics.MessagesDropped.Add(1, droppedTags);
-
-        var record = new AuditRecord
-        {
-            SessionId = payload.SessionId,
-            IngressTimestampTicks = payload.IngressTimestampTicks,
-            DeliveryMode = payload.DeliveryMode,
-            EgressTimestampTicks = payload.EgressTimestampTicks,
-            WasDropped = true,
-            DropReason = ChannelFullDropReason,
-            DispatcherIds = dispatcherId.Length == 0 ? [] : [dispatcherId],
-        };
-
-        if (!_auditWriter.TryWrite(record))
-        {
-            _logger.LogWarning(
-                "Registro de overflow do dispatcher {DispatcherId} não entrou no channel de auditoria.",
-                dispatcherId);
-        }
+        _metrics.DispatcherLagSignaled.Add(1, tags);
     }
 
     private static void CopyPayload(DispatchPayload source, DispatchPayload destination, IMemoryOwner<byte> buffer)
@@ -294,6 +273,7 @@ public sealed class FanOutEngine
         destination.IngressTimestampTicks = source.IngressTimestampTicks;
         destination.RoutingSequence = source.RoutingSequence;
         destination.EgressTimestampTicks = source.EgressTimestampTicks;
+        destination.LogRef = source.LogRef;
         destination.RawBuffer = buffer;
         if (source.TryGetParsedMessage(out FixMessage parsed))
         {

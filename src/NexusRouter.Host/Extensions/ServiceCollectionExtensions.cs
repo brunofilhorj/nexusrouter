@@ -13,6 +13,7 @@ using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
+using NexusRouter.Egress;
 using NexusRouter.Egress.Fix;
 using NexusRouter.Egress.Kafka;
 using NexusRouter.Egress.RabbitMQ;
@@ -108,8 +109,9 @@ public static class ServiceCollectionExtensions
                 ChannelWriter<AuditRecord> auditWriter = auditSingleton.Instance.Writer;
                 ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
                 ILogger<FixSession> logger = sp.GetRequiredService<ILogger<FixSession>>();
+                ISessionLog sessionLog = sp.GetRequiredService<ISessionLog>();
 
-                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, secretResolver, logger);
+                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, secretResolver, logger, sessionLog);
             });
         }
 
@@ -454,7 +456,14 @@ public static class ServiceCollectionExtensions
             ILogger<KafkaMessageDispatcher> logger = sp.GetRequiredService<ILogger<KafkaMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
-            return new KafkaMessageDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
+            var dispatcher = new KafkaMessageDispatcher(
+                config.Id,
+                opts,
+                logger,
+                payloadPool,
+                secretResolver,
+                catchUp: CreateCatchUp(sp, config.Id, payloadPool));
+            return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
         // Expõe como IMessageDispatcher para que o RouteResolver e o DispatcherAuditObserver resolvam.
@@ -482,7 +491,14 @@ public static class ServiceCollectionExtensions
             ILogger<RabbitMQMessageDispatcher> logger = sp.GetRequiredService<ILogger<RabbitMQMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
-            return new RabbitMQMessageDispatcher(config.Id, opts, logger, payloadPool, secretResolver);
+            var dispatcher = new RabbitMQMessageDispatcher(
+                config.Id,
+                opts,
+                logger,
+                payloadPool,
+                secretResolver,
+                CreateCatchUp(sp, config.Id, payloadPool));
+            return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<RabbitMQMessageDispatcher>());
@@ -516,10 +532,38 @@ public static class ServiceCollectionExtensions
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
             ISessionLog sessionLog = sp.GetRequiredService<ISessionLog>();
-            return new FixOutboundDispatcher(config.Id, opts, logger, payloadPool, secretResolver, sessionLog);
+            var dispatcher = new FixOutboundDispatcher(
+                config.Id,
+                opts,
+                logger,
+                payloadPool,
+                secretResolver,
+                sessionLog,
+                CreateCatchUp(sp, config.Id, payloadPool));
+            return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());
+    }
+
+    private static StreamCatchUp? CreateCatchUp(IServiceProvider services, string dispatcherId, DispatchPayloadPool pool)
+    {
+        ISessionLog? log = services.GetService<ISessionLog>();
+        SessionLogOptions? options = services.GetService<SessionLogOptions>();
+        if (log is null || options is null)
+        {
+            return null;
+        }
+
+        return new StreamCatchUp(log.Reader, log.OpenBroker(dispatcherId), pool, options.CatchUpIdleMs);
+    }
+
+    private static TDispatcher TrackLag<TDispatcher>(IServiceProvider services, TDispatcher dispatcher, Func<long> lag)
+        where TDispatcher : IMessageDispatcher
+    {
+        NexusRouterMetrics? metrics = services.GetService<NexusRouterMetrics>();
+        metrics?.RegisterLag(dispatcher.DispatcherId, lag);
+        return dispatcher;
     }
 
     private static void RegisterWebSocket(

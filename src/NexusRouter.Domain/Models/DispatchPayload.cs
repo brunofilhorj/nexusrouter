@@ -57,6 +57,11 @@ public sealed class DispatchPayload
     public long EgressTimestampTicks { get; set; }
 
     /// <summary>
+    /// Posição do frame original no log de sessão. O valor default indica que o append não publicou o frame.
+    /// </summary>
+    public LogRef LogRef { get; set; }
+
+    /// <summary>
     /// Indica se <see cref="SetParsedMessage"/> foi chamado desde o último <see cref="Reset"/>.
     /// </summary>
     public bool HasParsedMessage => _hasParsedMessage;
@@ -133,6 +138,7 @@ public sealed class DispatchPayload
         IngressTimestampTicks = 0;
         RoutingSequence = 0;
         EgressTimestampTicks = 0;
+        LogRef = default;
         ReleaseParsedStorage();
     }
 

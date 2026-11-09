@@ -25,7 +25,7 @@ namespace NexusRouter.Egress.Fix;
 /// No modo <see cref="NexusRouter.Domain.Enums.DeliveryMode.PassThrough"/> cada sessão recebe uma cópia do frame
 /// com o MsgSeqNum dela. No modo <see cref="NexusRouter.Domain.Enums.DeliveryMode.Parse"/> o frame sai de
 /// <see cref="FixMessageSerializer"/> com o SenderCompID deste acceptor e o TargetCompID do cliente.
-/// Sem sessão logada, a mensagem é descartada neste dispatcher.
+/// Cliente conhecido recebe <c>ReserveSeq</c> e <c>PublishApp</c> mesmo sem sessão logada. O envio no socket só ocorre se a sessão existe.
 /// </para>
 /// </remarks>
 public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcherOptions>
@@ -37,6 +37,8 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
     private readonly ISecretResolver _secretResolver;
     private readonly ISessionLog _sessionLog;
+    private readonly object _knownGate = new();
+    private ClientBinding[] _known = [];
 
     private TcpListener? _listener;
     private CancellationTokenSource? _acceptCts;
@@ -53,6 +55,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
     /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="sessionLog">Client index and consumer state. Replaces the per-session sequence file.</param>
+    /// <param name="catchUp">Cursor do log de sessão. Nulo entrega só o que chegar pelo channel.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/>, <paramref name="secretResolver"/> ou <paramref name="sessionLog"/> é nulo.</exception>
     public FixOutboundDispatcher(
@@ -61,8 +64,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         ILogger<FixOutboundDispatcher> logger,
         DispatchPayloadPool payloadPool,
         ISecretResolver secretResolver,
-        ISessionLog sessionLog)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger)
+        ISessionLog sessionLog,
+        StreamCatchUp? catchUp = null)
+        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         ArgumentNullException.ThrowIfNull(sessionLog);
@@ -119,6 +123,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     protected override ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
         IPAddress address = IPAddress.Parse(Options.ListenAddress);
+        LoadKnownClients();
         _listener = new TcpListener(address, Options.ListenPort);
         _listener.Start();
         _acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -135,21 +140,32 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     /// <inheritdoc />
     protected override ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
     {
-        FixAcceptedSession[] sessions = _sessions.Snapshot();
-        if (sessions.Length == 0)
+        _ = cancellationToken;
+        ClientBinding[] known = Volatile.Read(ref _known);
+        if (known.Length == 0)
         {
             Logger.LogTrace(
-                "Dispatcher {DispatcherId} não tem sessão FIX logada. A mensagem foi descartada.",
+                "Dispatcher {DispatcherId} não tem cliente conhecido. A mensagem ficou no log de ingress.",
                 DispatcherId);
             return ValueTask.CompletedTask;
         }
 
-        for (int i = 0; i < sessions.Length; i++)
+        for (int i = 0; i < known.Length; i++)
         {
-            FixAcceptedSession session = sessions[i];
+            IClientIndex index = known[i].Index;
+            long sequence = index.ReserveSeq();
+            index.PublishApp(sequence, payload.LogRef);
+            string sender = SenderOf(index);
+            if (!_sessions.TryGet(sender, out FixAcceptedSession? found) || found is null)
+            {
+                continue;
+            }
+
+            FixAcceptedSession session = found;
+
             try
             {
-                if (!session.TryEnqueue(payload))
+                if (!session.TryEnqueue(payload, sequence))
                 {
                     Logger.LogWarning(
                         "Sessão {SenderCompId} do dispatcher {DispatcherId} não enfileirou a mensagem.",
@@ -168,6 +184,57 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private void LoadKnownClients()
+    {
+        var buffer = new ClientBinding[16];
+        int count = _sessionLog.CopyClients(DispatcherId, buffer);
+        if (count > buffer.Length)
+        {
+            buffer = new ClientBinding[count];
+            count = _sessionLog.CopyClients(DispatcherId, buffer);
+        }
+
+        if (count == 0)
+        {
+            Volatile.Write(ref _known, []);
+            return;
+        }
+
+        if (count != buffer.Length)
+        {
+            Array.Resize(ref buffer, count);
+        }
+
+        Volatile.Write(ref _known, buffer);
+    }
+
+    private void Remember(ClientBinding binding)
+    {
+        lock (_knownGate)
+        {
+            ClientBinding[] current = Volatile.Read(ref _known);
+            for (int i = 0; i < current.Length; i++)
+            {
+                if (ReferenceEquals(current[i].Index, binding.Index))
+                {
+                    return;
+                }
+            }
+
+            var next = new ClientBinding[current.Length + 1];
+            current.CopyTo(next, 0);
+            next[^1] = binding;
+            Volatile.Write(ref _known, next);
+        }
+    }
+
+    private static string SenderOf(IClientIndex index)
+    {
+        string key = index.ClientKey;
+        int slash = key.LastIndexOf('/');
+        return slash < 0 || slash == key.Length - 1 ? key : key[(slash + 1)..];
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -250,6 +317,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             ClientBinding binding = logon.Value.ResetSequence
                 ? _sessionLog.ResetClient(DispatcherId, logon.Value.SenderCompId)
                 : _sessionLog.OpenClient(DispatcherId, logon.Value.SenderCompId);
+            Remember(binding);
 
             var sessionOptions = new SessionOptions
             {
@@ -546,6 +614,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         {
             _sessions.TryRemove(new KeyValuePair<string, FixAcceptedSession>(session.SenderCompId, session));
         }
+
+        internal bool TryGet(string senderCompId, out FixAcceptedSession? session) =>
+            _sessions.TryGetValue(senderCompId, out session);
 
         internal FixAcceptedSession[] Snapshot()
         {

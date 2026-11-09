@@ -206,8 +206,9 @@ internal sealed class FixAcceptedSession
     /// Copia o frame com o MsgSeqNum desta sessão e enfileira. Não bloqueia no socket.
     /// </summary>
     /// <param name="payload">Mensagem do dispatcher. O buffer continua com o chamador.</param>
+    /// <param name="sequence">Seq já reservado e publicado no índice deste cliente.</param>
     /// <returns><see langword="false"/> quando a sessão está parando ou a fila desta sessão está cheia.</returns>
-    internal bool TryEnqueue(DispatchPayload payload)
+    internal bool TryEnqueue(DispatchPayload payload, long sequence)
     {
         if (Volatile.Read(ref _stop) != 0)
         {
@@ -217,6 +218,11 @@ internal sealed class FixAcceptedSession
         if (payload.RawBuffer is null)
         {
             throw new InvalidOperationException("O payload FIX outbound não tem buffer.");
+        }
+
+        if (sequence <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sequence), sequence, "O seq de aplicação precisa ser positivo.");
         }
 
         if (!WaitForLogon() || !TryEnterGate())
@@ -231,8 +237,6 @@ internal sealed class FixAcceptedSession
             {
                 return false;
             }
-
-            long sequence = NextSequence(admin: false);
             int capacity = payload.DeliveryMode == DeliveryMode.Parse
                 ? Math.Max(payload.RawBuffer.Memory.Length + 128, AdminMessageBytes)
                 : payload.RawBuffer.Memory.Length + PassThroughRewriter.MaxGrowthBytes;

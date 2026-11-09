@@ -18,12 +18,19 @@ public readonly ref struct IngressFrame
     /// <param name="rawBuffer">Fatia do buffer do pipe que contém o frame.</param>
     /// <param name="ingressTimestampTicks">Instante de ingresso retornado por <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/>.</param>
     /// <param name="frameLength">Comprimento do frame em bytes.</param>
-    public IngressFrame(SessionId sessionId, ReadOnlySequence<byte> rawBuffer, long ingressTimestampTicks, int frameLength)
+    /// <param name="logRef">Posição no log de sessão. O valor default indica que o append não publicou o frame.</param>
+    public IngressFrame(
+        SessionId sessionId,
+        ReadOnlySequence<byte> rawBuffer,
+        long ingressTimestampTicks,
+        int frameLength,
+        LogRef logRef = default)
     {
         SessionId = sessionId;
         RawBuffer = rawBuffer;
         IngressTimestampTicks = ingressTimestampTicks;
         FrameLength = frameLength;
+        LogRef = logRef;
     }
 
     /// <summary>
@@ -45,4 +52,9 @@ public readonly ref struct IngressFrame
     /// Comprimento do frame em bytes.
     /// </summary>
     public int FrameLength { get; }
+
+    /// <summary>
+    /// Posição do frame original no log de sessão.
+    /// </summary>
+    public LogRef LogRef { get; }
 }
