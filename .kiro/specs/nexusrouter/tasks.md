@@ -1176,7 +1176,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-06 — Validação de entrada e `Reject` (35=3) no initiator
+- [x] TD-06 — Validação de entrada e `Reject` (35=3) no initiator
 
 **Origem:** `notes/seqnum-rethink.md` §7.2 itens 6 e 8. **Tamanho:** M. **Depende de:** TD-04. **Regime:** initiator segue o QuickFIX: `34` maior leva a `ResendRequest`; menor sem `PossDupFlag` leva a `Logout`. Não usa a política mista do acceptor (design §3.4.7).
 

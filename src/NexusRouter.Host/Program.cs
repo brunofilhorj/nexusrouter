@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Egress.Fix;
 using NexusRouter.Host.Extensions;
+using NexusRouter.Ingress.Sessions;
 using NexusRouter.Router;
 using NexusRouter.SessionLog;
 
@@ -74,6 +75,7 @@ internal static class Program
                     .AddMeter(NexusRouterMetrics.MeterName)
                     .AddMeter(SessionLogMetrics.MeterName)
                     .AddMeter(AcceptorSessionMetrics.MeterName)
+                    .AddMeter(FixSessionMetrics.MeterName)
                     .AddPrometheusExporter();
             })
             .WithTracing(tracing =>

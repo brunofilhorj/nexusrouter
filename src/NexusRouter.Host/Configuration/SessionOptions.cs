@@ -81,6 +81,12 @@ public sealed class SessionOptions : IValidateOptions<SessionOptions>
     public int ShutdownTimeoutSeconds { get; init; } = 5;
 
     /// <summary>
+    /// Diferença máxima aceita entre o SendingTime (52) do counterpart e o relógio local, em segundos.
+    /// Zero desliga a checagem.
+    /// </summary>
+    public int SendingTimeToleranceSeconds { get; init; } = 120;
+
+    /// <summary>
     /// TLS do socket de ingresso. Desligado por omissão.
     /// </summary>
     public TlsOptions Tls { get; init; } = new();

@@ -84,6 +84,11 @@ public sealed class SessionOptions
     public TimeSpan LogonTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// Diferença máxima aceita entre o SendingTime (52) do counterpart e o relógio local. Zero desliga a checagem.
+    /// </summary>
+    public TimeSpan SendingTimeTolerance { get; init; } = TimeSpan.FromSeconds(120);
+
+    /// <summary>
     /// Tempo máximo aguardando o encerramento da sessão no shutdown do host, em segundos.
     /// </summary>
     public int ShutdownTimeoutSeconds { get; init; } = 5;
