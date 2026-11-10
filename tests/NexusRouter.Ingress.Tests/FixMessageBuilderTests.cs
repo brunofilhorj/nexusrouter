@@ -17,6 +17,60 @@ public sealed class FixMessageBuilderTests
     };
 
     [Fact]
+    public void BuildLogon_WithCredentialsCodAndReset_WritesB3FieldsAndOmitsUsername()
+    {
+        byte[] buffer = new byte[512];
+        var options = new SessionOptions
+        {
+            SessionId = Options.SessionId,
+            Host = Options.Host,
+            Port = Options.Port,
+            SenderCompId = Options.SenderCompId,
+            TargetCompId = Options.TargetCompId,
+            BeginString = Options.BeginString,
+            HeartBtInt = 30,
+            LogonText = "NexusRouter",
+            CancelOnDisconnectType = 3,
+            CodTimeoutWindow = 30000,
+            ResetSeqNumFlag = true,
+        };
+
+        int length = FixMessageBuilder.BuildLogon(buffer, options, msgSeqNum: 1, "s3cret"u8).Length;
+
+        string message = Encoding.ASCII.GetString(buffer, 0, length);
+        Assert.Contains("\u000198=0\u0001", message);
+        Assert.Contains("\u0001108=30\u0001", message);
+        Assert.Contains("\u0001141=Y\u0001", message);
+        Assert.Contains("\u000158=NexusRouter\u0001", message);
+        Assert.Contains("\u000195=6\u0001", message);
+        Assert.Contains("\u000196=s3cret\u0001", message);
+        Assert.Contains("\u000135002=3\u0001", message);
+        Assert.Contains("\u000135003=30000\u0001", message);
+        Assert.DoesNotContain("\u0001553=", message);
+        Assert.DoesNotContain("\u0001554=", message);
+        AssertValidBodyLengthAndChecksum(buffer.AsSpan(0, length));
+    }
+
+    [Fact]
+    public void BuildLogon_WithoutOptionalFields_OmitsCredentialsCodAndReset()
+    {
+        byte[] buffer = new byte[512];
+
+        int length = FixMessageBuilder.BuildLogon(buffer, Options, msgSeqNum: 1).Length;
+
+        string message = Encoding.ASCII.GetString(buffer, 0, length);
+        Assert.Contains("\u000198=0\u0001", message);
+        Assert.Contains("\u0001108=20\u0001", message);
+        Assert.DoesNotContain("\u0001141=", message);
+        Assert.DoesNotContain("\u000158=", message);
+        Assert.DoesNotContain("\u000195=", message);
+        Assert.DoesNotContain("\u000196=", message);
+        Assert.DoesNotContain("\u000135002=", message);
+        Assert.DoesNotContain("\u000135003=", message);
+        AssertValidBodyLengthAndChecksum(buffer.AsSpan(0, length));
+    }
+
+    [Fact]
     public void BuildSequenceReset_GapFill_WritesPossDupOrigSendingTimeAndNewSeqNo()
     {
         byte[] buffer = new byte[512];

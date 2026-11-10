@@ -1159,7 +1159,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-05 — Logon completo: credenciais, COD e `ResetSeqNumFlag`
+- [x] TD-05 — Logon completo: credenciais, COD e `ResetSeqNumFlag`
 
 **Origem:** `notes/seqnum-rethink.md` §7.1 item 4. **Tamanho:** M. **Depende de:** TD-03, TD-04. **Regime:** initiator da B3 segue o comportamento padrão do QuickFIX (design §3.4.7, FR-RPL-13); as exceções vêm do resultado do TD-03. TD-07 depende desta task para autenticar o Logon do acceptor.
 

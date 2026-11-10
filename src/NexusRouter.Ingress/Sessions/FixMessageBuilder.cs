@@ -1,4 +1,5 @@
 using System.Buffers.Text;
+using System.Text;
 
 namespace NexusRouter.Ingress.Sessions;
 
@@ -7,7 +8,8 @@ namespace NexusRouter.Ingress.Sessions;
 /// </summary>
 /// <remarks>
 /// Não aloca no heap. O checksum é a soma dos bytes anteriores à tag 10, módulo 256, em três dígitos ASCII.
-/// Toda mensagem leva SendingTime (tag 52), exigido no header FIX. O Logon inclui EncryptMethod (98) e HeartBtInt (108).
+/// Toda mensagem leva SendingTime (tag 52), exigido no header FIX. O Logon inclui EncryptMethod (98), HeartBtInt (108)
+/// e, quando configurados, Text (58), RawData (95/96), ResetSeqNumFlag (141) e COD (35002/35003).
 /// </remarks>
 public static class FixMessageBuilder
 {
@@ -18,31 +20,117 @@ public static class FixMessageBuilder
     /// Escreve um Logon (MsgType=A) em <paramref name="buffer"/>.
     /// </summary>
     /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
-    /// <param name="options">BeginString, comp IDs e HeartBtInt.</param>
+    /// <param name="options">BeginString, comp IDs, HeartBtInt e campos opcionais do Logon.</param>
     /// <param name="msgSeqNum">MsgSeqNum (tag 34), a partir de 1.</param>
     /// <returns>Slice preenchido, incluindo o checksum.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
-    /// <exception cref="ArgumentException">BeginString ou comp ID é inválido.</exception>
+    /// <exception cref="ArgumentException">BeginString, comp ID ou Text (58) é inválido.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="msgSeqNum"/> ou <see cref="SessionOptions.HeartBtInt"/> não é positivo.
+    /// <paramref name="msgSeqNum"/> ou <see cref="SessionOptions.HeartBtInt"/> não é positivo,
+    /// ou COD está fora da faixa da B3.
     /// </exception>
     /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
-    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
-    public static Span<byte> BuildLogon(Span<byte> buffer, SessionOptions options, long msgSeqNum)
+    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>. Não envia senha.</remarks>
+    public static Span<byte> BuildLogon(Span<byte> buffer, SessionOptions options, long msgSeqNum) =>
+        BuildLogon(buffer, options, msgSeqNum, ReadOnlySpan<byte>.Empty);
+
+    /// <summary>
+    /// Escreve um Logon (MsgType=A) em <paramref name="buffer"/>, com a senha em RawData (tag 96).
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString, comp IDs, HeartBtInt e campos opcionais do Logon.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34), a partir de 1.</param>
+    /// <param name="password">
+    /// Senha ASCII da sessão. Vazia omite RawDataLength (95) e RawData (96). O valor não entra em mensagem de exceção.
+    /// </param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentException">BeginString, comp ID, Text (58) ou a senha é inválido.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="msgSeqNum"/> ou <see cref="SessionOptions.HeartBtInt"/> não é positivo,
+    /// a senha passa de 256 bytes, ou COD está fora da faixa da B3.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>
+    /// Zero allocation. O retorno é um slice de <paramref name="buffer"/>.
+    /// A senha não é registrada em log: este método não escreve em <c>ILogger</c>.
+    /// </remarks>
+    public static Span<byte> BuildLogon(
+        Span<byte> buffer,
+        SessionOptions options,
+        long msgSeqNum,
+        ReadOnlySpan<byte> password)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.HeartBtInt);
-
-        Span<byte> extra = stackalloc byte[32];
-        int length = AppendLiteral(extra, 0, "98=0\x01"u8);
-        length = AppendLiteral(extra, length, "108="u8);
-        if (!Utf8Formatter.TryFormat(options.HeartBtInt, extra[length..], out int width))
+        if (options.CancelOnDisconnectType is < 0 or > 3)
         {
-            throw new InvalidOperationException("HeartBtInt não coube no Logon.");
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.CancelOnDisconnectType,
+                "CancelOnDisconnectType aceita 0, 1, 2 ou 3.");
         }
 
-        length += width;
+        if (options.CodTimeoutWindow is < 0 or > 60_000)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.CodTimeoutWindow,
+                "CODTimeoutWindow aceita de 0 a 60000 milissegundos.");
+        }
+
+        if (password.Length > 256)
+        {
+            throw new ArgumentOutOfRangeException(nameof(password), password.Length, "A senha do Logon aceita no máximo 256 bytes.");
+        }
+
+        ValidatePassword(password);
+        if (options.LogonText is { Length: > 0 })
+        {
+            ValidateLogonText(options.LogonText);
+        }
+
+        Span<byte> extra = stackalloc byte[512];
+        int length = AppendLiteral(extra, 0, "98=0\x01"u8);
+        length = AppendLiteral(extra, length, "108="u8);
+        length = AppendInt(extra, length, options.HeartBtInt);
         length = AppendSoh(extra, length);
+        if (options.ResetSeqNumFlag)
+        {
+            length = AppendLiteral(extra, length, "141=Y\x01"u8);
+        }
+
+        if (!string.IsNullOrEmpty(options.LogonText))
+        {
+            length = AppendLiteral(extra, length, "58="u8);
+            length = AppendAscii(extra, length, options.LogonText);
+            length = AppendSoh(extra, length);
+        }
+
+        if (!password.IsEmpty)
+        {
+            length = AppendLiteral(extra, length, "95="u8);
+            length = AppendInt(extra, length, password.Length);
+            length = AppendSoh(extra, length);
+            length = AppendLiteral(extra, length, "96="u8);
+            length = AppendBytes(extra, length, password);
+            length = AppendSoh(extra, length);
+        }
+
+        if (options.CancelOnDisconnectType is int cancelOnDisconnectType)
+        {
+            length = AppendLiteral(extra, length, "35002="u8);
+            length = AppendInt(extra, length, cancelOnDisconnectType);
+            length = AppendSoh(extra, length);
+        }
+
+        if (options.CodTimeoutWindow is int codTimeoutWindow)
+        {
+            length = AppendLiteral(extra, length, "35003="u8);
+            length = AppendInt(extra, length, codTimeoutWindow);
+            length = AppendSoh(extra, length);
+        }
+
         int written = WriteMessage(buffer, options, msgSeqNum, "A"u8, extra[..length]);
         return buffer[..written];
     }
@@ -270,6 +358,35 @@ public static class FixMessageBuilder
         }
 
         return offset;
+    }
+
+    private static int AppendInt(Span<byte> destination, int offset, int value)
+    {
+        if (!Utf8Formatter.TryFormat(value, destination[offset..], out int width))
+        {
+            throw new InvalidOperationException("O campo numérico não coube no Logon.");
+        }
+
+        return offset + width;
+    }
+
+    private static void ValidatePassword(ReadOnlySpan<byte> password)
+    {
+        for (int i = 0; i < password.Length; i++)
+        {
+            if (password[i] is > 127 or Soh)
+            {
+                throw new ArgumentException("A senha do Logon deve ser ASCII e não pode conter SOH.", nameof(password));
+            }
+        }
+    }
+
+    private static void ValidateLogonText(string text)
+    {
+        if (!Ascii.IsValid(text) || text.Contains('=') || text.Contains((char)Soh))
+        {
+            throw new ArgumentException("Text (58) deve ser ASCII e não pode conter SOH nem '='.", nameof(text));
+        }
     }
 
     private static int AppendSendingTime(Span<byte> destination, int offset)
