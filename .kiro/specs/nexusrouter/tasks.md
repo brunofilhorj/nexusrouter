@@ -866,7 +866,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com cursor), TD-04b (brokers), TD-08 (reenvio) e T-31 (host). Os TD correspondentes (Fase 11) já estão concluídos.
 
-- [ ] T-44 — Chave de cliente (`ClientKey`), `MaxClients` e cadastro WebSocket
+- [x] T-44 — Chave de cliente (`ClientKey`), `MaxClients` e cadastro WebSocket
 
 **Objetivo:** Fechar o que falta da identidade por cliente: chave validada antes de virar nome de pasta, limite de clientes FIX por dispatcher e o cadastro WebSocket por UUID.
 

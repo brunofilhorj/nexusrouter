@@ -1,3 +1,5 @@
+using NexusRouter.Domain.Models;
+
 namespace NexusRouter.SessionLog;
 
 /// <summary>
@@ -5,31 +7,19 @@ namespace NexusRouter.SessionLog;
 /// </summary>
 internal static class SessionLogPaths
 {
-    private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    };
-
     /// <summary>
     /// Accepts 1 to 64 characters from <c>[A-Za-z0-9_-]</c>, excluding Windows device names.
+    /// The rule lives in <see cref="ClientKey.IsValid"/>.
     /// </summary>
     /// <param name="key">Session, dispatcher, or client key.</param>
     /// <param name="paramName">Parameter name for the exception.</param>
     public static void EnsureKey(string key, string paramName)
     {
-        if (string.IsNullOrEmpty(key) || key.Length > 64 || Reserved.Contains(key))
+        if (!ClientKey.IsValid(key))
         {
-            throw new ArgumentException("The session-log key is empty, too long, or reserved.", paramName);
-        }
-
-        foreach (char ch in key)
-        {
-            if (ch is not ((>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_' or '-'))
-            {
-                throw new ArgumentException("The session-log key may contain only letters, digits, '_' and '-'.", paramName);
-            }
+            throw new ArgumentException(
+                "The session-log key must have 1 to 64 characters from [A-Za-z0-9_-] and must not be a reserved name.",
+                paramName);
         }
     }
 

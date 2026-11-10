@@ -43,6 +43,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private readonly Func<ushort, DeliveryMode> _resendDeliveryMode;
     private readonly object _knownGate = new();
     private ClientBinding[] _known = [];
+    private readonly HashSet<string> _clientNames = new(StringComparer.Ordinal);
 
     private TcpListener? _listener;
     private CancellationTokenSource? _acceptCts;
@@ -228,7 +229,36 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             Array.Resize(ref buffer, count);
         }
 
+        lock (_knownGate)
+        {
+            _clientNames.Clear();
+            foreach (ClientBinding binding in buffer)
+            {
+                _clientNames.Add(SenderOf(binding.Index));
+            }
+        }
+
         Volatile.Write(ref _known, buffer);
+    }
+
+    /// <summary>
+    /// Abre os arquivos do cliente, desde que ele já exista ou ainda haja vaga em <c>MaxClients</c>.
+    /// A checagem e a criação ficam no mesmo lock, então dois Logons novos simultâneos não passam do limite.
+    /// </summary>
+    private bool TryOpenClient(string senderCompId, out ClientBinding binding)
+    {
+        lock (_knownGate)
+        {
+            if (!_clientNames.Contains(senderCompId) && _clientNames.Count >= Options.MaxClients)
+            {
+                binding = default;
+                return false;
+            }
+
+            binding = _sessionLog.OpenClient(DispatcherId, senderCompId);
+            _clientNames.Add(senderCompId);
+            return true;
+        }
     }
 
     private void Remember(ClientBinding binding)
@@ -342,6 +372,15 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
+            // O SenderCompID vem da rede e vira nome de pasta. Valida antes de tocar no disco.
+            if (!ClientKey.TryCreateFix(logon.Value.SenderCompId, out _))
+            {
+                AcceptorSessionMetrics.ClientsRejected.Add(1, new KeyValuePair<string, object?>("reason", "invalid_key"));
+                Logger.LogWarning("Dispatcher {DispatcherId} recusou Logon com SenderCompID inválido.", DispatcherId);
+                await WriteRejectLogoutAsync(stream, "UNKNOWN", "Logon rejected", Options.Recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             AcceptorRecoveryOptions recovery = RecoveryFor(logon.Value.SenderCompId);
             if (logon.Value.ResetSequence && !recovery.AllowResetSeqNumFlag)
             {
@@ -361,7 +400,18 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            ClientBinding binding = _sessionLog.OpenClient(DispatcherId, logon.Value.SenderCompId);
+            if (!TryOpenClient(logon.Value.SenderCompId, out ClientBinding binding))
+            {
+                AcceptorSessionMetrics.ClientsRejected.Add(1, new KeyValuePair<string, object?>("reason", "max_clients"));
+                Logger.LogWarning(
+                    "Dispatcher {DispatcherId} recusou o Logon de {SenderCompId}: MaxClients {MaxClients} atingido.",
+                    DispatcherId,
+                    logon.Value.SenderCompId,
+                    Options.MaxClients);
+                await WriteRejectLogoutAsync(stream, logon.Value.SenderCompId, "Too many clients", recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             string? reject = DecideLogon(logon.Value, recovery, binding, out long skipFrom, out bool gapFillLogon, out bool echoReset);
             if (reject is null)
             {
