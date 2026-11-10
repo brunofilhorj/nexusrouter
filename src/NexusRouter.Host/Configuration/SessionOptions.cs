@@ -35,9 +35,34 @@ public sealed class SessionOptions : IValidateOptions<SessionOptions>
     public required string TargetCompId { get; init; }
 
     /// <summary>
-    /// HeartBtInt (tag 108), em segundos.
+    /// HeartBtInt (tag 108), em segundos. A B3 recomenda 30.
     /// </summary>
     public int HeartbeatIntervalSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// Text (tag 58) do Logon. Nome e versão certificada da solução. Omitido quando nulo ou vazio.
+    /// </summary>
+    public string? LogonText { get; init; }
+
+    /// <summary>
+    /// Nome da variável com a senha da sessão. O valor vai em RawData (tag 96) e não entra na configuração versionada.
+    /// </summary>
+    public string? PasswordEnvVar { get; init; }
+
+    /// <summary>
+    /// CancelOnDisconnectType (tag 35002). <c>0</c> não cancela na desconexão nem no logout.
+    /// </summary>
+    public int CancelOnDisconnectType { get; init; }
+
+    /// <summary>
+    /// CODTimeoutWindow (tag 35003), em milissegundos. Nulo omite o campo. Máximo 60000.
+    /// </summary>
+    public int? CodTimeoutWindow { get; init; }
+
+    /// <summary>
+    /// Quando <see langword="true"/>, o Logon pede reset de seqnum com a tag 141 igual a <c>Y</c>.
+    /// </summary>
+    public bool ResetSeqNumFlag { get; init; }
 
     /// <summary>
     /// <see cref="DeliveryMode.PassThrough"/> encaminha o frame; <see cref="DeliveryMode.Parse"/> tokeniza antes do fan-out.
@@ -88,6 +113,22 @@ public sealed class SessionOptions : IValidateOptions<SessionOptions>
         ConfigurationChecks.Add(
             failures,
             ConfigurationChecks.Positive(options.HeartbeatIntervalSeconds, nameof(options.HeartbeatIntervalSeconds)));
+        if (options.LogonText is { Length: > 128 })
+        {
+            failures.Add("LogonText aceita no máximo 128 caracteres.");
+        }
+
+        ConfigurationChecks.Add(failures, ConfigurationChecks.FixToken(options.LogonText, nameof(options.LogonText), required: false));
+        ConfigurationChecks.Add(failures, ConfigurationChecks.EnvVar(options.PasswordEnvVar, nameof(options.PasswordEnvVar), required: false));
+        ConfigurationChecks.Add(
+            failures,
+            ConfigurationChecks.Between(options.CancelOnDisconnectType, 0, 3, nameof(options.CancelOnDisconnectType)));
+        if (options.CodTimeoutWindow is int codTimeoutWindow)
+        {
+            ConfigurationChecks.Add(
+                failures,
+                ConfigurationChecks.Between(codTimeoutWindow, 0, 60_000, nameof(options.CodTimeoutWindow)));
+        }
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.DeliveryMode, nameof(options.DeliveryMode)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.FrameDecoder, nameof(options.FrameDecoder)));
         ConfigurationChecks.AppendTls(failures, options.Tls, requireCertificateWhenEnabled: false);

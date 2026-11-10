@@ -29,6 +29,7 @@ public sealed class FixSession : IHostedService
     private const byte Soh = 0x01;
     private const int MinimumReceiveBytes = 4096;
     private const int AdminMessageBytes = 1024;
+    private const int MaxLogonPasswordBytes = 128;
 
     private readonly SessionOptions _options;
     private readonly ISessionFrameDecoder _frameDecoder;
@@ -115,6 +116,37 @@ public sealed class FixSession : IHostedService
         if (options.LogonTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(options.LogonTimeout), options.LogonTimeout, "O timeout de Logon deve ser positivo.");
+        }
+
+        if (options.CancelOnDisconnectType is < 0 or > 3)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.CancelOnDisconnectType),
+                options.CancelOnDisconnectType,
+                "CancelOnDisconnectType aceita 0, 1, 2 ou 3.");
+        }
+
+        if (options.CodTimeoutWindow is < 0 or > 60_000)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.CodTimeoutWindow),
+                options.CodTimeoutWindow,
+                "CODTimeoutWindow aceita de 0 a 60000 milissegundos.");
+        }
+
+        if (options.LogonText is { Length: > 128 })
+        {
+            throw new ArgumentOutOfRangeException(nameof(options.LogonText), options.LogonText.Length, "Text (58) aceita no máximo 128 caracteres.");
+        }
+
+        if (!string.IsNullOrEmpty(options.LogonText))
+        {
+            ValidateAsciiToken(options.LogonText, nameof(options.LogonText));
+        }
+
+        if (!string.IsNullOrEmpty(options.PasswordEnvVar))
+        {
+            ValidateAsciiToken(options.PasswordEnvVar, nameof(options.PasswordEnvVar));
         }
 
         _options = options;
@@ -519,6 +551,11 @@ public sealed class FixSession : IHostedService
             case (byte)'A':
                 if (_stateMachine.State == SessionState.LogonSent)
                 {
+                    if (!TryAcceptLogon(raw))
+                    {
+                        return;
+                    }
+
                     _stateMachine.TransitionToActive();
                     PublishLifecycle(SessionState.Active, "Logon");
                     return;
@@ -661,15 +698,10 @@ public sealed class FixSession : IHostedService
             try
             {
                 long sequence = Interlocked.Increment(ref _nextOutboundSequence);
-                Span<byte> message = kind switch
-                {
-                    OutboundAdmin.Logon => FixMessageBuilder.BuildLogon(rented, _options, sequence),
-                    OutboundAdmin.Heartbeat => FixMessageBuilder.BuildHeartbeat(rented, _options, sequence, testReqId),
-                    OutboundAdmin.TestRequest => FixMessageBuilder.BuildTestRequest(rented, _options, sequence),
-                    OutboundAdmin.Logout => FixMessageBuilder.BuildLogout(rented, _options, sequence),
-                    _ => throw new InvalidOperationException("Mensagem administrativa desconhecida."),
-                };
-                WriteSocket(message);
+                int written = kind == OutboundAdmin.Logon
+                    ? WriteLogon(rented, sequence)
+                    : WriteAdmin(rented, kind, sequence, testReqId);
+                WriteSocket(rented.AsSpan(0, written));
             }
             finally
             {
@@ -678,8 +710,93 @@ public sealed class FixSession : IHostedService
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            ArrayPool<byte>.Shared.Return(rented, clearArray: kind == OutboundAdmin.Logon);
         }
+    }
+
+    private int WriteAdmin(Span<byte> buffer, OutboundAdmin kind, long sequence, ReadOnlySpan<byte> testReqId)
+    {
+        Span<byte> message = kind switch
+        {
+            OutboundAdmin.Heartbeat => FixMessageBuilder.BuildHeartbeat(buffer, _options, sequence, testReqId),
+            OutboundAdmin.TestRequest => FixMessageBuilder.BuildTestRequest(buffer, _options, sequence),
+            OutboundAdmin.Logout => FixMessageBuilder.BuildLogout(buffer, _options, sequence),
+            _ => throw new InvalidOperationException("Mensagem administrativa desconhecida."),
+        };
+        return message.Length;
+    }
+
+    private int WriteLogon(Span<byte> buffer, long sequence)
+    {
+        Span<byte> password = stackalloc byte[MaxLogonPasswordBytes];
+        int passwordLength = ResolveLogonPassword(password);
+        int written = FixMessageBuilder.BuildLogon(buffer, _options, sequence, password[..passwordLength]).Length;
+        password[..passwordLength].Clear();
+        return written;
+    }
+
+    private int ResolveLogonPassword(Span<byte> destination)
+    {
+        if (string.IsNullOrEmpty(_options.PasswordEnvVar))
+        {
+            return 0;
+        }
+
+        string secret = _secretResolver.ResolveRequired(_options.PasswordEnvVar);
+        if (secret.Length > destination.Length)
+        {
+            throw new InvalidOperationException("A senha do Logon excede 128 bytes.");
+        }
+
+        for (int i = 0; i < secret.Length; i++)
+        {
+            char ch = secret[i];
+            if (ch > 127 || ch == Soh)
+            {
+                throw new InvalidOperationException("A senha do Logon deve ser ASCII e não pode conter SOH.");
+            }
+
+            destination[i] = (byte)ch;
+        }
+
+        return secret.Length;
+    }
+
+    private bool TryAcceptLogon(ReadOnlySequence<byte> raw)
+    {
+        if (!TryReadSequenceField(raw, "108="u8, out long heartBtInt) || heartBtInt != _options.HeartBtInt)
+        {
+            RejectPeerLogon("HeartBtInt não confere");
+            return false;
+        }
+
+        Span<byte> resetFlag = stackalloc byte[8];
+        bool echoed = TryCopyField(raw, "141="u8, resetFlag, out int resetLength)
+            && resetLength == 1
+            && resetFlag[0] == (byte)'Y';
+        if (echoed != _options.ResetSeqNumFlag)
+        {
+            RejectPeerLogon("ResetSeqNumFlag não foi ecoado");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void RejectPeerLogon(string reason)
+    {
+        _logger.LogWarning("Sessão {SessionId} recusou o Logon: {Reason}", _sessionId.Value, reason);
+        try
+        {
+            SendAdmin(OutboundAdmin.Logout, ReadOnlySpan<byte>.Empty);
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "Sessão {SessionId} não enviou Logout após recusar o Logon", _sessionId.Value);
+        }
+
+        Volatile.Write(ref _closeExpected, 1);
+        ShutdownActiveSocket();
     }
 
     private void WriteSocket(ReadOnlySpan<byte> payload)

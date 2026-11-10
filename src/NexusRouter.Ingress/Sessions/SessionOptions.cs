@@ -39,9 +39,34 @@ public sealed class SessionOptions
     public required string BeginString { get; init; }
 
     /// <summary>
-    /// HeartBtInt (tag 108), em segundos. No B3 EntryPoint de produção o valor é 20.
+    /// HeartBtInt (tag 108), em segundos. A B3 recomenda 30.
     /// </summary>
     public int HeartBtInt { get; init; } = 20;
+
+    /// <summary>
+    /// Text (tag 58) do Logon. Nome e versão certificada da solução. Omitido quando nulo ou vazio.
+    /// </summary>
+    public string? LogonText { get; init; }
+
+    /// <summary>
+    /// Chave de lookup da senha da sessão. O valor resolvido vai em RawData (tag 96) e não fica nesta classe.
+    /// </summary>
+    public string? PasswordEnvVar { get; init; }
+
+    /// <summary>
+    /// CancelOnDisconnectType (tag 35002). <c>0</c> desliga o COD. Nulo omite o campo.
+    /// </summary>
+    public int? CancelOnDisconnectType { get; init; }
+
+    /// <summary>
+    /// CODTimeoutWindow (tag 35003), em milissegundos. Nulo omite o campo. Máximo 60000.
+    /// </summary>
+    public int? CodTimeoutWindow { get; init; }
+
+    /// <summary>
+    /// Quando <see langword="true"/>, o Logon leva ResetSeqNumFlag (tag 141) igual a <c>Y</c>.
+    /// </summary>
+    public bool ResetSeqNumFlag { get; init; }
 
     /// <summary>
     /// Heartbeats consecutivos ausentes antes de enviar TestRequest.

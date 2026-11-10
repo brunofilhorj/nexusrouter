@@ -49,6 +49,7 @@ do processo sob o seu nome exato dentro de `IConfiguration`. Logo, uma chave com
 | Kafka SASL usuário | `NEXUS_KAFKA_SASL_USERNAME` | dispatcher Kafka (só com SASL) |
 | Kafka SASL senha | `NEXUS_KAFKA_SASL_PASSWORD` | dispatcher Kafka (só com SASL) |
 | Senha do certificado TLS | valor de `CertificatePasswordEnvVar` da sessão/acceptor | TLS do ingress e do acceptor FIX |
+| Senha da sessão FIX (RawData 96) | valor de `PasswordEnvVar` da sessão | Logon do initiator contra a B3 |
 
 > O `appsettings.json` versionado pode mudar o **nome** da chave (ex.: apontar `PasswordEnvVar` para
 > outro nome), mas nunca deve conter o **valor** do segredo.

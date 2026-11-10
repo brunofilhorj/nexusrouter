@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using NexusRouter.Domain.Abstractions;
@@ -149,7 +150,7 @@ public sealed class FixSessionIntegrationTests
             byte[] logon = await ReadFixFrameAsync(stream);
             Assert.Equal("A", GetFieldValue(logon, 35));
 
-            await SendFixFrameAsync(stream, CreateLogonAcknowledgement());
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement(30));
             await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
 
             await SendFixFrameAsync(
@@ -174,11 +175,106 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenLogonEchoesHeartBtAndReset_BecomesActiveWithoutLoggingPassword()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var logger = new CollectingLogger();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30,
+            resetSeqNumFlag: true,
+            passwordEnvVar: "NEXUS_FIX_PASSWORD",
+            secretResolver: new MapSecretResolver("NEXUS_FIX_PASSWORD", "s3cret"),
+            logger: logger,
+            logonText: "NexusRouter",
+            cancelOnDisconnectType: 1,
+            codTimeoutWindow: 30000);
+        TcpClient? peer = null;
+
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            byte[] logon = await ReadFixFrameAsync(stream);
+
+            Assert.Equal("Y", GetFieldValue(logon, 141));
+            Assert.Equal("30", GetFieldValue(logon, 108));
+            Assert.Equal("6", GetFieldValue(logon, 95));
+            Assert.Equal("s3cret", GetFieldValue(logon, 96));
+            Assert.Equal("NexusRouter", GetFieldValue(logon, 58));
+            Assert.Equal("1", GetFieldValue(logon, 35002));
+            Assert.Equal("30000", GetFieldValue(logon, 35003));
+            Assert.DoesNotContain(logger.Messages, message => message.Contains("s3cret", StringComparison.Ordinal));
+
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement(30, resetSeqNum: true));
+            await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
+            Assert.DoesNotContain(logger.Messages, message => message.Contains("s3cret", StringComparison.Ordinal));
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 99, false)]
+    [InlineData(true, 30, false)]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenLogonEchoMismatches_SendsLogout(bool resetSeqNumFlag, int heartBtInt, bool echoReset)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30,
+            resetSeqNumFlag: resetSeqNumFlag);
+        TcpClient? peer = null;
+
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            _ = await ReadFixFrameAsync(stream);
+
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement(heartBtInt, echoReset));
+            byte[] reply = await ReadFixFrameAsync(stream);
+            Assert.Equal("5", GetFieldValue(reply, 35));
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static FixSession CreateSession(
         int port,
         ChannelWriter<AuditRecord> auditWriter,
         IReconnectPolicy reconnectPolicy,
-        int heartBtInt = 1) =>
+        int heartBtInt = 1,
+        bool resetSeqNumFlag = false,
+        string? passwordEnvVar = null,
+        ISecretResolver? secretResolver = null,
+        ILogger<FixSession>? logger = null,
+        string? logonText = null,
+        int? cancelOnDisconnectType = null,
+        int? codTimeoutWindow = null) =>
         new(
             new SessionOptions
             {
@@ -189,6 +285,11 @@ public sealed class FixSessionIntegrationTests
                 TargetCompId = "EXCHANGE",
                 BeginString = "FIX.4.4",
                 HeartBtInt = heartBtInt,
+                LogonText = logonText,
+                PasswordEnvVar = passwordEnvVar,
+                CancelOnDisconnectType = cancelOnDisconnectType,
+                CodTimeoutWindow = codTimeoutWindow,
+                ResetSeqNumFlag = resetSeqNumFlag,
                 MissedHeartbeatThreshold = 1,
                 LogonTimeout = TimeSpan.FromSeconds(5),
                 ShutdownTimeoutSeconds = 2,
@@ -197,8 +298,8 @@ public sealed class FixSessionIntegrationTests
             reconnectPolicy,
             new NullRouter(),
             auditWriter,
-            ThrowingSecretResolver.Instance,
-            NullLogger<FixSession>.Instance,
+            secretResolver ?? ThrowingSecretResolver.Instance,
+            logger ?? NullLogger<FixSession>.Instance,
             new NullSessionLog());
 
     // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
@@ -391,15 +492,25 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
-    private static byte[] CreateLogonAcknowledgement() =>
-        CreateFixFrame(
+    private static byte[] CreateLogonAcknowledgement(int heartBtInt = 1, bool resetSeqNum = false)
+    {
+        var fields = new List<string>
+        {
             "35=A",
             "49=EXCHANGE",
             "56=CLIENT",
             "34=1",
             "52=20260101-12:00:00",
             "98=0",
-            "108=1");
+            $"108={heartBtInt}",
+        };
+        if (resetSeqNum)
+        {
+            fields.Add("141=Y");
+        }
+
+        return CreateFixFrame(fields.ToArray());
+    }
 
     private static byte[] CreateHeartbeatAcknowledgement(string testRequestId, int sequenceNumber) =>
         CreateFixFrame(
@@ -456,6 +567,42 @@ public sealed class FixSessionIntegrationTests
     private sealed class FixedReconnectPolicy(TimeSpan delay) : IReconnectPolicy
     {
         public TimeSpan ComputeDelay(int attemptNumber) => delay;
+    }
+
+    private sealed class MapSecretResolver(string key, string value) : ISecretResolver
+    {
+        public string ResolveRequired(string lookup) =>
+            lookup == key
+                ? value
+                : throw new InvalidOperationException($"Segredo '{lookup}' não definido neste teste.");
+    }
+
+    private sealed class CollectingLogger : ILogger<FixSession>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull =>
+            NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 
     private sealed class SequencedReconnectPolicy : IReconnectPolicy
