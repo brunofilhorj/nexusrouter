@@ -100,6 +100,19 @@ public static class FixMessageBuilder
             length = AppendLiteral(extra, length, "141=Y\x01"u8);
         }
 
+        if (options.NextExpectedMsgSeqNum is long nextExpected)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nextExpected);
+            length = AppendLiteral(extra, length, "789="u8);
+            if (!Utf8Formatter.TryFormat(nextExpected, extra[length..], out int nextWidth))
+            {
+                throw new InvalidOperationException("NextExpectedMsgSeqNum não coube no Logon.");
+            }
+
+            length += nextWidth;
+            length = AppendSoh(extra, length);
+        }
+
         if (!string.IsNullOrEmpty(options.LogonText))
         {
             length = AppendLiteral(extra, length, "58="u8);
@@ -219,9 +232,45 @@ public static class FixMessageBuilder
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="msgSeqNum"/> não é positivo.</exception>
     /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
     /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
-    public static Span<byte> BuildLogout(Span<byte> buffer, SessionOptions options, long msgSeqNum)
+    public static Span<byte> BuildLogout(Span<byte> buffer, SessionOptions options, long msgSeqNum) =>
+        BuildLogout(buffer, options, msgSeqNum, ReadOnlySpan<byte>.Empty);
+
+    /// <summary>
+    /// Escreve um Logout (MsgType=5) com Text (tag 58).
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString e comp IDs.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34), a partir de 1.</param>
+    /// <param name="text">Text (tag 58). Vazio omite o campo.</param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentException">BeginString, comp ID ou <paramref name="text"/> é inválido.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="msgSeqNum"/> não é positivo ou o texto passa de 128 bytes.</exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
+    public static Span<byte> BuildLogout(Span<byte> buffer, SessionOptions options, long msgSeqNum, ReadOnlySpan<byte> text)
     {
-        int written = WriteMessage(buffer, options, msgSeqNum, "5"u8, ReadOnlySpan<byte>.Empty);
+        if (text.IsEmpty)
+        {
+            int empty = WriteMessage(buffer, options, msgSeqNum, "5"u8, ReadOnlySpan<byte>.Empty);
+            return buffer[..empty];
+        }
+
+        if (text.Length > 128)
+        {
+            throw new ArgumentOutOfRangeException(nameof(text), text.Length, "Text do Logout aceita no máximo 128 bytes.");
+        }
+
+        if (text.IndexOf(Soh) >= 0 || text.IndexOf((byte)'=') >= 0)
+        {
+            throw new ArgumentException("Text do Logout não pode conter SOH nem '='.", nameof(text));
+        }
+
+        Span<byte> extra = stackalloc byte[4 + 128 + 1];
+        int length = AppendLiteral(extra, 0, "58="u8);
+        length = AppendBytes(extra, length, text);
+        length = AppendSoh(extra, length);
+        int written = WriteMessage(buffer, options, msgSeqNum, "5"u8, extra[..length]);
         return buffer[..written];
     }
 

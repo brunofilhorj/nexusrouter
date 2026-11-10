@@ -84,6 +84,16 @@ public sealed class FixOutboundDispatcherOptions
     public double AcceptRetryJitterFactor { get; init; } = 0.2;
 
     /// <summary>
+    /// Política de reconexão do acceptor. Pode ser sobrescrita por <see cref="ClientOverrides"/>.
+    /// </summary>
+    public AcceptorRecoveryOptions Recovery { get; init; } = new();
+
+    /// <summary>
+    /// Sobrescrita de <see cref="Recovery"/> por SenderCompID do cliente.
+    /// </summary>
+    public IReadOnlyList<AcceptorClientOverride> ClientOverrides { get; init; } = [];
+
+    /// <summary>
     /// Rejeita endereço, porta, comp ID ou tempos inválidos.
     /// </summary>
     /// <exception cref="ArgumentException">Endereço, BeginString, comp ID ou diretório é inválido.</exception>
@@ -136,6 +146,22 @@ public sealed class FixOutboundDispatcherOptions
         if (TlsEnabled && string.IsNullOrWhiteSpace(TlsCertificatePath))
         {
             throw new InvalidOperationException("O TLS do acceptor FIX exige TlsCertificatePath.");
+        }
+
+        ArgumentNullException.ThrowIfNull(Recovery);
+        Recovery.EnsureValid();
+        ArgumentNullException.ThrowIfNull(ClientOverrides);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (AcceptorClientOverride client in ClientOverrides)
+        {
+            ArgumentNullException.ThrowIfNull(client);
+            ValidateToken(client.SenderCompId, nameof(ClientOverrides));
+            if (!seen.Add(client.SenderCompId))
+            {
+                throw new ArgumentException("ClientOverrides repete SenderCompID " + client.SenderCompId + ".", nameof(ClientOverrides));
+            }
+
+            Recovery.Merge(client).EnsureValid();
         }
     }
 

@@ -1,6 +1,8 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading.Channels;
 
 using Microsoft.Extensions.Logging;
@@ -26,6 +28,8 @@ internal sealed class FixAcceptedSession
     private readonly TcpClient _client;
     private readonly Stream _stream;
     private readonly IClientIndex _index;
+    private readonly IConsumerState _state;
+    private readonly AcceptorSessionPlan _plan;
     private readonly SessionOptions _options;
     private readonly byte[] _prelude;
     private readonly int _preludeLength;
@@ -43,6 +47,10 @@ internal sealed class FixAcceptedSession
     private Task? _read;
     private Task? _heartbeat;
     private int _stop;
+    private int _logoutSent;
+    private int _logoutPhase;
+    private int _testRequestOutstanding;
+    private long _lastInboundTicks;
 
     /// <summary>
     /// Cria a sessão. O Logon de resposta sai em <see cref="StartAsync"/>.
@@ -51,9 +59,9 @@ internal sealed class FixAcceptedSession
     /// <param name="client">Socket já aceito.</param>
     /// <param name="stream">Stream do socket, já encapsulado em TLS quando for o caso.</param>
     /// <param name="index">Outbound sequence and client index for this SenderCompID.</param>
+    /// <param name="plan">Política de entrada, silêncio e recuperação desta sessão.</param>
     /// <param name="options">Comp IDs desta sessão. Sender é o NexusRouter. Target é o cliente.</param>
     /// <param name="channelCapacity">Tamanho da fila desta sessão.</param>
-    /// <param name="heartBtInt">Intervalo do heartbeat, em segundos.</param>
     /// <param name="prelude">Bytes que chegaram no mesmo read do Logon, depois do frame.</param>
     /// <param name="onClosed">Remove a sessão da tabela do dispatcher.</param>
     /// <param name="logger">Log de ciclo de vida. O frame FIX não entra aqui.</param>
@@ -62,9 +70,9 @@ internal sealed class FixAcceptedSession
         TcpClient client,
         Stream stream,
         IClientIndex index,
+        AcceptorSessionPlan plan,
         SessionOptions options,
         int channelCapacity,
-        int heartBtInt,
         byte[] prelude,
         int preludeLength,
         Action<FixAcceptedSession> onClosed,
@@ -74,8 +82,10 @@ internal sealed class FixAcceptedSession
         _client = client;
         _stream = stream;
         _index = index;
+        _plan = plan;
+        _state = plan.State;
         _options = options;
-        HeartBtInt = heartBtInt;
+        HeartBtInt = plan.HeartBtInt;
         _prelude = prelude;
         _preludeLength = preludeLength;
         _onClosed = onClosed;
@@ -115,6 +125,17 @@ internal sealed class FixAcceptedSession
         // O token do accept só cancela o Logon. A sessão fica viva até StopAsync.
         _connectionCts = new CancellationTokenSource();
         _pump = PumpAsync(_pipe.Reader, _stream, _connectionCts.Token);
+        NoteInbound();
+        if (_plan.RejectText is not null)
+        {
+            await SendLogoutAsync(Encoding.ASCII.GetBytes(_plan.RejectText), cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _logoutSent, 1);
+            Volatile.Write(ref _logoutPhase, 1);
+            _read = ReadLoopAsync(_connectionCts.Token);
+            _ = WaitForLogoutAsync();
+            return;
+        }
+
         try
         {
             await SendLogonAsync(cancellationToken).ConfigureAwait(false);
@@ -125,6 +146,18 @@ internal sealed class FixAcceptedSession
             _pipe?.Writer.Complete();
             _logonReady.TrySetCanceled(cancellationToken);
             throw;
+        }
+
+        // QuickFIX envia o Logon (seq M) e só depois o SequenceReset-GapFill.
+        // O dicionário FIX não fixa essa ordem. NewSeqNo é o próximo seq do router (M+1).
+        long nextOut = _index.NextOut;
+        if (_plan.SkipFrom > 0 && _plan.SkipFrom < nextOut)
+        {
+            TryEnqueueGapFill(_plan.SkipFrom, nextOut);
+        }
+        else if (_plan.GapFillLogonSequence && nextOut > 1)
+        {
+            TryEnqueueGapFill(nextOut - 1, nextOut);
         }
 
         _logonReady.TrySetResult();
@@ -175,7 +208,10 @@ internal sealed class FixAcceptedSession
             }
         }
 
-        await SendLogoutDirectAsync().ConfigureAwait(false);
+        if (Volatile.Read(ref _logoutSent) == 0)
+        {
+            await SendLogoutDirectAsync().ConfigureAwait(false);
+        }
 
         try
         {
@@ -275,11 +311,27 @@ internal sealed class FixAcceptedSession
         {
             long sequence = NextSequence(admin: true);
             int written = FixMessageBuilder.BuildLogout(rented, _options, sequence).Length;
+            Volatile.Write(ref _logoutSent, 1);
             await WritePipeAsync(rented.AsMemory(0, written), CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or InvalidOperationException)
         {
             _logger.LogDebug(ex, "Sessão FIX {SenderCompId} não enviou Logout.", SenderCompId);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+        }
+    }
+
+    private async Task SendLogoutAsync(ReadOnlyMemory<byte> text, CancellationToken cancellationToken)
+    {
+        byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
+        try
+        {
+            long sequence = NextSequence(admin: true);
+            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence, text.Span).Length;
+            await WritePipeAsync(rented.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -359,6 +411,7 @@ internal sealed class FixAcceptedSession
             int written = kind switch
             {
                 AdminKind.Heartbeat => FixMessageBuilder.BuildHeartbeat(rented, _options, sequence, testReqId.Span).Length,
+                AdminKind.TestRequest => FixMessageBuilder.BuildTestRequest(rented, _options, sequence).Length,
                 AdminKind.Logout => FixMessageBuilder.BuildLogout(rented, _options, sequence).Length,
                 _ => throw new InvalidOperationException("Mensagem administrativa desconhecida."),
             };
@@ -492,12 +545,38 @@ internal sealed class FixAcceptedSession
 
     private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(HeartBtInt));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        int sinceHeartbeat = 0;
+        int tolerance = Math.Max(1, HeartBtInt / 5);
         try
         {
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                TryEnqueueAdmin(AdminKind.Heartbeat, ReadOnlyMemory<byte>.Empty, ignoreStop: false);
+                if (Volatile.Read(ref _logoutPhase) != 0)
+                {
+                    continue;
+                }
+
+                sinceHeartbeat++;
+                if (sinceHeartbeat >= HeartBtInt)
+                {
+                    TryEnqueueAdmin(AdminKind.Heartbeat, ReadOnlyMemory<byte>.Empty, ignoreStop: false);
+                    sinceHeartbeat = 0;
+                }
+
+                double silentSeconds = Stopwatch.GetElapsedTime(Volatile.Read(ref _lastInboundTicks)).TotalSeconds;
+                if (Volatile.Read(ref _testRequestOutstanding) == 0)
+                {
+                    if (silentSeconds >= HeartBtInt)
+                    {
+                        TryEnqueueAdmin(AdminKind.TestRequest, ReadOnlyMemory<byte>.Empty, ignoreStop: false);
+                        Volatile.Write(ref _testRequestOutstanding, 1);
+                    }
+                }
+                else if (silentSeconds >= HeartBtInt + tolerance)
+                {
+                    BeginLogout("Heartbeat timeout");
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -601,6 +680,8 @@ internal sealed class FixAcceptedSession
 
     private bool HandleFrame(ReadOnlySpan<byte> frame)
     {
+        NoteInbound();
+        Volatile.Write(ref _testRequestOutstanding, 0);
         if (!FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType))
         {
             return true;
@@ -612,19 +693,72 @@ internal sealed class FixAcceptedSession
             return false;
         }
 
-        if (msgType.Length == 1 && msgType[0] == (byte)'1' && FixWireFrame.TryReadTag(frame, 112, out ReadOnlySpan<byte> testReqId))
+        bool loggingOut = Volatile.Read(ref _logoutPhase) != 0;
+        bool resend = msgType.Length == 1 && msgType[0] == (byte)'2';
+        if (!loggingOut)
+        {
+            InboundSeq inbound = CheckInbound(frame);
+            if (inbound == InboundSeq.TooLow)
+            {
+                BeginLogout("MsgSeqNum too low");
+                loggingOut = true;
+            }
+            else if (inbound == InboundSeq.Duplicate)
+            {
+                return true;
+            }
+        }
+
+        if (loggingOut && !resend)
+        {
+            return true;
+        }
+
+        if (!loggingOut && msgType.Length == 1 && msgType[0] == (byte)'1' && FixWireFrame.TryReadTag(frame, 112, out ReadOnlySpan<byte> testReqId))
         {
             byte[] copy = testReqId.ToArray();
             TryEnqueueAdmin(AdminKind.Heartbeat, copy, ignoreStop: false);
             return true;
         }
 
-        if (msgType.Length == 1 && msgType[0] == (byte)'2')
+        if (resend)
         {
             HandleResendRequest(frame);
         }
 
         return true;
+    }
+
+    private InboundSeq CheckInbound(ReadOnlySpan<byte> frame)
+    {
+        if (!FixWireFrame.TryReadTag(frame, 34, out ReadOnlySpan<byte> raw)
+            || !FixWireFrame.TryParseNonNegative(raw, out long seq)
+            || seq <= 0)
+        {
+            return InboundSeq.Expected;
+        }
+
+        long expected = _state.NextInExpected;
+        if (seq > expected)
+        {
+            _state.NextInExpected = seq + 1;
+            AcceptorSessionMetrics.InSeqGap.Add(1);
+            _logger.LogWarning(
+                "Sessão FIX {SenderCompId} recebeu MsgSeqNum {Seq} acima do esperado {Expected}.",
+                SenderCompId,
+                seq,
+                expected);
+            return InboundSeq.Gap;
+        }
+
+        if (seq == expected)
+        {
+            _state.NextInExpected = seq + 1;
+            return InboundSeq.Expected;
+        }
+
+        bool possDup = FixWireFrame.TryReadTag(frame, 43, out ReadOnlySpan<byte> flag) && flag.Length == 1 && flag[0] == (byte)'Y';
+        return possDup ? InboundSeq.Duplicate : InboundSeq.TooLow;
     }
 
     private void HandleResendRequest(ReadOnlySpan<byte> frame)
@@ -636,7 +770,33 @@ internal sealed class FixAcceptedSession
             return;
         }
 
-        long newSeqNo = _index.NextOut;
+        long nextOut = _index.NextOut;
+        if (beginSeqNo >= nextOut)
+        {
+            AcceptorSessionMetrics.ClientAhead.Add(1);
+            _logger.LogWarning(
+                "Sessão FIX {SenderCompId} pediu BeginSeqNo {BeginSeqNo} acima do numerado {NextOut}.",
+                SenderCompId,
+                beginSeqNo,
+                nextOut);
+            BeginLogout("MsgSeqNum too high");
+            return;
+        }
+
+        long endInclusive = nextOut - 1;
+        if (FixWireFrame.TryReadTag(frame, 16, out ReadOnlySpan<byte> endRaw)
+            && FixWireFrame.TryParseNonNegative(endRaw, out long endSeqNo)
+            && endSeqNo > 0)
+        {
+            endInclusive = endSeqNo;
+        }
+
+        if (beginSeqNo > endInclusive)
+        {
+            return;
+        }
+
+        long newSeqNo = Math.Min(nextOut, endInclusive + 1);
         if (beginSeqNo >= newSeqNo)
         {
             return;
@@ -644,6 +804,70 @@ internal sealed class FixAcceptedSession
 
         TryEnqueueGapFill(beginSeqNo, newSeqNo);
     }
+
+    private void BeginLogout(string text)
+    {
+        if (Interlocked.CompareExchange(ref _logoutPhase, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning("Sessão FIX {SenderCompId} envia Logout: {Text}.", SenderCompId, text);
+        TryEnqueueLogout(Encoding.ASCII.GetBytes(text));
+        _ = WaitForLogoutAsync();
+    }
+
+    private bool TryEnqueueLogout(ReadOnlySpan<byte> text)
+    {
+        if (!TryEnterGate())
+        {
+            return false;
+        }
+
+        byte[]? rented = null;
+        try
+        {
+            long sequence = NextSequence(admin: true);
+            rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
+            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence, text).Length;
+            if (!_outbound.Writer.TryWrite(new OutboundFrame(rented, written)))
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+                rented = null;
+                return false;
+            }
+
+            Volatile.Write(ref _logoutSent, 1);
+            rented = null;
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+            }
+
+            _enqueueGate.Release();
+        }
+    }
+
+    private async Task WaitForLogoutAsync()
+    {
+        try
+        {
+            CancellationToken token = _connectionCts?.Token ?? CancellationToken.None;
+            await Task.Delay(TimeSpan.FromSeconds(_plan.LogoutTimeoutSeconds), token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        RequestStop();
+    }
+
+    private void NoteInbound() => Volatile.Write(ref _lastInboundTicks, Stopwatch.GetTimestamp());
 
     private void RequestStop() => _ = StopAsync(CancellationToken.None);
 
@@ -737,6 +961,15 @@ internal sealed class FixAcceptedSession
     private enum AdminKind
     {
         Heartbeat,
+        TestRequest,
         Logout,
+    }
+
+    private enum InboundSeq
+    {
+        Expected,
+        Gap,
+        Duplicate,
+        TooLow,
     }
 }

@@ -69,6 +69,11 @@ public sealed class SessionOptions
     public bool ResetSeqNumFlag { get; init; }
 
     /// <summary>
+    /// NextExpectedMsgSeqNum (tag 789) do Logon. Nulo omite o campo.
+    /// </summary>
+    public long? NextExpectedMsgSeqNum { get; init; }
+
+    /// <summary>
     /// Heartbeats consecutivos ausentes antes de enviar TestRequest.
     /// </summary>
     public int MissedHeartbeatThreshold { get; init; } = 2;

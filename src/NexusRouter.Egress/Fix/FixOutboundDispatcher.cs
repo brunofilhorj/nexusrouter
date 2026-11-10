@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 using Microsoft.Extensions.Logging;
 
@@ -314,11 +315,33 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            ClientBinding binding = logon.Value.ResetSequence
-                ? _sessionLog.ResetClient(DispatcherId, logon.Value.SenderCompId)
-                : _sessionLog.OpenClient(DispatcherId, logon.Value.SenderCompId);
-            Remember(binding);
+            AcceptorRecoveryOptions recovery = RecoveryFor(logon.Value.SenderCompId);
+            if (logon.Value.ResetSequence && !recovery.AllowResetSeqNumFlag)
+            {
+                await WriteRejectLogoutAsync(stream, logon.Value.SenderCompId, "ResetSeqNumFlag not allowed", recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
+            if (recovery.RequireNextExpectedMsgSeqNum && !logon.Value.HasNextExpected)
+            {
+                await WriteRejectLogoutAsync(stream, logon.Value.SenderCompId, "NextExpectedMsgSeqNum required", recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (logon.Value.MsgSeqNum <= 0)
+            {
+                await WriteRejectLogoutAsync(stream, logon.Value.SenderCompId, "Logon rejected", recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            ClientBinding binding = _sessionLog.OpenClient(DispatcherId, logon.Value.SenderCompId);
+            string? reject = DecideLogon(logon.Value, recovery, binding, out long skipFrom, out bool gapFillLogon, out bool echoReset);
+            if (reject is null)
+            {
+                Remember(binding);
+            }
+
+            int heartBtInt = logon.Value.HeartBtInt is >= 1 and <= 3600 ? logon.Value.HeartBtInt : Options.HeartBtInt;
             var sessionOptions = new SessionOptions
             {
                 SessionId = DispatcherId + "-" + logon.Value.SenderCompId,
@@ -327,17 +350,30 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 SenderCompId = Options.SenderCompId,
                 TargetCompId = logon.Value.SenderCompId,
                 BeginString = Options.BeginString,
-                HeartBtInt = Options.HeartBtInt,
+                HeartBtInt = heartBtInt,
                 LogonTimeout = Options.LogonTimeout,
+                ResetSeqNumFlag = echoReset,
+                NextExpectedMsgSeqNum = reject is null && logon.Value.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum
+                    ? binding.State.NextInExpected
+                    : null,
+            };
+            var plan = new AcceptorSessionPlan
+            {
+                HeartBtInt = heartBtInt,
+                SkipFrom = reject is null ? skipFrom : 0,
+                GapFillLogonSequence = reject is null && gapFillLogon,
+                RejectText = reject,
+                LogoutTimeoutSeconds = recovery.LogoutTimeoutSeconds,
+                State = binding.State,
             };
             session = new FixAcceptedSession(
                 logon.Value.SenderCompId,
                 client,
                 stream,
                 binding.Index,
+                plan,
                 sessionOptions,
                 Options.ChannelCapacity,
-                Options.HeartBtInt,
                 logon.Value.Prelude,
                 logon.Value.PreludeLength,
                 OnSessionClosed,
@@ -436,12 +472,14 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             {
                 if (FixWireFrame.TryTakeFrame(buffer.AsSpan(0, count), out int frameLength))
                 {
-                    if (!TryAcceptLogon(buffer.AsSpan(0, frameLength), out string senderCompId, out bool resetSequence))
+                    if (!TryAcceptLogon(buffer.AsSpan(0, frameLength), out PendingLogon accepted))
                     {
                         Logger.LogWarning(
                             "Dispatcher {DispatcherId} recusou Logon. TargetCompID esperado {SenderCompId}.",
                             DispatcherId,
                             Options.SenderCompId);
+                        string target = string.IsNullOrEmpty(accepted.SenderCompId) ? "UNKNOWN" : accepted.SenderCompId;
+                        await WriteRejectLogoutAsync(stream, target, "Logon rejected", Options.Recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
                         return null;
                     }
 
@@ -452,7 +490,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                         buffer.AsSpan(frameLength, preludeLength).CopyTo(prelude);
                     }
 
-                    return new PendingLogon(senderCompId, resetSequence, prelude, preludeLength);
+                    return accepted.WithPrelude(prelude, preludeLength);
                 }
 
                 if (count == buffer.Length)
@@ -484,10 +522,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
     }
 
-    private bool TryAcceptLogon(ReadOnlySpan<byte> frame, out string senderCompId, out bool resetSequence)
+    private bool TryAcceptLogon(ReadOnlySpan<byte> frame, out PendingLogon logon)
     {
-        senderCompId = string.Empty;
-        resetSequence = false;
+        logon = default;
         if (!FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType) || msgType.Length != 1 || msgType[0] != (byte)'A')
         {
             return false;
@@ -506,15 +543,216 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
 
         if (!FixWireFrame.TryReadTag(frame, 49, out ReadOnlySpan<byte> sender)
-            || !FixWireFrame.TryDecodeSessionKey(sender, out senderCompId)
+            || !FixWireFrame.TryDecodeSessionKey(sender, out string senderCompId)
             || !IsAllowed(senderCompId))
         {
-            senderCompId = string.Empty;
+            if (FixWireFrame.TryReadTag(frame, 49, out ReadOnlySpan<byte> rawSender)
+                && FixWireFrame.TryDecodeSessionKey(rawSender, out string rejected))
+            {
+                logon = PendingLogon.Identity(rejected);
+            }
+
             return false;
         }
 
-        resetSequence = FixWireFrame.TryReadTag(frame, 141, out ReadOnlySpan<byte> reset) && reset.Length == 1 && reset[0] == (byte)'Y';
+        bool resetSequence = FixWireFrame.TryReadTag(frame, 141, out ReadOnlySpan<byte> reset) && reset.Length == 1 && reset[0] == (byte)'Y';
+        long msgSeqNum = 0;
+        if (FixWireFrame.TryReadTag(frame, 34, out ReadOnlySpan<byte> seqRaw))
+        {
+            FixWireFrame.TryParseNonNegative(seqRaw, out msgSeqNum);
+        }
+
+        int heartBtInt = 0;
+        if (FixWireFrame.TryReadTag(frame, 108, out ReadOnlySpan<byte> heartRaw)
+            && FixWireFrame.TryParseNonNegative(heartRaw, out long heart)
+            && heart is >= 1 and <= int.MaxValue)
+        {
+            heartBtInt = (int)heart;
+        }
+
+        bool possDup = FixWireFrame.TryReadTag(frame, 43, out ReadOnlySpan<byte> dup) && dup.Length == 1 && dup[0] == (byte)'Y';
+        long next = 0;
+        bool hasNext = FixWireFrame.TryReadTag(frame, 789, out ReadOnlySpan<byte> nextRaw)
+            && FixWireFrame.TryParseNonNegative(nextRaw, out next)
+            && next > 0;
+        logon = PendingLogon.Accepted(senderCompId, resetSequence, msgSeqNum, possDup, heartBtInt, hasNext, hasNext ? next : 0);
         return true;
+    }
+
+    private string? DecideLogon(
+        PendingLogon logon,
+        AcceptorRecoveryOptions recovery,
+        ClientBinding binding,
+        out long skipFrom,
+        out bool gapFillLogon,
+        out bool echoReset)
+    {
+        skipFrom = 0;
+        gapFillLogon = false;
+        echoReset = false;
+        if (logon.ResetSequence)
+        {
+            if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum && logon.NextExpected > 1)
+            {
+                NoteClientAhead(logon.SenderCompId, logon.NextExpected, 1);
+                return "MsgSeqNum too high";
+            }
+
+            ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
+            reset.State.NextInExpected = logon.MsgSeqNum + 1;
+            echoReset = true;
+            return null;
+        }
+
+        long expected = binding.State.NextInExpected;
+        if (logon.MsgSeqNum > expected)
+        {
+            AcceptorSessionMetrics.InSeqGap.Add(1);
+            Logger.LogWarning(
+                "Sessão FIX {SenderCompId} recebeu MsgSeqNum {Seq} acima do esperado {Expected}.",
+                logon.SenderCompId,
+                logon.MsgSeqNum,
+                expected);
+        }
+        else if (logon.MsgSeqNum < expected && !logon.PossDup)
+        {
+            return "MsgSeqNum too low";
+        }
+
+        long nextOut = binding.Index.NextOut;
+        if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum)
+        {
+            if (logon.NextExpected > nextOut)
+            {
+                NoteClientAhead(logon.SenderCompId, logon.NextExpected, nextOut);
+                return "MsgSeqNum too high";
+            }
+
+            if (logon.NextExpected < nextOut)
+            {
+                if (recovery.OnReconnectGap == OnReconnectGap.SkipToCurrent)
+                {
+                    skipFrom = logon.NextExpected;
+                }
+                else
+                {
+                    // Reenvio de aplicação N..M-1 com PossDup fica no TD-08.
+                    // Até lá o intervalo continua no .cidx e o cliente pede por ResendRequest.
+                    // O gap-fill abaixo cobre só o seq que o Logon de resposta vai consumir.
+                    gapFillLogon = true;
+                }
+            }
+        }
+
+        if (logon.MsgSeqNum >= expected)
+        {
+            binding.State.NextInExpected = logon.MsgSeqNum + 1;
+        }
+
+        return null;
+    }
+
+    private void NoteClientAhead(string senderCompId, long requested, long nextOut)
+    {
+        AcceptorSessionMetrics.ClientAhead.Add(1);
+        Logger.LogWarning(
+            "Sessão FIX {SenderCompId} pediu seq {Requested} acima do numerado {NextOut}.",
+            senderCompId,
+            requested,
+            nextOut);
+    }
+
+    private AcceptorRecoveryOptions RecoveryFor(string senderCompId)
+    {
+        IReadOnlyList<AcceptorClientOverride> overrides = Options.ClientOverrides;
+        for (int i = 0; i < overrides.Count; i++)
+        {
+            if (string.Equals(overrides[i].SenderCompId, senderCompId, StringComparison.Ordinal))
+            {
+                return Options.Recovery.Merge(overrides[i]);
+            }
+        }
+
+        return Options.Recovery;
+    }
+
+    private async Task WriteRejectLogoutAsync(
+        Stream stream,
+        string targetCompId,
+        string text,
+        int timeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        var options = new SessionOptions
+        {
+            SessionId = DispatcherId + "-" + targetCompId,
+            Host = Options.ListenAddress,
+            Port = Options.ListenPort,
+            SenderCompId = Options.SenderCompId,
+            TargetCompId = targetCompId,
+            BeginString = Options.BeginString,
+            HeartBtInt = Options.HeartBtInt,
+        };
+        byte[] rented = ArrayPool<byte>.Shared.Rent(512);
+        try
+        {
+            int written = FixMessageBuilder.BuildLogout(rented, options, 1, Encoding.ASCII.GetBytes(text)).Length;
+            await stream.WriteAsync(rented.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            Logger.LogDebug(ex, "Dispatcher {DispatcherId} não enviou Logout de recusa.", DispatcherId);
+            return;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(ReadBufferBytes);
+        int count = 0;
+        try
+        {
+            while (!timeout.IsCancellationRequested)
+            {
+                if (FixWireFrame.TryTakeFrame(buffer.AsSpan(0, count), out int frameLength))
+                {
+                    if (FixWireFrame.TryReadTag(buffer.AsSpan(0, frameLength), 35, out ReadOnlySpan<byte> msgType)
+                        && msgType.Length == 1
+                        && msgType[0] == (byte)'5')
+                    {
+                        return;
+                    }
+
+                    int remaining = count - frameLength;
+                    if (remaining > 0)
+                    {
+                        Buffer.BlockCopy(buffer, frameLength, buffer, 0, remaining);
+                    }
+
+                    count = remaining;
+                    continue;
+                }
+
+                int read = await stream.ReadAsync(buffer.AsMemory(count), timeout.Token).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return;
+                }
+
+                count += read;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
     }
 
     private bool IsAllowed(string senderCompId)
@@ -579,10 +817,24 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
     private readonly struct PendingLogon
     {
-        internal PendingLogon(string senderCompId, bool resetSequence, byte[] prelude, int preludeLength)
+        private PendingLogon(
+            string senderCompId,
+            bool resetSequence,
+            long msgSeqNum,
+            bool possDup,
+            int heartBtInt,
+            bool hasNextExpected,
+            long nextExpected,
+            byte[] prelude,
+            int preludeLength)
         {
             SenderCompId = senderCompId;
             ResetSequence = resetSequence;
+            MsgSeqNum = msgSeqNum;
+            PossDup = possDup;
+            HeartBtInt = heartBtInt;
+            HasNextExpected = hasNextExpected;
+            NextExpected = nextExpected;
             Prelude = prelude;
             PreludeLength = preludeLength;
         }
@@ -591,9 +843,35 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
         internal bool ResetSequence { get; }
 
+        internal long MsgSeqNum { get; }
+
+        internal bool PossDup { get; }
+
+        internal int HeartBtInt { get; }
+
+        internal bool HasNextExpected { get; }
+
+        internal long NextExpected { get; }
+
         internal byte[] Prelude { get; }
 
         internal int PreludeLength { get; }
+
+        internal static PendingLogon Identity(string senderCompId) =>
+            new(senderCompId, false, 0, false, 0, false, 0, [], 0);
+
+        internal static PendingLogon Accepted(
+            string senderCompId,
+            bool resetSequence,
+            long msgSeqNum,
+            bool possDup,
+            int heartBtInt,
+            bool hasNextExpected,
+            long nextExpected) =>
+            new(senderCompId, resetSequence, msgSeqNum, possDup, heartBtInt, hasNextExpected, nextExpected, [], 0);
+
+        internal PendingLogon WithPrelude(byte[] prelude, int preludeLength) =>
+            new(SenderCompId, ResetSequence, MsgSeqNum, PossDup, HeartBtInt, HasNextExpected, NextExpected, prelude, preludeLength);
     }
 
     /// <summary>
