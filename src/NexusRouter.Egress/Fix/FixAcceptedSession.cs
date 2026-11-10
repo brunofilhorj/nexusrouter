@@ -22,6 +22,9 @@ internal sealed class FixAcceptedSession
 {
     private const int AdminMessageBytes = 1024;
     private const int ReadBufferBytes = 64 * 1024;
+    private const int ResendGrowthBytes = 256;
+    private const int MaxResendFields = 512;
+    private const int SendingTimeWidth = 21;
 
     private static readonly AsyncLocal<int> WriteLoopDepth = new();
 
@@ -35,6 +38,9 @@ internal sealed class FixAcceptedSession
     private readonly int _preludeLength;
     private readonly Action<FixAcceptedSession> _onClosed;
     private readonly ILogger _logger;
+    private readonly ISessionLogReader _reader;
+    private readonly Func<ushort, DeliveryMode> _deliveryModeOf;
+    private readonly TimeSpan _slotPublishTimeout;
     private readonly Channel<OutboundFrame> _outbound;
     private readonly SemaphoreSlim _enqueueGate = new(1, 1);
     private readonly TaskCompletionSource _logonReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -51,6 +57,8 @@ internal sealed class FixAcceptedSession
     private int _logoutPhase;
     private int _testRequestOutstanding;
     private long _lastInboundTicks;
+    private long _resendFrom;
+    private long _resendTo;
 
     /// <summary>
     /// Cria a sessão. O Logon de resposta sai em <see cref="StartAsync"/>.
@@ -65,6 +73,9 @@ internal sealed class FixAcceptedSession
     /// <param name="prelude">Bytes que chegaram no mesmo read do Logon, depois do frame.</param>
     /// <param name="onClosed">Remove a sessão da tabela do dispatcher.</param>
     /// <param name="logger">Log de ciclo de vida. O frame FIX não entra aqui.</param>
+    /// <param name="reader">Leitor do log de sessão. Entrega o frame que um slot de aplicação do índice aponta.</param>
+    /// <param name="deliveryModeOf">Modo de entrega da sessão de ingress dona do stream. Define como o reenvio reescreve o frame.</param>
+    /// <param name="slotPublishTimeout">Quanto o reenvio espera um slot reservado e não publicado antes de tratá-lo como gap.</param>
     internal FixAcceptedSession(
         string senderCompId,
         TcpClient client,
@@ -76,8 +87,16 @@ internal sealed class FixAcceptedSession
         byte[] prelude,
         int preludeLength,
         Action<FixAcceptedSession> onClosed,
-        ILogger logger)
+        ILogger logger,
+        ISessionLogReader reader,
+        Func<ushort, DeliveryMode> deliveryModeOf,
+        TimeSpan slotPublishTimeout)
     {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(deliveryModeOf);
+        _reader = reader;
+        _deliveryModeOf = deliveryModeOf;
+        _slotPublishTimeout = slotPublishTimeout;
         SenderCompId = senderCompId;
         _client = client;
         _stream = stream;
@@ -647,6 +666,14 @@ internal sealed class FixAcceptedSession
                     }
 
                     count = remaining;
+                    if (_resendTo > 0)
+                    {
+                        long from = _resendFrom;
+                        long to = _resendTo;
+                        _resendFrom = 0;
+                        _resendTo = 0;
+                        await ResendAsync(from, to, cancellationToken).ConfigureAwait(false);
+                    }
                     if (!keep)
                     {
                         return;
@@ -802,7 +829,220 @@ internal sealed class FixAcceptedSession
             return;
         }
 
-        TryEnqueueGapFill(beginSeqNo, newSeqNo);
+        // O frame de entrada é um span do buffer de leitura e não atravessa o await. O ReadLoop roda o reenvio depois.
+        _resendFrom = beginSeqNo;
+        _resendTo = newSeqNo - 1;
+    }
+
+    /// <summary>
+    /// Atende um ResendRequest: aplicação do log com PossDupFlag=Y e administrativas em gap-fill agrupado.
+    /// Roda na task de leitura da sessão e escreve na mesma fila de saída do tráfego ao vivo.
+    /// </summary>
+    private async Task ResendAsync(long beginSeqNo, long endSeqNo, CancellationToken cancellationToken)
+    {
+        var planner = new ResendPlanner(_index, beginSeqNo, endSeqNo, ResendPlanner.MaxMessagesPerRequest, _slotPublishTimeout);
+        var scratch = new ArrayBufferWriter<byte>(2048);
+        long gapFrom = 0;
+        long gapTo = 0;
+        int applications = 0;
+        try
+        {
+            while (planner.TryNext(out ResendAction action))
+            {
+                switch (action.Kind)
+                {
+                    case ResendActionKind.Wait:
+                        await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case ResendActionKind.GapFill:
+                        if (gapTo > 0 && gapTo == action.FromSeq)
+                        {
+                            gapTo = action.ToSeq;
+                        }
+                        else
+                        {
+                            await FlushGapAsync(gapFrom, gapTo, possMissing: false, cancellationToken).ConfigureAwait(false);
+                            gapFrom = action.FromSeq;
+                            gapTo = action.ToSeq;
+                        }
+
+                        if (action.PossMissingApplMsg)
+                        {
+                            await FlushGapAsync(gapFrom, gapTo, possMissing: true, cancellationToken).ConfigureAwait(false);
+                            gapFrom = 0;
+                            gapTo = 0;
+                        }
+
+                        break;
+                    default:
+                        scratch.ResetWrittenCount();
+                        if (!TryReadApplication(action.Entry, scratch))
+                        {
+                            // Registro fora da retenção ou com CRC ruim: vira gap, como slot administrativo.
+                            if (gapTo > 0 && gapTo == action.FromSeq)
+                            {
+                                gapTo = action.ToSeq;
+                            }
+                            else
+                            {
+                                await FlushGapAsync(gapFrom, gapTo, possMissing: false, cancellationToken).ConfigureAwait(false);
+                                gapFrom = action.FromSeq;
+                                gapTo = action.ToSeq;
+                            }
+
+                            break;
+                        }
+
+                        await FlushGapAsync(gapFrom, gapTo, possMissing: false, cancellationToken).ConfigureAwait(false);
+                        gapFrom = 0;
+                        gapTo = 0;
+                        await EnqueueResendAsync(scratch.WrittenMemory, action.Entry.Stream, action.FromSeq, cancellationToken).ConfigureAwait(false);
+                        applications++;
+                        break;
+                }
+            }
+
+            await FlushGapAsync(gapFrom, gapTo, possMissing: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            return;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _logger.LogDebug(
+            "Sessão FIX {SenderCompId} reenviou {Applications} mensagens de aplicação em {Begin}..{End}.",
+            SenderCompId,
+            applications,
+            beginSeqNo,
+            endSeqNo);
+    }
+
+    private bool TryReadApplication(IndexEntry entry, ArrayBufferWriter<byte> scratch)
+    {
+        if (!_reader.TryReadAt(entry.Stream, entry.Segment, entry.Offset, scratch))
+        {
+            return false;
+        }
+
+        // O índice só aponta aplicação. A checagem protege contra um registro administrativo que chegue ao slot.
+        return FixWireFrame.TryReadTag(scratch.WrittenSpan, 35, out ReadOnlySpan<byte> msgType)
+            && !FixAdminMessageTypes.IsAdmin(msgType);
+    }
+
+    private async ValueTask FlushGapAsync(long fromSeq, long toSeq, bool possMissing, CancellationToken cancellationToken)
+    {
+        if (toSeq <= fromSeq || fromSeq <= 0)
+        {
+            return;
+        }
+
+        byte[]? rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
+        try
+        {
+            int written = FixMessageBuilder.BuildSequenceReset(rented, _options, fromSeq, toSeq, gapFill: true, possMissing).Length;
+            await WriteOutboundAsync(rented, written, cancellationToken).ConfigureAwait(false);
+            rented = null;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+            }
+        }
+    }
+
+    private async ValueTask EnqueueResendAsync(ReadOnlyMemory<byte> frame, ushort stream, long sequence, CancellationToken cancellationToken)
+    {
+        byte[]? rented = ArrayPool<byte>.Shared.Rent(frame.Length + ResendGrowthBytes);
+        try
+        {
+            int written = PrepareResend(frame, _deliveryModeOf(stream), sequence, rented);
+            await WriteOutboundAsync(rented, written, cancellationToken).ConfigureAwait(false);
+            rented = null;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+            }
+        }
+    }
+
+    private async ValueTask WriteOutboundAsync(byte[] buffer, int length, CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _stop) != 0)
+        {
+            throw new ChannelClosedException();
+        }
+
+        // Espera quando a fila está cheia: perder uma mensagem do reenvio deixaria o buraco que o cliente pediu.
+        await _outbound.Writer.WriteAsync(new OutboundFrame(buffer, length), cancellationToken).ConfigureAwait(false);
+    }
+
+    private int PrepareResend(ReadOnlyMemory<byte> frame, DeliveryMode mode, long sequence, byte[] destination)
+    {
+        switch (mode)
+        {
+            case DeliveryMode.PassThrough:
+            {
+                Span<byte> sendingTime = stackalloc byte[SendingTimeWidth];
+                WriteSendingTime(sendingTime);
+                if (!PassThroughRewriter.TryRewriteForResend(frame.Span, destination, sequence, sendingTime, out int written))
+                {
+                    throw new InvalidOperationException(
+                        "O frame do log não pôde ser reescrito para reenvio (tags 9, 34 ou 10 ausentes ou inválidas).");
+                }
+
+                return written;
+            }
+
+            case DeliveryMode.Parse:
+            {
+                FixField[] fields = ArrayPool<FixField>.Shared.Rent(MaxResendFields);
+                try
+                {
+                    FixMessage message = FixTokenizer.Tokenize(frame, fields, out bool truncated);
+                    if (truncated)
+                    {
+                        throw new InvalidOperationException("O frame do log tem mais campos do que o reenvio comporta.");
+                    }
+
+                    return FixMessageSerializer.SerializeForResend(
+                        in message,
+                        destination,
+                        sequence,
+                        _options.SenderCompId,
+                        _options.TargetCompId);
+                }
+                finally
+                {
+                    ArrayPool<FixField>.Shared.Return(fields, clearArray: true);
+                }
+            }
+
+            default:
+                throw new InvalidOperationException("Modo de entrega desconhecido.");
+        }
+    }
+
+    private static void WriteSendingTime(Span<byte> destination)
+    {
+        Span<char> chars = stackalloc char[SendingTimeWidth];
+        if (!DateTime.UtcNow.TryFormat(chars, out int count, "yyyyMMdd-HH:mm:ss.fff") || count != SendingTimeWidth)
+        {
+            throw new InvalidOperationException("SendingTime não foi formatado.");
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            destination[i] = (byte)chars[i];
+        }
     }
 
     private void BeginLogout(string text)

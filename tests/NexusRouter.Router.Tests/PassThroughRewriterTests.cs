@@ -35,6 +35,57 @@ public sealed class PassThroughRewriterTests
     }
 
     [Theory]
+    [InlineData(12, 12)]
+    [InlineData(12, 7)]
+    [InlineData(9982, 37582)]
+    [InlineData(1, 1234567890123456789)]
+    public void TryRewriteForResend_WhenFrameHasSendingTime_InsertsPossDupAndOrigSendingTime(long original, long newSeqNum)
+    {
+        byte[] source = FixMessageTestData.CreateValidFrame(sequenceNumber: original);
+        byte[] destination = new byte[source.Length + PassThroughRewriter.MaxResendGrowthBytes];
+        bool rewritten = PassThroughRewriter.TryRewriteForResend(
+            source,
+            destination,
+            newSeqNum,
+            "20260102-03:04:05.678"u8,
+            out int written);
+        Assert.True(rewritten);
+        byte[] frame = destination[..written];
+        string text = Encoding.ASCII.GetString(frame);
+        Assert.Contains($"\u000134={newSeqNum}\u000143=Y\u000152=20260102-03:04:05.678\u0001122=20260101-00:00:00\u0001", text);
+        Assert.Contains("\u000111=ORDER-1\u000155=IBM\u0001", text);
+        Assert.DoesNotContain("\u000152=20260101-00:00:00\u0001", text);
+        Assert.True(FixMessageTestData.HasValidChecksum(frame));
+        Assert.True(FixMessageTestData.HasValidBodyLength(frame));
+    }
+
+    [Fact]
+    public void TryRewriteForResend_WhenFrameAlreadyHasPossDup_KeepsASingleCopyOfEachTag()
+    {
+        byte[] plain = FixMessageTestData.CreateValidFrame(sequenceNumber: 5);
+        byte[] first = new byte[plain.Length + PassThroughRewriter.MaxResendGrowthBytes];
+        Assert.True(PassThroughRewriter.TryRewriteForResend(plain, first, 5, "20260102-03:04:05.678"u8, out int firstLength));
+        byte[] second = new byte[firstLength + PassThroughRewriter.MaxResendGrowthBytes];
+        Assert.True(PassThroughRewriter.TryRewriteForResend(first.AsSpan(0, firstLength), second, 5, "20260103-00:00:00.000"u8, out int secondLength));
+        string text = Encoding.ASCII.GetString(second, 0, secondLength);
+        Assert.Equal(1, text.Split("\u000143=Y\u0001").Length - 1);
+        Assert.Equal(1, text.Split("\u0001122=").Length - 1);
+        Assert.Contains("\u0001122=20260102-03:04:05.678\u0001", text);
+        Assert.True(FixMessageTestData.HasValidChecksum(second.AsSpan(0, secondLength)));
+        Assert.True(FixMessageTestData.HasValidBodyLength(second.AsSpan(0, secondLength)));
+    }
+
+    [Fact]
+    public void TryRewriteForResend_WhenSequenceTagIsMissing_ReturnsFalse()
+    {
+        byte[] source = FixMessageTestData.CreateValidFrame(sequenceNumber: null);
+        byte[] destination = new byte[source.Length + PassThroughRewriter.MaxResendGrowthBytes];
+        bool rewritten = PassThroughRewriter.TryRewriteForResend(source, destination, 3, "20260102-03:04:05.678"u8, out int written);
+        Assert.False(rewritten);
+        Assert.Equal(0, written);
+    }
+
+    [Theory]
     [InlineData(12, 98)]
     [InlineData(12, 7)]
     [InlineData(12, 123)]

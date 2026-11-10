@@ -245,6 +245,13 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     }
 
     /// <inheritdoc />
+    public bool TryReadAt(ushort stream, uint segment, ulong offset, IBufferWriter<byte> destination)
+    {
+        SessionLogStream? found = Find(stream);
+        return found is not null && found.TryReadAt(segment, offset, destination);
+    }
+
+    /// <inheritdoc />
     public long GetCommitted(ushort stream, int epoch) => Find(stream)?.GetCommitted(epoch) ?? 0;
 
     /// <summary>

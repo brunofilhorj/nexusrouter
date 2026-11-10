@@ -1,3 +1,4 @@
+using System.Text;
 using System.Buffers;
 using System.Diagnostics.Metrics;
 
@@ -179,6 +180,32 @@ public sealed class SessionLogTests
             Assert.Equal(1, entry.Kind);
             Assert.Equal(stream.StreamId, entry.Stream);
             Assert.Equal(0u, entry.Segment);
+        }
+        finally
+        {
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public async Task TryReadAt_WhenSlotPointsAtARecord_CopiesTheOriginalFrame()
+    {
+        await using SessionLogManager manager = CreateManager(out string directory);
+        try
+        {
+            SessionLogStream stream = (SessionLogStream)manager.OpenStream("EXCH_A");
+            _ = stream.Append("first"u8, 4, 10);
+            AppendResult appended = stream.Append("second"u8, 5, 11);
+            ClientBinding client = manager.OpenClient("FIX_OUT", "OMS1");
+            long seq = client.Index.ReserveSeq();
+            client.Index.PublishApp(seq, appended.Ref);
+            Assert.Equal(IndexReadResult.Published, client.Index.TryGet(seq, out IndexEntry entry));
+
+            var buffer = new ArrayBufferWriter<byte>();
+            Assert.True(manager.Reader.TryReadAt(entry.Stream, entry.Segment, entry.Offset, buffer));
+            Assert.Equal("second", Encoding.ASCII.GetString(buffer.WrittenSpan));
+            Assert.False(manager.Reader.TryReadAt(entry.Stream, entry.Segment, entry.Offset + 1, new ArrayBufferWriter<byte>()));
+            Assert.False(manager.Reader.TryReadAt(entry.Stream, 99, entry.Offset, new ArrayBufferWriter<byte>()));
         }
         finally
         {

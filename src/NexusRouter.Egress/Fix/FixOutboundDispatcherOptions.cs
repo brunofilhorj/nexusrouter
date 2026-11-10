@@ -89,6 +89,12 @@ public sealed class FixOutboundDispatcherOptions
     public AcceptorRecoveryOptions Recovery { get; init; } = new();
 
     /// <summary>
+    /// Quanto o reenvio de um <c>ResendRequest</c> espera um slot reservado e ainda não publicado antes de tratá-lo como gap.
+    /// O Host copia <c>SessionLog.SlotPublishTimeoutMs</c>.
+    /// </summary>
+    public TimeSpan SlotPublishTimeout { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Sobrescrita de <see cref="Recovery"/> por SenderCompID do cliente.
     /// </summary>
     public IReadOnlyList<AcceptorClientOverride> ClientOverrides { get; init; } = [];
@@ -130,6 +136,10 @@ public sealed class FixOutboundDispatcherOptions
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ChannelCapacity);
+        if (SlotPublishTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(SlotPublishTimeout), SlotPublishTimeout, "O timeout de publicação de slot deve ser positivo.");
+        }
         if (AcceptRetryBaseDelay < TimeSpan.Zero || AcceptRetryMaxDelay < TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(AcceptRetryBaseDelay), "O atraso de retry do accept não pode ser negativo.");

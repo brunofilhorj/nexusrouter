@@ -1215,7 +1215,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-08 — Reenvio no `ResendRequest`: aplicação do log, gap-fill para administrativas
+- [x] TD-08 — Reenvio no `ResendRequest`: aplicação do log, gap-fill para administrativas
 
 **Origem:** `notes/session-log-rethink.md` §4, §8.1; `notes/seqnum-rethink.md` §7.1 item 3 e §4. **Tamanho:** G. **Depende de:** TD-03, TD-04, TD-04a.
 

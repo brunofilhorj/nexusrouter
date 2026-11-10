@@ -203,6 +203,8 @@ public sealed class StreamCatchUpTests
             }
         }
 
+        public bool TryReadAt(ushort stream, uint segment, ulong offset, IBufferWriter<byte> destination) => false;
+
         public bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination)
         {
             if (inSeq <= 0 || inSeq > GetCommitted(stream, epoch))

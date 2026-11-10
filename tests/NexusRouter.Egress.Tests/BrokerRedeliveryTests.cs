@@ -246,6 +246,8 @@ public sealed class BrokerRedeliveryTests
             }
         }
 
+        public bool TryReadAt(ushort stream, uint segment, ulong offset, IBufferWriter<byte> destination) => false;
+
         public bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination)
         {
             if (!_frames.TryGetValue((stream, epoch, inSeq), out byte[]? frame))
