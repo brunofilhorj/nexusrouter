@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using NexusRouter.Audit;
 using NexusRouter.Audit.Sinks;
 using NexusRouter.Domain.Abstractions;
+using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
@@ -277,7 +278,7 @@ public static class ServiceCollectionExtensions
                     break;
 
                 case Configuration.FixOutboundDispatcherOptions fix:
-                    RegisterFixOutbound(services, fix);
+                    RegisterFixOutbound(services, fix, options.Sessions);
                     break;
 
                 case Configuration.WebSocketDispatcherOptions ws:
@@ -520,7 +521,8 @@ public static class ServiceCollectionExtensions
 
     private static void RegisterFixOutbound(
         IServiceCollection services,
-        Configuration.FixOutboundDispatcherOptions config)
+        Configuration.FixOutboundDispatcherOptions config,
+        IReadOnlyList<HostSessionOptions> ingressSessions)
     {
         services.AddSingleton<FixOutboundDispatcher>(sp =>
         {
@@ -542,6 +544,7 @@ public static class ServiceCollectionExtensions
                 AcceptRetryMaxDelay = TimeSpan.FromMilliseconds(config.AcceptRetryMaxDelayMs),
                 AcceptRetryJitterFactor = config.AcceptRetryJitterFactor,
                 Recovery = config.Recovery,
+                SlotPublishTimeout = TimeSpan.FromMilliseconds(sp.GetService<SessionLogOptions>()?.SlotPublishTimeoutMs ?? 1000),
                 ClientOverrides = config.ClientOverrides,
             };
             ILogger<FixOutboundDispatcher> logger = sp.GetRequiredService<ILogger<FixOutboundDispatcher>>();
@@ -555,11 +558,39 @@ public static class ServiceCollectionExtensions
                 payloadPool,
                 secretResolver,
                 sessionLog,
-                CreateCatchUp(sp, config.Id, payloadPool));
+                CreateCatchUp(sp, config.Id, payloadPool),
+                CreateResendDeliveryMode(sessionLog, ingressSessions));
             return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());
+    }
+
+    /// <summary>
+    /// Resolve o modo de entrega de um stream do log pelo SessionId da sessão de ingress. A tabela é montada no primeiro reenvio.
+    /// </summary>
+    private static Func<ushort, DeliveryMode> CreateResendDeliveryMode(
+        ISessionLog sessionLog,
+        IReadOnlyList<HostSessionOptions> ingressSessions)
+    {
+        Dictionary<ushort, DeliveryMode>? byStream = null;
+        object gate = new();
+        return stream =>
+        {
+            lock (gate)
+            {
+                if (byStream is null)
+                {
+                    byStream = [];
+                    foreach (HostSessionOptions session in ingressSessions)
+                    {
+                        byStream[sessionLog.OpenStream(session.SessionId).StreamId] = session.DeliveryMode;
+                    }
+                }
+
+                return byStream.TryGetValue(stream, out DeliveryMode mode) ? mode : DeliveryMode.PassThrough;
+            }
+        };
     }
 
     private static BrokerCursorTracker? CreateBrokerTracker(

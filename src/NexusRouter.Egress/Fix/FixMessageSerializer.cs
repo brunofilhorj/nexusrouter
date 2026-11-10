@@ -15,6 +15,7 @@ namespace NexusRouter.Egress.Fix;
 public static class FixMessageSerializer
 {
     private const byte Soh = 0x01;
+    private const int SendingTimeWidth = 21;
 
     /// <summary>
     /// Escreve a mensagem em <paramref name="destination"/>.
@@ -33,7 +34,36 @@ public static class FixMessageSerializer
         Span<byte> destination,
         long seqNum,
         string senderCompId,
-        string targetCompId)
+        string targetCompId) =>
+        SerializeCore(in message, destination, seqNum, senderCompId, targetCompId, resend: false);
+
+    /// <summary>
+    /// Igual a <see cref="Serialize"/>, para reenvio: grava PossDupFlag (43)=Y e OrigSendingTime (122) com o SendingTime (52) da mensagem original.
+    /// </summary>
+    /// <param name="message">Mensagem tokenizada a partir do frame guardado no log. O 52 original, se existir, vira o 122.</param>
+    /// <param name="destination">Buffer de destino.</param>
+    /// <param name="seqNum">MsgSeqNum (tag 34) que a mensagem teve para este cliente.</param>
+    /// <param name="senderCompId">SenderCompID (tag 49).</param>
+    /// <param name="targetCompId">TargetCompID (tag 56).</param>
+    /// <returns>Quantidade de bytes escritos, incluindo o CheckSum.</returns>
+    /// <exception cref="ArgumentException">Falta MsgType, BeginString ou um comp ID é inválido.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="seqNum"/> não é positivo.</exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe em <paramref name="destination"/>.</exception>
+    public static int SerializeForResend(
+        in NexusRouter.Domain.Models.FixMessage message,
+        Span<byte> destination,
+        long seqNum,
+        string senderCompId,
+        string targetCompId) =>
+        SerializeCore(in message, destination, seqNum, senderCompId, targetCompId, resend: true);
+
+    private static int SerializeCore(
+        in NexusRouter.Domain.Models.FixMessage message,
+        Span<byte> destination,
+        long seqNum,
+        string senderCompId,
+        string targetCompId,
+        bool resend)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(seqNum);
         ValidateToken(senderCompId, nameof(senderCompId));
@@ -51,7 +81,7 @@ public static class FixMessageSerializer
         byte[] workspace = ArrayPool<byte>.Shared.Rent(Math.Max(destination.Length, 256));
         try
         {
-            int bodyLength = WriteBody(workspace, message, seqNum, senderCompId, targetCompId);
+            int bodyLength = WriteBody(workspace, message, seqNum, senderCompId, targetCompId, resend);
             int lengthDigits = CountDigits(bodyLength);
             int headerLength = 2 + beginString.Length + 1 + 2 + lengthDigits + 1;
             int total = headerLength + bodyLength + 7;
@@ -100,7 +130,8 @@ public static class FixMessageSerializer
         in NexusRouter.Domain.Models.FixMessage message,
         long seqNum,
         string senderCompId,
-        string targetCompId)
+        string targetCompId,
+        bool resend)
     {
         int offset = 0;
         offset = AppendLiteral(body, offset, "35="u8);
@@ -120,14 +151,35 @@ public static class FixMessageSerializer
 
         offset += sequenceWidth;
         offset = AppendSoh(body, offset);
+        if (resend)
+        {
+            offset = AppendLiteral(body, offset, "43=Y\u0001"u8);
+        }
+
+        int sendingTimeStart = offset + 3;
         offset = AppendLiteral(body, offset, "52="u8);
         offset = AppendSendingTime(body, offset);
         offset = AppendSoh(body, offset);
+        if (resend)
+        {
+            // OrigSendingTime é o 52 que a mensagem teve na primeira vez. Sem ele, vale o SendingTime novo.
+            offset = AppendLiteral(body, offset, "122="u8);
+            if (message.TryGetField(52, out ReadOnlySpan<byte> original) && !original.IsEmpty)
+            {
+                offset = AppendBytes(body, offset, original);
+            }
+            else
+            {
+                offset = AppendBytes(body, offset, body.Slice(sendingTimeStart, SendingTimeWidth));
+            }
+
+            offset = AppendSoh(body, offset);
+        }
 
         ReadOnlySpan<NexusRouter.Domain.Models.FixField> fields = message.Fields;
         for (int i = 0; i < fields.Length; i++)
         {
-            if (IsRewritten(fields[i].Tag))
+            if (IsRewritten(fields[i].Tag) || (resend && fields[i].Tag is 43 or 122))
             {
                 continue;
             }

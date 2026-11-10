@@ -284,6 +284,10 @@ public static class FixMessageBuilder
     /// <param name="gapFill">
     /// Quando <see langword="true"/>, GapFillFlag (tag 123) sai como Y, junto com PossDupFlag (43=Y) e OrigSendingTime (122).
     /// </param>
+    /// <param name="possMissingApplMsg">
+    /// Quando <see langword="true"/>, grava PossMissingApplMsg (tag 35033)=Y. Usado no último SequenceReset de um reenvio
+    /// que passou do limite de mensagens por pedido.
+    /// </param>
     /// <returns>Slice preenchido, incluindo o checksum.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
     /// <exception cref="ArgumentException">BeginString ou comp ID é inválido.</exception>
@@ -295,11 +299,12 @@ public static class FixMessageBuilder
         SessionOptions options,
         long msgSeqNum,
         long newSeqNo,
-        bool gapFill)
+        bool gapFill,
+        bool possMissingApplMsg = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSeqNo);
 
-        Span<byte> extra = stackalloc byte[96];
+        Span<byte> extra = stackalloc byte[112];
         int length = 0;
         if (gapFill)
         {
@@ -319,6 +324,11 @@ public static class FixMessageBuilder
 
         length += width;
         length = AppendSoh(extra, length);
+        if (possMissingApplMsg)
+        {
+            length = AppendLiteral(extra, length, "35033=Y\x01"u8);
+        }
+
         int written = WriteMessage(buffer, options, msgSeqNum, "4"u8, extra[..length]);
         return buffer[..written];
     }

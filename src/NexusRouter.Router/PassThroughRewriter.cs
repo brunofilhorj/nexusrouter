@@ -16,6 +16,12 @@ public static class PassThroughRewriter
     /// </summary>
     public const int MaxGrowthBytes = 32;
 
+    /// <summary>
+    /// Folga máxima, em bytes, que <see cref="TryRewriteForResend"/> pode somar ao tamanho do frame de origem.
+    /// Cobre o MsgSeqNum de até 19 dígitos, <c>43=Y</c>, o <c>122</c> e o crescimento do BodyLength.
+    /// </summary>
+    public const int MaxResendGrowthBytes = 128;
+
     private const byte Soh = 0x01;
     private const int ChecksumDigits = 3;
 
@@ -124,6 +130,178 @@ public static class PassThroughRewriter
         position += CopyRange(source[(checksumStart + ChecksumDigits)..], destination, position);
 
         written = position;
+        return true;
+    }
+
+    /// <summary>
+    /// Copia o frame de origem para o destino como mensagem de reenvio: novo MsgSeqNum (34), <c>PossDupFlag</c> (43)=Y,
+    /// <c>SendingTime</c> (52) novo e <c>OrigSendingTime</c> (122) com o 52 original. Recalcula BodyLength (9) e CheckSum (10).
+    /// </summary>
+    /// <param name="source">Frame FIX completo, como foi gravado no log, incluindo o trailer <c>10=</c>.</param>
+    /// <param name="destination">
+    /// Buffer de saída, sem sobreposição com <paramref name="source"/>. Precisa de até
+    /// <c>source.Length + <see cref="MaxResendGrowthBytes"/></c> bytes.
+    /// </param>
+    /// <param name="newSeqNum">MsgSeqNum do reenvio. Mantém o seq que a mensagem teve para este cliente.</param>
+    /// <param name="sendingTime">Valor do novo SendingTime (52), ASCII sem SOH.</param>
+    /// <param name="written">Bytes gravados em <paramref name="destination"/>. Zero quando o retorno é <see langword="false"/>.</param>
+    /// <returns>
+    /// <see langword="true"/> quando o frame foi gravado. <see langword="false"/> quando falta a tag 9, 34 ou 10,
+    /// o checksum não tem 3 dígitos, um campo está malformado ou o destino é pequeno demais.
+    /// </returns>
+    /// <remarks>
+    /// Zero allocation. Os campos 34, 43, 52 e 122 que já existem no frame saem do lugar original e voltam juntos,
+    /// nesta ordem, na posição do 34. Sem 52 no frame, o 122 recebe o <paramref name="sendingTime"/>.
+    /// </remarks>
+    public static bool TryRewriteForResend(
+        ReadOnlySpan<byte> source,
+        Span<byte> destination,
+        long newSeqNum,
+        ReadOnlySpan<byte> sendingTime,
+        out int written)
+    {
+        written = 0;
+        if (newSeqNum < 0
+            || sendingTime.IsEmpty
+            || sendingTime.IndexOf(Soh) >= 0
+            || !TryLocate(source, BodyLengthPattern, last: false, out int lengthStart, out int lengthLength)
+            || !TryLocate(source, ChecksumPattern, last: true, out int checksumStart, out int checksumLength)
+            || checksumLength != ChecksumDigits
+            || checksumStart < lengthStart + lengthLength)
+        {
+            return false;
+        }
+
+        int bodyStart = lengthStart + lengthLength + 1;
+        int bodyEnd = checksumStart - (ChecksumPattern.Length - 1);
+        if (bodyStart > bodyEnd)
+        {
+            return false;
+        }
+
+        // Primeira passada: soma o que sai e guarda o 52 original.
+        int removed = 0;
+        int firstSeqField = -1;
+        ReadOnlySpan<byte> original = default;
+        int cursor = bodyStart;
+        while (cursor < bodyEnd)
+        {
+            if (!TryReadField(source, cursor, bodyEnd, out int tag, out int valueStart, out int fieldEnd))
+            {
+                return false;
+            }
+
+            if (tag is 34 or 43 or 52 or 122)
+            {
+                removed += fieldEnd - cursor;
+                if (tag == 34 && firstSeqField < 0)
+                {
+                    firstSeqField = cursor;
+                }
+
+                if (tag == 52 && original.IsEmpty)
+                {
+                    original = source[valueStart..(fieldEnd - 1)];
+                }
+            }
+
+            cursor = fieldEnd;
+        }
+
+        if (firstSeqField < 0)
+        {
+            return false;
+        }
+
+        if (original.IsEmpty)
+        {
+            original = sendingTime;
+        }
+
+        int seqDigits = CountDigits(newSeqNum);
+        int added = (3 + seqDigits + 1) + 5 + (3 + sendingTime.Length + 1) + (4 + original.Length + 1);
+        long newBodyLength = (bodyEnd - bodyStart) - removed + added;
+        int lengthDigits = CountDigits(newBodyLength);
+        ReadOnlySpan<byte> tail = source[(checksumStart + ChecksumDigits)..];
+        long total = lengthStart + lengthDigits + 1 + newBodyLength + 3 + ChecksumDigits + tail.Length;
+        if (destination.Length < total || total > source.Length + MaxResendGrowthBytes)
+        {
+            return false;
+        }
+
+        int position = CopyRange(source[..lengthStart], destination, 0);
+        WriteDigits(newBodyLength, destination.Slice(position, lengthDigits));
+        position += lengthDigits;
+        destination[position++] = Soh;
+        cursor = bodyStart;
+        while (cursor < bodyEnd)
+        {
+            _ = TryReadField(source, cursor, bodyEnd, out int tag, out _, out int fieldEnd);
+            if (cursor == firstSeqField)
+            {
+                position += CopyRange("34="u8, destination, position);
+                WriteDigits(newSeqNum, destination.Slice(position, seqDigits));
+                position += seqDigits;
+                destination[position++] = Soh;
+                position += CopyRange("43=Y\u0001"u8, destination, position);
+                position += CopyRange("52="u8, destination, position);
+                position += CopyRange(sendingTime, destination, position);
+                destination[position++] = Soh;
+                position += CopyRange("122="u8, destination, position);
+                position += CopyRange(original, destination, position);
+                destination[position++] = Soh;
+            }
+            else if (tag is not (34 or 43 or 52 or 122))
+            {
+                position += CopyRange(source[cursor..fieldEnd], destination, position);
+            }
+
+            cursor = fieldEnd;
+        }
+
+        int checksum = ComputeChecksum(destination[..position]);
+        position += CopyRange("10="u8, destination, position);
+        WriteChecksum(destination.Slice(position, ChecksumDigits), checksum);
+        position += ChecksumDigits;
+        position += CopyRange(tail, destination, position);
+        written = position;
+        return true;
+    }
+
+    private static bool TryReadField(
+        ReadOnlySpan<byte> buffer,
+        int start,
+        int limit,
+        out int tag,
+        out int valueStart,
+        out int fieldEnd)
+    {
+        tag = 0;
+        valueStart = 0;
+        fieldEnd = 0;
+        ReadOnlySpan<byte> window = buffer[start..limit];
+        int equals = window.IndexOf((byte)'=');
+        int soh = window.IndexOf(Soh);
+        if (equals <= 0 || soh < 0 || soh < equals)
+        {
+            return false;
+        }
+
+        long parsed = 0;
+        for (int i = 0; i < equals; i++)
+        {
+            byte digit = window[i];
+            if (digit < (byte)'0' || digit > (byte)'9' || parsed > 99999)
+            {
+                return false;
+            }
+
+            parsed = (parsed * 10) + (digit - (byte)'0');
+        }
+
+        tag = (int)parsed;
+        valueStart = start + equals + 1;
+        fieldEnd = start + soh + 1;
         return true;
     }
 

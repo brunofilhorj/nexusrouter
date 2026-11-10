@@ -88,6 +88,16 @@ public sealed class FixMessageBuilderTests
     }
 
     [Fact]
+    public void BuildSequenceReset_WithPossMissingApplMsg_WritesTag35033()
+    {
+        byte[] buffer = new byte[512];
+        int length = FixMessageBuilder.BuildSequenceReset(buffer, Options, msgSeqNum: 10, newSeqNo: 50, gapFill: true, possMissingApplMsg: true).Length;
+        string message = Encoding.ASCII.GetString(buffer, 0, length);
+        Assert.Contains("\u000136=50\u000135033=Y\u0001", message);
+        AssertValidBodyLengthAndChecksum(buffer.AsSpan(0, length));
+    }
+
+    [Fact]
     public void BuildSequenceReset_ResetWithoutGapFill_OmitsPossDupFlag()
     {
         byte[] buffer = new byte[512];

@@ -7,6 +7,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Abstractions;
+using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
@@ -38,6 +39,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
     private readonly ISecretResolver _secretResolver;
     private readonly ISessionLog _sessionLog;
+    private readonly Func<ushort, DeliveryMode> _resendDeliveryMode;
     private readonly object _knownGate = new();
     private ClientBinding[] _known = [];
 
@@ -57,6 +59,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="sessionLog">Client index and consumer state. Replaces the per-session sequence file.</param>
     /// <param name="catchUp">Cursor do log de sessão. Nulo entrega só o que chegar pelo channel.</param>
+    /// <param name="resendDeliveryMode">Modo de entrega da sessão de ingress dona de um stream, usado no reenvio. Nulo reenvia em PassThrough.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/>, <paramref name="secretResolver"/> ou <paramref name="sessionLog"/> é nulo.</exception>
     public FixOutboundDispatcher(
@@ -66,13 +69,15 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         DispatchPayloadPool payloadPool,
         ISecretResolver secretResolver,
         ISessionLog sessionLog,
-        StreamCatchUp? catchUp = null)
+        StreamCatchUp? catchUp = null,
+        Func<ushort, DeliveryMode>? resendDeliveryMode = null)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         ArgumentNullException.ThrowIfNull(sessionLog);
         _secretResolver = secretResolver;
         _sessionLog = sessionLog;
+        _resendDeliveryMode = resendDeliveryMode ?? (static _ => DeliveryMode.PassThrough);
         _acceptRetry = new ExponentialBackoffReconnectPolicy(
             options.AcceptRetryBaseDelay,
             options.AcceptRetryMaxDelay,
@@ -377,7 +382,10 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 logon.Value.Prelude,
                 logon.Value.PreludeLength,
                 OnSessionClosed,
-                Logger);
+                Logger,
+                _sessionLog.Reader,
+                _resendDeliveryMode,
+                Options.SlotPublishTimeout);
             ownsSocket = false;
             stream = null;
             (bool adopted, FixAcceptedSession? replaced) = await AdoptAsync(session, cancellationToken).ConfigureAwait(false);

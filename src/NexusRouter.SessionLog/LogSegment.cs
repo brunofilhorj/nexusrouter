@@ -175,6 +175,24 @@ internal sealed unsafe class LogSegment : IDisposable
             return false;
         }
 
+        return TryCopyRecord(offset, seq, destination);
+    }
+
+    /// <summary>
+    /// Copies the record that starts at <paramref name="offset"/>, as published by a client-index slot.
+    /// </summary>
+    /// <param name="offset">Byte offset of the record, as stored in the client index.</param>
+    /// <param name="destination">Receives the payload.</param>
+    /// <returns>False when the offset is outside the log, the record is torn or the CRC does not match.</returns>
+    public bool TryReadAt(long offset, IBufferWriter<byte> destination) => TryCopyRecord(offset, expectedSeq: 0, destination);
+
+    private bool TryCopyRecord(long offset, long expectedSeq, IBufferWriter<byte> destination)
+    {
+        if (offset < 0 || offset + HeaderSize > _log.Length)
+        {
+            return false;
+        }
+
         byte* record = _log.Pointer + offset;
         int length = Unsafe.ReadUnaligned<int>(record);
         if (length < 0 || offset + HeaderSize + length > _log.Length)
@@ -184,7 +202,7 @@ internal sealed unsafe class LogSegment : IDisposable
 
         uint stored = Volatile.Read(ref Unsafe.AsRef<uint>(record + CrcOffset));
         uint actual = Crc32.Compute(record, CrcOffset, record + HeaderSize, length);
-        if (stored != actual || Unsafe.ReadUnaligned<long>(record + SeqOffset) != seq)
+        if (stored != actual || (expectedSeq != 0 && Unsafe.ReadUnaligned<long>(record + SeqOffset) != expectedSeq))
         {
             return false;
         }

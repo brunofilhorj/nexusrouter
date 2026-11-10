@@ -168,6 +168,31 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
     }
 
     /// <summary>
+    /// Copies the record a client-index slot points at.
+    /// </summary>
+    /// <param name="segment">Segment number stored in the slot.</param>
+    /// <param name="offset">Byte offset stored in the slot.</param>
+    /// <param name="destination">Receives the frame.</param>
+    /// <returns>False when no visible segment holds a valid record at that offset.</returns>
+    /// <remarks>
+    /// The slot has no epoch or day. The newest segment with that number is tried first and the CRC rejects a wrong match.
+    /// </remarks>
+    public bool TryReadAt(uint segment, ulong offset, IBufferWriter<byte> destination)
+    {
+        LogSegment[] segments = Volatile.Read(ref _visible);
+        for (int i = segments.Length - 1; i >= 0; i--)
+        {
+            LogSegment candidate = segments[i];
+            if ((uint)candidate.Number == segment && candidate.TryReadAt((long)offset, destination))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Last committed sequence of one epoch.
     /// </summary>
     /// <param name="epoch">Epoch to query.</param>
