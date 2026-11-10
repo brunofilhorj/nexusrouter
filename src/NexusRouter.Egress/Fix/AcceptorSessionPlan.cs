@@ -23,6 +23,12 @@ internal sealed class AcceptorSessionPlan
     internal bool GapFillLogonSequence { get; init; }
 
     /// <summary>
+    /// Primeiro seq que o cliente declarou esperar (<c>789</c>) abaixo do próximo seq do router. Maior que zero reenvia
+    /// <c>ResumeFrom..M-1</c> (M é o seq do Logon de resposta) e depois cobre M com um gap-fill.
+    /// </summary>
+    internal long ResumeFrom { get; init; }
+
+    /// <summary>
     /// Texto do Logout quando o Logon foi recusado. Nulo aceita a sessão.
     /// </summary>
     internal string? RejectText { get; init; }
