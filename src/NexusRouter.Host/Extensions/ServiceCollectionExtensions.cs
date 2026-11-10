@@ -287,11 +287,32 @@ public static class ServiceCollectionExtensions
             }
         }
 
+        // Cadastro dos clientes WebSocket (UUID, dispatcher e variável do token). Clientes FIX não são cadastrados.
+        services.AddSingleton(BuildClientRegistry(options));
+
         // Registra o serviço que gerencia o ciclo de vida (Start/Stop) de todos os dispatchers.
         // Está no tier de Egress para parar antes do Audit writer no shutdown.
         services.AddSingleton<IHostedService, DispatcherLifetimeService>();
 
         return services;
+    }
+
+    private static ClientRegistry BuildClientRegistry(NexusRouterOptions options)
+    {
+        HashSet<string> webSocketDispatchers = [.. options.Dispatchers
+            .Where(d => d.Type == DispatcherType.WebSocket)
+            .Select(d => d.Id)];
+
+        List<RegisteredClient> registered = [];
+        foreach (ClientOptions client in options.Clients)
+        {
+            if (webSocketDispatchers.Contains(client.DispatcherId) && !string.IsNullOrWhiteSpace(client.TokenEnvVar))
+            {
+                registered.Add(new RegisteredClient(Guid.Parse(client.ClientId), client.DispatcherId, client.TokenEnvVar));
+            }
+        }
+
+        return new ClientRegistry(registered);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -536,6 +557,7 @@ public static class ServiceCollectionExtensions
                 HeartBtInt = config.HeartBtInt,
                 LogonTimeout = TimeSpan.FromSeconds(config.LogonTimeoutSeconds),
                 ChannelCapacity = config.ChannelCapacity,
+                MaxClients = config.MaxClients,
                 TlsEnabled = config.Tls.Enabled,
                 TlsCertificatePath = config.Tls.CertificatePath,
                 TlsCertificatePasswordEnvVar = config.Tls.CertificatePasswordEnvVar,

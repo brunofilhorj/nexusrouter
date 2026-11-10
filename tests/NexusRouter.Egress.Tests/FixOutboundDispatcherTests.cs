@@ -192,6 +192,83 @@ public sealed class FixOutboundDispatcherTests
     }
 
     [Fact]
+    public async Task Logon_WhenMaxClientsIsReached_RejectsNewSenderWithoutCreatingFiles()
+    {
+        string directory = TempDirectory();
+        int port = FreePort();
+        await using var running = await StartAsync(directory, port, allowed: [], maxClients: 1);
+        try
+        {
+            using TcpClient known = await ConnectAsync(port, "OMS1");
+            Assert.Equal("A", Field(await ReadFrameAsync(known.GetStream()), 35));
+
+            using TcpClient extra = await ConnectAsync(port, "OMS2");
+            byte[] logout = await ReadFrameAsync(extra.GetStream());
+
+            Assert.Equal("5", Field(logout, 35));
+            Assert.Equal("Too many clients", Field(logout, 58));
+            Assert.True(Directory.Exists(Path.Combine(directory, "clients", "fix-acceptor", "OMS1")));
+            Assert.False(Directory.Exists(Path.Combine(directory, "clients", "fix-acceptor", "OMS2")));
+        }
+        finally
+        {
+            await running.DisposeAsync();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Logon_WhenMaxClientsIsReached_StillAcceptsAKnownSender()
+    {
+        string directory = TempDirectory();
+        int port = FreePort();
+        await using var running = await StartAsync(directory, port, allowed: [], maxClients: 1);
+        try
+        {
+            using (TcpClient first = await ConnectAsync(port, "OMS1"))
+            {
+                Assert.Equal("A", Field(await ReadFrameAsync(first.GetStream()), 35));
+            }
+
+            using TcpClient again = await ConnectAsync(port, "OMS1", msgSeqNum: 2);
+            byte[] logon = await ReadFrameAsync(again.GetStream());
+
+            Assert.Equal("A", Field(logon, 35));
+        }
+        finally
+        {
+            await running.DisposeAsync();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("OMS.1")]
+    [InlineData("OMS 1")]
+    [InlineData("CON")]
+    public async Task Logon_WhenSenderCompIdIsUnsafe_RejectsWithoutCreatingFolder(string sender)
+    {
+        string directory = TempDirectory();
+        int port = FreePort();
+        await using var running = await StartAsync(directory, port, allowed: []);
+        try
+        {
+            using TcpClient client = await ConnectAsync(port, sender);
+            byte[] logout = await ReadFrameAsync(client.GetStream());
+
+            Assert.Equal("5", Field(logout, 35));
+            Assert.Equal("Logon rejected", Field(logout, 58));
+            string clients = Path.Combine(directory, "clients", "fix-acceptor");
+            Assert.False(Directory.Exists(clients) && Directory.GetDirectories(clients).Length > 0);
+        }
+        finally
+        {
+            await running.DisposeAsync();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task Logon_WhenSenderIsNotAllowed_ClosesTheSocket()
     {
         string directory = TempDirectory();
@@ -221,7 +298,8 @@ public sealed class FixOutboundDispatcherTests
         int port,
         IReadOnlyList<string> allowed,
         AcceptorRecoveryOptions? recovery = null,
-        int heartBtInt = 30)
+        int heartBtInt = 30,
+        int maxClients = 64)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -244,6 +322,7 @@ public sealed class FixOutboundDispatcherTests
                 BeginString = "FIX.4.4",
                 AllowedSenderCompIds = allowed,
                 HeartBtInt = heartBtInt,
+                MaxClients = maxClients,
                 LogonTimeout = TimeSpan.FromSeconds(2),
                 Recovery = recovery ?? new AcceptorRecoveryOptions(),
             },

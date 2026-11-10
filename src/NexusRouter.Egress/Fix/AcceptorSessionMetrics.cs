@@ -23,4 +23,12 @@ public static class AcceptorSessionMetrics
     /// Cliente pediu um seq de saída que o router não numerou.
     /// </summary>
     internal static readonly Counter<long> ClientAhead = Meter.CreateCounter<long>("acceptor_client_ahead_total");
+
+    /// <summary>
+    /// Logon recusado antes de criar arquivos no log de sessão. A tag <c>reason</c> vale <c>max_clients</c> ou <c>invalid_key</c>.
+    /// </summary>
+    internal static readonly Counter<long> ClientsRejected = Meter.CreateCounter<long>(
+        "sessionlog_clients_rejected_total",
+        unit: "{logons}",
+        description: "Logons recusados por SenderCompID inválido ou por MaxClients.");
 }

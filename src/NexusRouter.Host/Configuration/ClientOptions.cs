@@ -11,7 +11,7 @@ namespace NexusRouter.Host.Configuration;
 public sealed class ClientOptions : IValidateOptions<ClientOptions>
 {
     /// <summary>
-    /// UUID do cliente. É a chave da escolha diária de retenção.
+    /// UUID do cliente WebSocket. É a chave dele no log de sessão.
     /// </summary>
     public required string ClientId { get; init; }
 
