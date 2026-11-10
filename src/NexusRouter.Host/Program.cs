@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 using NexusRouter.Host.Extensions;
+using NexusRouter.Ingress.Sessions;
 using NexusRouter.Router;
 using NexusRouter.SessionLog;
 
@@ -72,6 +73,7 @@ internal static class Program
                 metrics
                     .AddMeter(NexusRouterMetrics.MeterName)
                     .AddMeter(SessionLogMetrics.MeterName)
+                    .AddMeter(FixSessionMetrics.MeterName)
                     .AddPrometheusExporter();
             })
             .WithTracing(tracing =>

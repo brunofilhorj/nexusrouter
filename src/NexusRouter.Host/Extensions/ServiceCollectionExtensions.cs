@@ -70,6 +70,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<Fix44FrameDecoder>();
         services.AddSingleton<Fix50FrameDecoder>();
         services.AddSingleton<SbeFrameDecoder>();
+        services.AddSingleton<FixSessionMetrics>();
 
         // Registra uma FixSession como IHostedService por sessão configurada.
         foreach (HostSessionOptions sessionOptions in options.Sessions)
@@ -107,6 +108,7 @@ public static class ServiceCollectionExtensions
                     TlsCertificatePath = captured.Tls.CertificatePath,
                     TlsCertificatePasswordEnvVar = captured.Tls.CertificatePasswordEnvVar,
                     ShutdownTimeoutSeconds = captured.ShutdownTimeoutSeconds,
+                    SendingTimeTolerance = TimeSpan.FromSeconds(captured.SendingTimeToleranceSeconds),
                 };
 
                 IMessageRouter router = sp.GetRequiredService<IMessageRouter>();
@@ -116,7 +118,8 @@ public static class ServiceCollectionExtensions
                 ILogger<FixSession> logger = sp.GetRequiredService<ILogger<FixSession>>();
                 ISessionLog sessionLog = sp.GetRequiredService<ISessionLog>();
 
-                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, secretResolver, logger, sessionLog);
+                FixSessionMetrics metrics = sp.GetRequiredService<FixSessionMetrics>();
+                return new FixSession(ingressOptions, decoder, reconnect, router, auditWriter, secretResolver, logger, sessionLog, metrics);
             });
         }
 

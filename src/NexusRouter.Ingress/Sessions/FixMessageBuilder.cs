@@ -274,6 +274,75 @@ public static class FixMessageBuilder
         return buffer[..written];
     }
 
+    /// <summary>
+    /// Escreve um Reject (MsgType=3) em <paramref name="buffer"/>.
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString e comp IDs da sessão.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34) do Reject, a partir de 1.</param>
+    /// <param name="refSeqNum">RefSeqNum (45): MsgSeqNum da mensagem rejeitada. Zero quando desconhecido.</param>
+    /// <param name="refTagId">RefTagID (371). Zero omite o campo.</param>
+    /// <param name="sessionRejectReason">SessionRejectReason (373).</param>
+    /// <param name="text">Text (58), ASCII sem SOH nem '='. Vazio omite o campo.</param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> ou <paramref name="text"/> é nulo.</exception>
+    /// <exception cref="ArgumentException"><paramref name="text"/> não é ASCII válido.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Algum número é negativo, ou <paramref name="msgSeqNum"/> não é positivo.</exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
+    public static Span<byte> BuildReject(
+        Span<byte> buffer,
+        SessionOptions options,
+        long msgSeqNum,
+        long refSeqNum,
+        int refTagId,
+        int sessionRejectReason,
+        string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentOutOfRangeException.ThrowIfNegative(refSeqNum);
+        ArgumentOutOfRangeException.ThrowIfNegative(refTagId);
+        ArgumentOutOfRangeException.ThrowIfNegative(sessionRejectReason);
+        if (text.Length > 128)
+        {
+            throw new ArgumentOutOfRangeException(nameof(text), text.Length, "Text (58) aceita no máximo 128 caracteres.");
+        }
+
+        if (text.Length > 0)
+        {
+            ValidateLogonText(text);
+        }
+
+        Span<byte> extra = stackalloc byte[256];
+        int length = AppendLiteral(extra, 0, "45="u8);
+        if (!Utf8Formatter.TryFormat(refSeqNum, extra[length..], out int width))
+        {
+            throw new InvalidOperationException("RefSeqNum não coube no Reject.");
+        }
+
+        length += width;
+        length = AppendSoh(extra, length);
+        if (refTagId > 0)
+        {
+            length = AppendLiteral(extra, length, "371="u8);
+            length = AppendInt(extra, length, refTagId);
+            length = AppendSoh(extra, length);
+        }
+
+        length = AppendLiteral(extra, length, "373="u8);
+        length = AppendInt(extra, length, sessionRejectReason);
+        length = AppendSoh(extra, length);
+        if (text.Length > 0)
+        {
+            length = AppendLiteral(extra, length, "58="u8);
+            length = AppendAscii(extra, length, text);
+            length = AppendSoh(extra, length);
+        }
+
+        int written = WriteMessage(buffer, options, msgSeqNum, "3"u8, extra[..length]);
+        return buffer[..written];
+    }
+
     private static int WriteMessage(
         Span<byte> buffer,
         SessionOptions options,

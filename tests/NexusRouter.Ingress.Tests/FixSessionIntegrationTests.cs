@@ -177,6 +177,60 @@ public sealed class FixSessionIntegrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
+    public async Task FixSession_WhenPeerSendsFrameWithBadSendingTime_RepliesRejectAndSkipsRouter()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var router = new CountingRouter();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30,
+            router: router,
+            sendingTimeTolerance: TimeSpan.FromSeconds(120));
+        TcpClient? peer = null;
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            await ReadFixFrameAsync(stream);
+            string now = DateTime.UtcNow.ToString("yyyyMMdd-HH:mm:ss.fff");
+            await SendFixFrameAsync(
+                stream,
+                CreateFixFrame("35=A", "49=EXCHANGE", "56=CLIENT", "34=1", $"52={now}", "98=0", "108=30"));
+            await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
+
+            await SendFixFrameAsync(
+                stream,
+                CreateFixFrame("35=D", "49=EXCHANGE", "56=CLIENT", "34=2", "52=20200101-12:00:00.000"));
+
+            byte[] reply = await ReadFixFrameAsync(stream);
+            Assert.Equal("3", GetFieldValue(reply, 35));
+            Assert.Equal("2", GetFieldValue(reply, 45));
+            Assert.Equal("52", GetFieldValue(reply, 371));
+            Assert.Equal("10", GetFieldValue(reply, 373));
+            FixMessageBuilderTests.AssertValidBodyLengthAndChecksum(reply);
+
+            await SendFixFrameAsync(
+                stream,
+                CreateFixFrame("35=D", "49=EXCHANGE", "56=CLIENT", "34=3", $"52={DateTime.UtcNow:yyyyMMdd-HH:mm:ss.fff}"));
+            await router.WaitForCountAsync(1);
+            Assert.Equal(1, router.Count);
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
     public async Task FixSession_WhenLogonEchoesHeartBtAndReset_BecomesActiveWithoutLoggingPassword()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -274,7 +328,9 @@ public sealed class FixSessionIntegrationTests
         ILogger<FixSession>? logger = null,
         string? logonText = null,
         int? cancelOnDisconnectType = null,
-        int? codTimeoutWindow = null) =>
+        int? codTimeoutWindow = null,
+        IMessageRouter? router = null,
+        TimeSpan? sendingTimeTolerance = null) =>
         new(
             new SessionOptions
             {
@@ -293,10 +349,11 @@ public sealed class FixSessionIntegrationTests
                 MissedHeartbeatThreshold = 1,
                 LogonTimeout = TimeSpan.FromSeconds(5),
                 ShutdownTimeoutSeconds = 2,
+                SendingTimeTolerance = sendingTimeTolerance ?? TimeSpan.Zero,
             },
             new Fix44FrameDecoder(),
             reconnectPolicy,
-            new NullRouter(),
+            router ?? new NullRouter(),
             auditWriter,
             secretResolver ?? ThrowingSecretResolver.Instance,
             logger ?? NullLogger<FixSession>.Instance,
@@ -561,6 +618,24 @@ public sealed class FixSessionIntegrationTests
     {
         public void Route(in IngressFrame frame)
         {
+        }
+    }
+
+    private sealed class CountingRouter : IMessageRouter
+    {
+        private int _count;
+
+        public int Count => Volatile.Read(ref _count);
+
+        public void Route(in IngressFrame frame) => Interlocked.Increment(ref _count);
+
+        public async Task WaitForCountAsync(int expected)
+        {
+            DateTime deadline = DateTime.UtcNow + StepTimeout;
+            while (Count < expected && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(20);
+            }
         }
     }
 
