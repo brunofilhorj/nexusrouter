@@ -45,7 +45,7 @@ Conferido em `docs/EntryPointMessageSpecs.pdf` v2.40 §2.7 e `docs/EntryPointMes
 | 35003 `CODTimeoutWindow` | Opcional, em **milissegundos**. Ausente vale 0. Máximo 60000. A confirmação de Logon ecoa o valor em vigor. | Configurável, unidade milissegundo. |
 | 789 `NextExpectedMsgSeqNum` | **Removido do Logon** no change log da Message Specs, versão **1.3.1** (29/09/2011). A v1.5.1 não é a que retirou o campo. | Não enviar. |
 
-A nota `notes/seqnum-rethink.md` §2 atribuía a remoção do 789 à v1.5.1. O PDF registra a v1.3.1.
+Uma nota anterior (consolidada em `notes/backlog-sessao-fix.md`) atribuía a remoção do 789 à v1.5.1. O PDF registra a v1.3.1.
 
 ---
 

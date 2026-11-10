@@ -36,6 +36,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
     private readonly ExponentialBackoffReconnectPolicy _acceptRetry;
     private readonly ConcurrentSessionTable _sessions = new();
+    private readonly ConcurrentDictionary<Task, byte> _handlers = new();
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
     private readonly ISecretResolver _secretResolver;
     private readonly ISessionLog _sessionLog;
@@ -116,6 +117,20 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
             {
                 Logger.LogDebug(ex, "Dispatcher {DispatcherId} encerrou o accept.", DispatcherId);
+            }
+        }
+
+        // Os handshakes em andamento usam o índice e o log de sessão. Terminam antes de o host parar o log.
+        Task[] pending = [.. _handlers.Keys];
+        if (pending.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                Logger.LogWarning(ex, "Dispatcher {DispatcherId} não esperou todos os handshakes FIX terminarem.", DispatcherId);
             }
         }
 
@@ -294,7 +309,14 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             }
 
             client.NoDelay = true;
-            _ = HandleClientAsync(client, cancellationToken);
+            Task handler = HandleClientAsync(client, cancellationToken);
+            _handlers[handler] = 0;
+            _ = handler.ContinueWith(
+                static (finished, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(finished, out _),
+                _handlers,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 

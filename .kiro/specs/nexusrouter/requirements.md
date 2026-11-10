@@ -67,7 +67,7 @@ O NexusRouter é um motor de ingestão, roteamento e distribuição de alta perf
 
 ### 2.4.1 Retransmissão por cliente, sobre o log de sessão (FR-RPL)
 
-> **Revisão de 2026-11-06 (`notes/session-log-rethink.md`).** A retransmissão deixou de ser opt-in diário gravado em hypertable. Um log de sessão em arquivo (append-only, por dia de pregão e por época) grava **todas** as mensagens antes do fan-out, então toda sessão tem o que reenviar e não há mais escolha diária. A retransmissão passa a ler desse log e do índice por cliente. A hypertable `client_replay_messages` sai; o PostgreSQL + TimescaleDB fica só com a auditoria. O filtro de roteamento por tag de negócio fica fora do escopo.
+> **Revisão de 2026-11-06 (`notes/backlog-sessao-fix.md`).** A retransmissão deixou de ser opt-in diário gravado em hypertable. Um log de sessão em arquivo (append-only, por dia de pregão e por época) grava **todas** as mensagens antes do fan-out, então toda sessão tem o que reenviar e não há mais escolha diária. A retransmissão passa a ler desse log e do índice por cliente. A hypertable `client_replay_messages` sai; o PostgreSQL + TimescaleDB fica só com a auditoria. O filtro de roteamento por tag de negócio fica fora do escopo.
 
 A retransmissão não depende do tipo de dispatcher. Cada consumidor é identificado por `ClientId` (UUID) e tem um índice próprio sobre o log de sessão. A entrega ao vivo continua pelo channel do dispatcher; a recuperação lê do log.
 

@@ -155,7 +155,13 @@ internal sealed unsafe class ClientIndex : IClientIndex, IDisposable
             return IndexReadResult.Missing;
         }
 
-        byte* pointer = FilePointer() + (slot * 16);
+        byte* start = FilePointer();
+        if (start is null)
+        {
+            return IndexReadResult.Missing;
+        }
+
+        byte* pointer = start + (slot * 16);
         byte kind = Volatile.Read(ref Unsafe.AsRef<byte>(pointer));
         if (kind == 0)
         {
@@ -220,7 +226,14 @@ internal sealed unsafe class ClientIndex : IClientIndex, IDisposable
             return;
         }
 
-        byte* pointer = FilePointer() + (slot * 16);
+        byte* start = FilePointer();
+        if (start is null)
+        {
+            // O mapeamento já foi liberado (shutdown). Gravar aqui seria acesso a memória inválida.
+            return;
+        }
+
+        byte* pointer = start + (slot * 16);
         pointer[1] = 0;
         Unsafe.WriteUnaligned(pointer + 2, stream);
         Unsafe.WriteUnaligned(pointer + 4, segment);

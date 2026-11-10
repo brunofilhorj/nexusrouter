@@ -26,9 +26,9 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 8 | Testes | T-37 → T-43 |
 | Fase 9 | Retransmissão por cliente (sobre o log de sessão) | T-44, T-47, T-48 (T-45 e T-46 removidas) |
 | Fase 10 | Egress WebSocket | T-49 → T-53 |
-| Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-08 (inclui TD-04a, TD-04b) |
+| Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-08 (inclui TD-04a, TD-04b) e TD-10 → TD-12 (TD-09 foi absorvido pelo TD-04; o ID não é reutilizado) |
 
-**Exceção à ordem das fases.** A Fase 9 e as tasks T-50 a T-53 da Fase 10 dependem de TD-04, TD-04a e TD-04b, que ficam na Fase 11 para não renumerar tasks existentes. A ordem de execução é: TD-03, TD-04, TD-04a, TD-04b, TD-08 e só então a Fase 9, T-50 a T-53. T-49 não depende do log e pode rodar antes. Quem encontrar uma dessas tasks com a dependência desmarcada deve avisar e parar (`AGENTS.md`).
+**Ordem de execução.** TD-01 a TD-08 já estão concluídos, então as dependências da Fase 9 e de T-50 a T-53 estão atendidas. TD-10 a TD-12 são independentes das Fases 9 e 10. T-49 não depende do log. Quem encontrar uma task com a dependência desmarcada deve avisar e parar (`AGENTS.md`).
 
 ---
 
@@ -864,35 +864,28 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 
 > **Revisão de 2026-11-06 (`notes/session-log-rethink.md`):** a retenção deixou de ser opt-in diário gravado em hypertable. O log de sessão de TD-04/TD-04a guarda **todos** os frames, então toda sessão tem o que reenviar. A hypertable `client_replay_messages` sai; o replay lê do log em arquivo e do índice por cliente. O filtro de roteamento por tag de negócio (`notes/replay-rethink.md` §2) fica **fora do backlog**.
 
-Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com cursor), TD-04b (brokers), TD-08 (reenvio) e T-31 (host). Os TD ficam na Fase 11 e rodam antes desta fase (ver a exceção à ordem das fases no topo).
+Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com cursor), TD-04b (brokers), TD-08 (reenvio) e T-31 (host). Os TD correspondentes (Fase 11) já estão concluídos.
 
-- [ ] T-44 — Cadastro de cliente e identidade por UUID
+- [ ] T-44 — Chave de cliente (`ClientKey`), `MaxClients` e cadastro WebSocket
 
-**Objetivo:** Identificar cada consumidor pela chave dele: `DispatcherId` + `SenderCompID` para FIX (sem cadastro) e `ClientId` UUID para WebSocket, para resolver os arquivos de replay dele.
+**Objetivo:** Fechar o que falta da identidade por cliente: chave validada antes de virar nome de pasta, limite de clientes FIX por dispatcher e o cadastro WebSocket por UUID.
 
-**Entradas:** `requirements.md` (FR-RPL-01, FR-RPL-04), `design.md` (Seção 3.4.6; Seção 6 — `Clients`), `notes/session-log-rethink.md` §3.1.
+**Entradas:** `requirements.md` (FR-RPL-01), `design.md` (Seção 3.4.6; Seção 6 — `Clients`). Antes de começar, conferir no código o que o `SessionLogPaths.EnsureKey` e o TD-07 já cobrem, para não duplicar.
+
+**Já entregue (TD-04, TD-04a, TD-07):** criação dos arquivos do cliente FIX no primeiro Logon aceito e reabertura dos clientes conhecidos na abertura do `SessionLogManager`. Não refazer.
 
 **Passos:**
-1. Tipo `ClientKey` (string): FIX = `DispatcherId` + `SenderCompID`; WebSocket = `ClientId` (UUID). Validar o `SenderCompID` (`[A-Za-z0-9_-]`, 1 a 64) e confirmar o caminho final dentro de `SessionLog.Directory`. Recusar `..`, separadores e nomes reservados do Windows.
-2. Cadastro (`Clients`) só para WebSocket (UUID, `DispatcherId`, `TokenEnvVar`). Cliente FIX não é cadastrado: `FixOutboundDispatcher` cria os arquivos no primeiro Logon aceito e respeita `MaxClients`. Na abertura, o `SessionLogManager` reabre os clientes conhecidos varrendo `clients/{DispatcherId}/`.
-3. Sem a escolha diária de retenção: como o log grava tudo, não há opt-in. A seção de "escolha do dia" do design sai (ver revisão acima).
+1. Tipo `ClientKey` (string): FIX = `DispatcherId` + `SenderCompID`; WebSocket = `ClientId` (UUID). Validar o `SenderCompID` (`[A-Za-z0-9_-]`, 1 a 64) e confirmar o caminho final dentro de `SessionLog.Directory` após `Path.GetFullPath`. Recusar `..`, separadores, caracteres de controle e nomes reservados do Windows (`CON`, `NUL` etc.). Cobrir com testes o que o `EnsureKey` ainda não cobrir.
+2. `FixOutboundDispatcherOptions.MaxClients` (padrão 64): limite de `SenderCompID` distintos que criam arquivos por instância. Passado o limite, recusar o Logon com `Logout` e incrementar `sessionlog_clients_rejected_total`. Validação de options e `appsettings.json`.
+3. Cadastro `Clients` só para WebSocket (UUID, `DispatcherId`, `TokenEnvVar`), com consulta por `ClientId` para a T-50. Entradas FIX em `Clients` seguem ignoradas.
 
-**Saída:** Dá para mapear um `SenderCompID` FIX ou um UUID WebSocket aos arquivos de replay daquele cliente, sem criar pasta a partir de valor inválido.
-
----
-
-- [ ] ~~T-45 — Channel de replay e hypertable `client_replay_messages`~~ (removida)
-
-> Substituída pelo log de sessão em arquivo (TD-04) e pelo índice por cliente (TD-04a).
-> A hypertable `client_replay_messages` não será criada. O Timescale fica só com a
-> auditoria (`ingress_fix_messages`). Ver `notes/session-log-rethink.md` §6 e decisão 4.
+**Saída:** Um `SenderCompID` inválido nunca vira pasta, o número de clientes FIX por dispatcher é limitado e a T-50 consegue resolver um UUID WebSocket cadastrado.
 
 ---
 
-- [ ] ~~T-46 — ResendRequest FIX lê do log de sessão~~ (removida)
-
-> Consolidada em TD-08, que já implementa a leitura do índice do cliente, a regra de reenvio
-> (`43`/`122`, gap-fill agrupado) e o limite de 10.000 por pedido. Manter as duas duplicaria o escopo.
+> **T-45 (removida).** Channel de replay e hypertable `client_replay_messages`. Substituída pelo log de sessão em arquivo (TD-04) e pelo índice por cliente (TD-04a). A hypertable não será criada; o Timescale fica só com a auditoria (`ingress_fix_messages`).
+>
+> **T-46 (removida).** ResendRequest FIX lendo do log. Consolidada em TD-08.
 
 ---
 
@@ -905,8 +898,8 @@ Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com
 **Decisão (2026-11-08):** a API HTTP de replay (`GET`/`POST /v1/clients/{id}/replay`) e a variável `NEXUS_REPLAY_API_TOKEN` não serão implementadas. O cursor persistido cobre a recuperação do dispatcher de broker, e o assinante deduplica pelo header. Se surgir um caso de uso de leitura sob demanda por assinante, entra como task nova, lendo do log.
 
 **Passos:**
-1. Ligar o dispatcher de broker ao `IConsumerState`: no restart, retomar do cursor persistido por `(stream, época)` e reentregar do log (entrega ao menos uma vez, TD-04b).
-2. Confirmar que nenhuma rota, option ou configuração da API de replay existe no código e na documentação. Remover referências restantes.
+1. O `BrokerCursorTracker`, o `StreamCatchUp` e o `CursorAckMode` já existem (TD-04b). Confirmar que, no restart, o dispatcher retoma do cursor persistido por `(stream, época)` e reentrega do log. Só corrigir se a verificação falhar.
+2. Confirmar que nenhuma rota, option ou configuração da API de replay existe no código e na documentação (no código não há). Remover referências restantes na documentação.
 
 **Saída:** Um assinante de broker se recupera pelo cursor após restart do router, sem API paralela.
 
@@ -917,6 +910,8 @@ Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com
 **Objetivo:** Cobrir reenvio por seqnum, isolamento por UUID, ao menos uma vez no broker e o fato de o hot path não ser bloqueado por consumidor lento.
 
 **Entradas:** T-44, T-47, TD-04, TD-04a, TD-04b, TD-08
+
+**Antes de escrever:** TD-04 a TD-08 trouxeram testes próprios (por exemplo `ResendPlannerTests`). Para cada cenário abaixo, conferir se já há teste equivalente e cobrir só o que falta.
 
 **Passos:**
 1. Dois clientes FIX no mesmo acceptor: o `ResendRequest` de cada um devolve só as mensagens do índice dele.
@@ -945,7 +940,7 @@ Acceptor para aplicação web ou nativa. Depende de T-19 (`DispatcherBase`). T-5
 **Entradas:** `requirements.md` (FR-EGR-12), `design.md` (Seção 3.3.1 — Upgrade e Liveness; Seção 6 — `Type: WebSocket`)
 
 **Passos:**
-1. Criar `src/NexusRouter.Egress/WebSocket/WebSocketMessageDispatcher.cs` estendendo `DispatcherBase<WebSocketDispatcherOptions>` e `WebSocketDispatcherOptions.cs` com os campos da Seção 6: escuta, `AllowedOrigins`, heartbeat, timeouts, limites de frame e de campos, capacidade da fila por sessão, diretório do sequence store, TLS de servidor opcional.
+1. Criar `src/NexusRouter.Egress/WebSocket/WebSocketMessageDispatcher.cs` estendendo `DispatcherBase<WebSocketDispatcherOptions>` e `WebSocketDispatcherOptions.cs` com os campos da Seção 6: escuta, `AllowedOrigins`, heartbeat, timeouts, limites de frame e de campos, capacidade da fila por sessão, TLS de servidor opcional. Sem diretório de sequence store: o `seq` vem do `SessionLog` (Seção 6 do design).
 2. `ConnectAsync` abre `TcpListener`. Com TLS ligado, o socket aceito passa pelo wrap de servidor já usado no acceptor FIX, antes do HTTP. Exigir `Upgrade: websocket` e subprotocolo `nexusrouter.v1`. `Origin` presente só passa se estiver em `AllowedOrigins`; lista vazia recusa qualquer `Origin`. Falha de upgrade responde HTTP e fecha o TCP, sem criar sessão. O socket aceito vira `WebSocket` por `WebSocket.CreateFromStream`.
 3. Cada conexão é uma `WebSocketAcceptedSession` com channel bounded próprio. Channel cheio descarta só aquela sessão e incrementa métrica. O loop de accept e as outras sessões seguem.
 4. Ping de protocolo a cada `HeartbeatIntervalSeconds`. Após `MissedHeartbeatLimit` pongs ausentes, encerrar a sessão. Frame `{ "type": "heartbeat" }` recebe eco.
@@ -1040,7 +1035,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 - Cada task tem **Origem** (nota ou revisão que a gerou), **Tamanho** (P, M ou G), **Objetivo**, **Entradas**, **Passos** e **Saída**.
 - Task já entregue ganha **Entregue em** com o commit. Task aberta não tem esse campo.
 - Mensagem de commit e nome de branch usam o ID: `[TD-02] ...` e `feature/TD-02-<descricao>`.
-- Origem comum: `notes/seqnum-rethink.md`. Os itens §N citados abaixo são dessa nota.
+- Origem comum: as notas `notes/seqnum-rethink.md`, `notes/session-log-rethink.md` e `notes/replay-rethink.md`, consolidadas em `notes/backlog-sessao-fix.md` e removidas. Os itens §N citados nas tasks apontam para o texto original, que está no histórico do git.
 
 - [x] TD-01 — Responder `ResendRequest` do initiator com `SequenceReset-GapFill` válido
 
@@ -1234,6 +1229,71 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
+- [ ] TD-10 — Segregação nativa nos dispatchers de broker (routing key e headers)
+
+**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** M. **Depende de:** TD-04b.
+
+**Objetivo:** O consumidor de Kafka e de RabbitMQ consegue receber só o recorte que lhe interessa, sem o router decidir quem recebe o quê. O RabbitMQ segrega no servidor (binding em topic ou headers exchange). O Kafka carrega metadados em record headers, que o consumidor usa para filtrar. Isto não é o filtro de roteamento por consumidor, que continua fora do backlog.
+
+**Entradas:** `notes/replay-rethink.md` §3, `KafkaMessageDispatcher`, `RabbitMQMessageDispatcher`, `KafkaDispatcherOptions`, `RabbitMQDispatcherOptions`, `docs/FIX44Entrypoint.xml`.
+
+**Pontos em aberto (decidir com o usuário antes do passo 3):**
+- Kafka ganha também tópico por critério (por exemplo por participante), ou só headers e partition key?
+- Quais tags entram por padrão: 11, 55, 49, 440?
+
+**Passos:**
+1. Confirmar no dicionário B3 (`docs/FIX44Entrypoint.xml`) que a tag 440 (ClearingAccount) é a certa para segregar por conta e quais outras tags valem como dimensão.
+2. Options: lista de tags a carimbar (`HeaderFields`) nos dois brokers e, no RabbitMQ, um template de routing key hierárquica (por exemplo `fix.<440>.<55>`). Sem configuração, o comportamento atual é mantido (routing key fixa, só o header de idempotência).
+3. Ler só as tags configuradas no consume loop do dispatcher, por scanner de campos, sem parse completo. Nunca na thread do router. Reaproveitar o `FixMessage` quando o ingresso veio em `Parse`.
+4. RabbitMQ: montar a routing key e os headers por mensagem. A exchange e os bindings são do operador; o dispatcher só publica. Kafka: record headers com as tags e a estratégia de partição já existente.
+5. Valor ausente na mensagem usa um marcador fixo na routing key e omite o header, sem lançar.
+6. Testes: routing key e headers esperados para uma mensagem de teste, mensagem sem a tag, e o header de idempotência do TD-04b intacto.
+
+**Saída:** Um consumidor RabbitMQ faz bind em `fix.ACCT1.#` e recebe só aquela conta. Um consumidor Kafka filtra por header sem desserializar o payload. O cursor e a entrega ao menos uma vez não mudam.
+
+---
+
+- [ ] TD-11 — `SequenceReset` (35=4) recebido no initiator
+
+**Origem:** `notes/seqnum-rethink.md` §7.2 item 7. **Tamanho:** P. **Depende de:** TD-06.
+
+**Objetivo:** O initiator aplica o `NewSeqNo` de um `SequenceReset` do counterpart ao seqnum de entrada esperado, em vez de deixá-lo cair no `default` do `HandleAdmin`.
+
+**Entradas:** `notes/seqnum-rethink.md` §7.2, `FixSession.HandleAdmin`, `IConsumerState` (`NextInExpected`), `docs/FIX44Entrypoint.xml`, `docs/EntryPointMessageSpecs.pdf`.
+
+**Passos:**
+1. Tratar `35=4` com `GapFillFlag` (123) `Y` e `N`. `NewSeqNo` (36) maior que o esperado avança `NextInExpected`. `NewSeqNo` menor leva a `Reject` com `SessionRejectReason`, conforme o TD-06. Registrar a regra equivalente do QuickFIX e o que a spec da B3 exige.
+2. Persistir o novo valor pelo `IConsumerState`.
+3. Gap-fill com `PossDupFlag` segue a mesma validação do `34` (regime do initiator, TD-06).
+4. Testes: gap-fill avança o esperado, reset com valor menor é rejeitado, `NewSeqNo` ausente ou inválido gera `Reject`.
+
+**Saída:** Depois de um gap-fill do counterpart, o seqnum de entrada esperado fica correto e a sessão segue sem pedir reenvio desnecessário.
+
+---
+
+- [ ] TD-12 — Dia de pregão e reset diário de seqnum
+
+**Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** M. **Depende de:** TD-04, TD-05.
+
+**Objetivo:** Definir quem decide a virada do dia de pregão e fazer o initiator zerar o seqnum e abrir uma época nova no primeiro Logon do dia, como a B3 faz.
+
+**Entradas:** `notes/seqnum-rethink.md` §2 e §4, `b3-guidelines.md`, `SessionLogManager`, `FixSession`, `FixMessageBuilder.BuildLogon`.
+
+**Fatos documentados (PDFs da B3):** ao fim da sessão o gateway derruba a conexão e o seqnum volta a 1. No Drop Copy, o reset ocorre de terça a quinta às 23:00 BRT, com todos os clientes desconectados. De domingo para segunda o número não é resetado.
+
+**Ponto em aberto (decidir com o usuário antes de implementar):** quem define o dia de pregão: relógio UTC, calendário B3 ou o primeiro Logon com `141=Y`. Registrar a decisão no `design.md` (§3.4.3) antes do passo 2.
+
+**Passos:**
+1. Decidir e registrar a regra de virada de dia e o fuso.
+2. Implementar a virada: o `SessionLogManager` e o `FixSession` abrem época nova (`BeginEpoch`) e zeram `nextOut` e `nextInExpected` no primeiro Logon do dia, enviando `141=Y` (TD-05).
+3. Sessões fora do horário da B3 (domingo para segunda no Drop Copy) não zeram.
+4. Retenção por dia de pregão passa a usar a mesma regra.
+5. Testes com relógio injetado: virada de dia, domingo para segunda, restart no mesmo dia (não zera).
+
+**Saída:** O initiator reconecta no dia seguinte com seqnum 1 e época nova, e no mesmo dia continua de onde parou.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```
@@ -1303,8 +1363,12 @@ TD-03 (steering x PDFs B3)
  │    └── TD-06 (validação e Reject)
  └── TD-07 (acceptor FIX) ◄── TD-04 + TD-05 (Logon autenticado antes de criar arquivos)
 
+TD-04b ── TD-10 (segregação nos brokers)
+TD-06 ── TD-11 (SequenceReset recebido no initiator)
+TD-04 + TD-05 ── TD-12 (dia de pregão e reset diário)
+
 TD-04 inclui o portão de latência do append (FR-RPL-09); TD-04a só começa com ele aprovado.
 
-Ordem de execução entre fases: TD-03 → TD-04 → TD-04a → TD-04b e TD-08 → Fase 9 (T-44, T-47, T-48)
-e T-50 a T-53 da Fase 10. T-49 não depende do log.
+Ordem de execução: TD-01 a TD-08 estão concluídos. Pendentes: Fase 9 (T-44, T-47, T-48), Fase 10 (T-49 a T-53)
+e TD-10 a TD-12, independentes entre si.
 ```

@@ -114,6 +114,30 @@ public sealed class SessionLogTests
     }
 
     [Fact]
+    public async Task ClientIndex_AfterManagerStops_IgnoresPublishInsteadOfTouchingUnmappedMemory()
+    {
+        string directory = NewDirectory();
+        IClientIndex index;
+        await using (SessionLogManager manager = CreateManager(directory, margin: 0))
+        {
+            index = manager.OpenClient("FIX_OUT", "OMS1").Index;
+            _ = index.ReserveSeq();
+        }
+
+        try
+        {
+            long seq = index.ReserveSeq();
+            index.PublishAdmin(seq);
+
+            Assert.Equal(IndexReadResult.Missing, index.TryGet(seq, out _));
+        }
+        finally
+        {
+            Delete(directory);
+        }
+    }
+
+    [Fact]
     public async Task UncleanRestart_OutboundSeqJumpsAndDoesNotRegress()
     {
         string directory = NewDirectory();

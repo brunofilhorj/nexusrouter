@@ -635,12 +635,12 @@ public static class ServiceCollectionExtensions
         IServiceCollection services,
         Configuration.WebSocketDispatcherOptions config)
     {
-        // WebSocketMessageDispatcher ainda não está implementado (T-28).
+        // WebSocketMessageDispatcher ainda não está implementado (T-49).
         // O registro é um stub que lança exceção descritiva ao tentar resolver,
         // para não bloquear builds sem a implementação.
         services.AddSingleton<IMessageDispatcher>(_ =>
             throw new NotImplementedException(
-                $"WebSocketMessageDispatcher para o dispatcher '{config.Id}' ainda não está implementado (T-28)."));
+                $"WebSocketMessageDispatcher para o dispatcher '{config.Id}' ainda não está implementado (T-49)."));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
