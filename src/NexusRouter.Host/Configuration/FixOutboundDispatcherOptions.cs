@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Options;
 
+using NexusRouter.Egress.Fix;
+
 namespace NexusRouter.Host.Configuration;
 
 /// <summary>
@@ -76,6 +78,16 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
     /// </summary>
     public double AcceptRetryJitterFactor { get; init; } = 0.2;
 
+    /// <summary>
+    /// Política de reconexão do acceptor.
+    /// </summary>
+    public AcceptorRecoveryOptions Recovery { get; init; } = new();
+
+    /// <summary>
+    /// Sobrescrita de <see cref="Recovery"/> por SenderCompID.
+    /// </summary>
+    public List<AcceptorClientOverride> ClientOverrides { get; init; } = [];
+
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
 
@@ -107,7 +119,61 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
             failures.Add("RequireClientCertificate exige Tls.Enabled true.");
         }
 
+        AddRecovery(options.Recovery, options.ClientOverrides, failures);
         return ConfigurationChecks.From(failures);
+    }
+
+    private static void AddRecovery(
+        AcceptorRecoveryOptions? recovery,
+        List<AcceptorClientOverride>? overrides,
+        List<string> failures)
+    {
+        if (recovery is null)
+        {
+            failures.Add("Recovery é obrigatório.");
+            return;
+        }
+
+        try
+        {
+            recovery.EnsureValid();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            failures.Add(ex.Message);
+        }
+
+        if (overrides is null)
+        {
+            failures.Add("ClientOverrides é obrigatório.");
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < overrides.Count; i++)
+        {
+            AcceptorClientOverride client = overrides[i];
+            if (client is null)
+            {
+                failures.Add($"ClientOverrides[{i}] é obrigatório.");
+                continue;
+            }
+
+            ConfigurationChecks.Add(failures, ConfigurationChecks.FixToken(client.SenderCompId, $"ClientOverrides[{i}].SenderCompId", required: true));
+            if (!string.IsNullOrWhiteSpace(client.SenderCompId) && !seen.Add(client.SenderCompId))
+            {
+                failures.Add($"ClientOverrides[{i}] repete SenderCompId {client.SenderCompId}.");
+            }
+
+            try
+            {
+                recovery.Merge(client).EnsureValid();
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException or ArgumentNullException)
+            {
+                failures.Add($"ClientOverrides[{i}]: {ex.Message}");
+            }
+        }
     }
 
     private static void AddAllowedSenders(List<string>? senders, List<string> failures)

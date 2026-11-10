@@ -538,6 +538,8 @@ public static class ServiceCollectionExtensions
                 AcceptRetryBaseDelay = TimeSpan.FromMilliseconds(config.AcceptRetryBaseDelayMs),
                 AcceptRetryMaxDelay = TimeSpan.FromMilliseconds(config.AcceptRetryMaxDelayMs),
                 AcceptRetryJitterFactor = config.AcceptRetryJitterFactor,
+                Recovery = config.Recovery,
+                ClientOverrides = config.ClientOverrides,
             };
             ILogger<FixOutboundDispatcher> logger = sp.GetRequiredService<ILogger<FixOutboundDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();

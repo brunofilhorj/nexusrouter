@@ -76,7 +76,7 @@ public sealed class FixOutboundDispatcherTests
 
             int restartedPort = FreePort();
             await using var restarted = await StartAsync(directory, restartedPort, allowed: []);
-            using var again = await ConnectAsync(restartedPort, "OMS1");
+            using var again = await ConnectAsync(restartedPort, "OMS1", msgSeqNum: 2);
             byte[] logon = await ReadFrameAsync(again.GetStream());
             Assert.Equal("4", Field(logon, 34));
         }
@@ -196,7 +196,7 @@ public sealed class FixOutboundDispatcherTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        await using var running = await StartAsync(directory, port, allowed: ["OMS1"]);
+        await using var running = await StartAsync(directory, port, allowed: ["OMS1"], recovery: new AcceptorRecoveryOptions { LogoutTimeoutSeconds = 1 });
         FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
@@ -205,10 +205,9 @@ public sealed class FixOutboundDispatcherTests
             byte[] logon = Logon("OMS2", "NEXUS");
             await client.GetStream().WriteAsync(logon);
 
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            var buffer = new byte[256];
-            int read = await client.GetStream().ReadAsync(buffer, timeout.Token);
-            Assert.Equal(0, read);
+            byte[] logout = await ReadFrameAsync(client.GetStream());
+            Assert.Equal("5", Field(logout, 35));
+            Assert.Equal("Logon rejected", Field(logout, 58));
         }
         finally
         {
@@ -217,7 +216,12 @@ public sealed class FixOutboundDispatcherTests
         }
     }
 
-    private static async Task<RunningAcceptor> StartAsync(string directory, int port, IReadOnlyList<string> allowed)
+    private static async Task<RunningAcceptor> StartAsync(
+        string directory,
+        int port,
+        IReadOnlyList<string> allowed,
+        AcceptorRecoveryOptions? recovery = null,
+        int heartBtInt = 30)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -239,8 +243,9 @@ public sealed class FixOutboundDispatcherTests
                 SenderCompId = "NEXUS",
                 BeginString = "FIX.4.4",
                 AllowedSenderCompIds = allowed,
-                HeartBtInt = 30,
+                HeartBtInt = heartBtInt,
                 LogonTimeout = TimeSpan.FromSeconds(2),
+                Recovery = recovery ?? new AcceptorRecoveryOptions(),
             },
             NullLogger<FixOutboundDispatcher>.Instance,
             new DispatchPayloadPool(),
@@ -270,11 +275,11 @@ public sealed class FixOutboundDispatcherTests
         }
     }
 
-    private static async Task<TcpClient> ConnectAsync(int port, string senderCompId)
+    private static async Task<TcpClient> ConnectAsync(int port, string senderCompId, long msgSeqNum = 1, bool reset = false, long? nextExpected = null, int heartBtInt = 30)
     {
         var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, port);
-        byte[] logon = Logon(senderCompId, "NEXUS");
+        byte[] logon = Logon(senderCompId, "NEXUS", msgSeqNum, reset, nextExpected, heartBtInt);
         await client.GetStream().WriteAsync(logon);
         return client;
     }
@@ -286,7 +291,7 @@ public sealed class FixOutboundDispatcherTests
         return await reading;
     }
 
-    private static byte[] Logon(string senderCompId, string targetCompId)
+    private static byte[] Logon(string senderCompId, string targetCompId, long msgSeqNum = 1, bool reset = false, long? nextExpected = null, int heartBtInt = 30)
     {
         var options = new SessionOptions
         {
@@ -296,10 +301,12 @@ public sealed class FixOutboundDispatcherTests
             SenderCompId = senderCompId,
             TargetCompId = targetCompId,
             BeginString = "FIX.4.4",
-            HeartBtInt = 30,
+            HeartBtInt = heartBtInt,
+            ResetSeqNumFlag = reset,
+            NextExpectedMsgSeqNum = nextExpected,
         };
         byte[] buffer = new byte[512];
-        int length = FixMessageBuilder.BuildLogon(buffer, options, 1).Length;
+        int length = FixMessageBuilder.BuildLogon(buffer, options, msgSeqNum).Length;
         return buffer[..length];
     }
 
