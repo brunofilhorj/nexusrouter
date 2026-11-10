@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 
+using NexusRouter.Egress;
 using NexusRouter.Egress.Kafka;
 
 namespace NexusRouter.Host.Configuration;
@@ -35,6 +36,11 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
     /// Confirmação do broker: 0, 1 ou -1 (todos os replicas).
     /// </summary>
     public int Acks { get; init; }
+
+    /// <summary>
+    /// Quando o cursor durável avança. <see cref="CursorAckMode.OnBrokerAck"/> não combina com <see cref="Acks"/> zero.
+    /// </summary>
+    public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
 
     /// <summary>
     /// Protocolo de transporte e autenticação.
@@ -105,6 +111,12 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
         if (options.Acks is not (0 or 1 or -1))
         {
             failures.Add("Acks aceita 0, 1 ou -1.");
+        }
+
+        ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.CursorAckMode, nameof(options.CursorAckMode)));
+        if (options.Acks == 0 && options.CursorAckMode == CursorAckMode.OnBrokerAck)
+        {
+            failures.Add("Acks=0 só combina com CursorAckMode OnEnqueue.");
         }
 
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));

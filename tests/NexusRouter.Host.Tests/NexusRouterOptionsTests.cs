@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 
 using NexusRouter.Audit;
 using NexusRouter.Domain.Enums;
+using NexusRouter.Egress;
 using NexusRouter.Egress.Kafka;
 using NexusRouter.Host.Configuration;
 using NexusRouter.SessionLog;
@@ -106,12 +107,33 @@ public sealed class NexusRouterOptionsTests
             BootstrapServers = "localhost:19092",
             Topic = "fix.raw",
             ClientId = "nexusrouter2",
+            Acks = 1,
         });
 
         ValidateOptionsResult result = options.Validate(null, options);
 
         Assert.True(result.Failed);
         Assert.Contains(result.Failures, f => f.Contains("Id 'kafka-main' está duplicado"));
+    }
+
+    [Fact]
+    public void Validate_WhenKafkaAcksZeroUsesOnBrokerAck_Fails()
+    {
+        NexusRouterOptions options = CreateValidOptions();
+        options.Dispatchers[0] = new KafkaDispatcherOptions
+        {
+            Id = "kafka-main",
+            BootstrapServers = "localhost:19092",
+            Topic = "fix.ordexec.raw",
+            ClientId = "nexusrouter",
+            Acks = 0,
+            CursorAckMode = CursorAckMode.OnBrokerAck,
+        };
+
+        ValidateOptionsResult result = options.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, f => f.Contains("OnEnqueue"));
     }
 
     [Fact]
@@ -166,6 +188,7 @@ public sealed class NexusRouterOptionsTests
             ["NexusRouter:Dispatchers:0:BootstrapServers"] = "localhost:19092",
             ["NexusRouter:Dispatchers:0:Topic"] = "orders",
             ["NexusRouter:Dispatchers:0:ClientId"] = "nexus",
+            ["NexusRouter:Dispatchers:0:Acks"] = "1",
 
             ["NexusRouter:Dispatchers:1:Id"] = "ws-1",
             ["NexusRouter:Dispatchers:1:Type"] = "WebSocket",
@@ -236,6 +259,7 @@ public sealed class NexusRouterOptionsTests
                     Topic = "fix.ordexec.raw",
                     ClientId = "nexusrouter",
                     Acks = 0,
+                    CursorAckMode = CursorAckMode.OnEnqueue,
                     SecurityProtocol = KafkaSecurityProtocol.Plaintext,
                     SaslMechanism = KafkaSaslMechanism.None,
                     PartitionStrategy = KafkaPartitionStrategy.None,

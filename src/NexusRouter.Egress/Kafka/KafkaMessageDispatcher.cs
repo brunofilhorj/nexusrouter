@@ -1,8 +1,11 @@
+using System.Text;
+
 using Confluent.Kafka;
 
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
+using NexusRouter.Egress;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
 
@@ -15,13 +18,33 @@ namespace NexusRouter.Egress.Kafka;
 /// <see cref="ConnectAsync"/> monta um <c>ProducerConfig</c> a partir das options.
 /// Não há ramo de provedor no envio. <see cref="KafkaSaslMechanism.AwsMskIam"/> é o único caso
 /// que carrega o callback de IAM. Com <c>Acks=0</c> o envio usa <c>Produce</c>. Nos demais, <c>ProduceAsync</c>.
+/// Cada frame com <see cref="LogRef"/> leva o header <see cref="BrokerIdentity.HeaderName"/>.
+/// <see cref="CursorAckMode.OnBrokerAck"/> só avança o cursor depois do ack do broker.
 /// </remarks>
 public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptions>
 {
     private readonly IKafkaPartitionStrategy _partitionStrategy;
     private readonly ISecretResolver _secretResolver;
+    private readonly BrokerCursorTracker? _tracker;
     private IProducer<Null, byte[]>? _producer;
+    private KafkaPublish? _publish;
     private int _released;
+
+    /// <summary>
+    /// Publica um record já montado. O teste injeta este delegate no lugar do producer.
+    /// </summary>
+    /// <param name="topic">Tópico de destino.</param>
+    /// <param name="partition">Partição explícita, ou nulo para o particionador do cliente.</param>
+    /// <param name="value">Cópia do frame.</param>
+    /// <param name="identity">Header <see cref="BrokerIdentity.HeaderName"/>, ou nulo.</param>
+    /// <param name="cancellationToken">Cancela a espera do ack.</param>
+    /// <returns>Tarefa concluída quando a biblioteca aceitou o envio, ou quando o broker confirmou.</returns>
+    internal delegate ValueTask KafkaPublish(
+        string topic,
+        int? partition,
+        byte[] value,
+        string? identity,
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Cria o dispatcher. A conexão com o broker acontece em <see cref="DispatcherBase{TOptions}.StartAsync"/>.
@@ -34,6 +57,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     /// Estratégia já construída. Quando nula, a opção <see cref="KafkaDispatcherOptions.PartitionStrategy"/> define a estratégia.
     /// </param>
     /// <param name="catchUp">Cursor do log de sessão. Nulo entrega só o que chegar pelo channel.</param>
+    /// <param name="tracker">Marca-d'água do cursor. Nulo não persiste confirmação.</param>
     /// <exception cref="ArgumentException">As options são inválidas.</exception>
     /// <exception cref="ArgumentNullException"><paramref name="logger"/> ou <paramref name="secretResolver"/> é nulo.</exception>
     public KafkaMessageDispatcher(
@@ -43,12 +67,40 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         DispatchPayloadPool payloadPool,
         ISecretResolver secretResolver,
         IKafkaPartitionStrategy? partitionStrategy = null,
-        StreamCatchUp? catchUp = null)
+        StreamCatchUp? catchUp = null,
+        BrokerCursorTracker? tracker = null)
         : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         _secretResolver = secretResolver;
         _partitionStrategy = partitionStrategy ?? CreateStrategy(options);
+        _tracker = tracker;
+    }
+
+    /// <summary>
+    /// Cria o dispatcher com um publicador injetado, sem abrir conexão com o broker.
+    /// </summary>
+    /// <param name="dispatcherId">Nome único na rota.</param>
+    /// <param name="options">Options já coerentes com o modo do cursor.</param>
+    /// <param name="logger">Log de falha de entrega.</param>
+    /// <param name="payloadPool">Pool de payloads do dispatcher.</param>
+    /// <param name="secretResolver">Não é chamado enquanto o publicador injetado estiver no lugar.</param>
+    /// <param name="publish">Publicação usada no lugar do producer.</param>
+    /// <param name="tracker">Marca-d'água do cursor.</param>
+    /// <param name="catchUp">Cursor do log de sessão.</param>
+    internal KafkaMessageDispatcher(
+        string dispatcherId,
+        KafkaDispatcherOptions options,
+        ILogger<KafkaMessageDispatcher> logger,
+        DispatchPayloadPool payloadPool,
+        ISecretResolver secretResolver,
+        KafkaPublish publish,
+        BrokerCursorTracker? tracker,
+        StreamCatchUp? catchUp)
+        : this(dispatcherId, options, logger, payloadPool, secretResolver, partitionStrategy: null, catchUp, tracker)
+    {
+        ArgumentNullException.ThrowIfNull(publish);
+        _publish = publish;
     }
 
     /// <summary>
@@ -66,6 +118,11 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     protected override ValueTask ConnectAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_publish is not null)
+        {
+            return ValueTask.CompletedTask;
+        }
+
         if (Options.SaslMechanism == KafkaSaslMechanism.OAuthBearer)
         {
             throw new InvalidOperationException(
@@ -80,6 +137,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         }
 
         _producer = builder.Build();
+        _publish = PublishWithProducer;
         Logger.LogInformation(
             "Dispatcher {DispatcherId} conectou o producer Kafka em {BootstrapServers}, tópico {Topic}.",
             DispatcherId,
@@ -91,18 +149,46 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     /// <inheritdoc />
     protected override async ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
     {
-        IProducer<Null, byte[]> producer = _producer
+        KafkaPublish publish = _publish
             ?? throw new InvalidOperationException($"O dispatcher {DispatcherId} não tem producer Kafka.");
         if (payload.RawBuffer is null)
         {
             throw new InvalidOperationException("O payload Kafka não tem buffer.");
         }
 
+        string? identity = BrokerIdentity.Format(payload.LogRef);
+        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
+        {
+            _tracker?.Track(payload.LogRef);
+        }
+
+        await publish(
+            Options.Topic,
+            _partitionStrategy.GetPartition(payload),
+            payload.RawBuffer.Memory.ToArray(),
+            identity,
+            cancellationToken).ConfigureAwait(false);
+
+        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
+        {
+            _tracker?.Confirm(payload.LogRef);
+        }
+    }
+
+    private async ValueTask PublishWithProducer(
+        string topic,
+        int? partition,
+        byte[] value,
+        string? identity,
+        CancellationToken cancellationToken)
+    {
+        IProducer<Null, byte[]> producer = _producer
+            ?? throw new InvalidOperationException($"O dispatcher {DispatcherId} não tem producer Kafka.");
         var message = new Message<Null, byte[]>
         {
-            Value = payload.RawBuffer.Memory.ToArray(),
+            Value = value,
+            Headers = CreateHeaders(identity),
         };
-        int? partition = _partitionStrategy.GetPartition(payload);
 
         if (Options.Acks == 0)
         {
@@ -113,13 +199,23 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         if (partition is int assigned)
         {
             await producer.ProduceAsync(
-                new TopicPartition(Options.Topic, new Partition(assigned)),
+                new TopicPartition(topic, new Partition(assigned)),
                 message,
                 cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        await producer.ProduceAsync(Options.Topic, message, cancellationToken).ConfigureAwait(false);
+        await producer.ProduceAsync(topic, message, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static Headers? CreateHeaders(string? identity)
+    {
+        if (identity is null)
+        {
+            return null;
+        }
+
+        return new Headers { { BrokerIdentity.HeaderName, Encoding.UTF8.GetBytes(identity) } };
     }
 
     private void ProduceFireAndForget(IProducer<Null, byte[]> producer, Message<Null, byte[]> message, int? partition)

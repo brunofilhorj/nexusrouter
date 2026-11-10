@@ -1141,7 +1141,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-04b — Entrega ao menos uma vez nos brokers, com header de idempotência
+- [x] TD-04b — Entrega ao menos uma vez nos brokers, com header de idempotência
 
 **Origem:** `notes/session-log-rethink.md` decisão 2, §4.1, §8.2. **Tamanho:** M. **Depende de:** TD-04a.
 

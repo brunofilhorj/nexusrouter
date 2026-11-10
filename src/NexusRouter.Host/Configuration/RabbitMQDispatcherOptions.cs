@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Options;
 
+using NexusRouter.Egress;
+
 namespace NexusRouter.Host.Configuration;
 
 /// <summary>
@@ -55,6 +57,11 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
     /// </summary>
     public ushort? PrefetchCount { get; init; }
 
+    /// <summary>
+    /// Quando o cursor durável avança. <see cref="CursorAckMode.OnBrokerAck"/> liga publisher confirms.
+    /// </summary>
+    public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
+
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
 
@@ -76,6 +83,7 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
         ConfigurationChecks.Add(failures, ConfigurationChecks.EnvVar(options.PasswordEnvVar, nameof(options.PasswordEnvVar), required: true));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Required(options.Exchange, nameof(options.Exchange)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));
+        ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.CursorAckMode, nameof(options.CursorAckMode)));
         return ConfigurationChecks.From(failures);
     }
 }

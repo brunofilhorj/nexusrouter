@@ -443,6 +443,7 @@ public static class ServiceCollectionExtensions
                 Topic = config.Topic,
                 ClientId = config.ClientId,
                 Acks = config.Acks,
+                CursorAckMode = config.CursorAckMode,
                 SecurityProtocol = config.SecurityProtocol,
                 SaslMechanism = config.SaslMechanism,
                 SaslUsernameEnvVar = config.SaslUsernameEnvVar,
@@ -456,13 +457,15 @@ public static class ServiceCollectionExtensions
             ILogger<KafkaMessageDispatcher> logger = sp.GetRequiredService<ILogger<KafkaMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+            BrokerCursorTracker? tracker = CreateBrokerTracker(sp, config.Id, opts.CursorAckMode);
             var dispatcher = new KafkaMessageDispatcher(
                 config.Id,
                 opts,
                 logger,
                 payloadPool,
                 secretResolver,
-                catchUp: CreateCatchUp(sp, config.Id, payloadPool));
+                catchUp: CreateCatchUp(sp, config.Id, payloadPool, tracker),
+                tracker: tracker);
             return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
@@ -487,17 +490,20 @@ public static class ServiceCollectionExtensions
                 RoutingKey = config.RoutingKey,
                 ChannelCapacity = config.ChannelCapacity,
                 PrefetchCount = config.PrefetchCount,
+                CursorAckMode = config.CursorAckMode,
             };
             ILogger<RabbitMQMessageDispatcher> logger = sp.GetRequiredService<ILogger<RabbitMQMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
             ISecretResolver secretResolver = sp.GetRequiredService<ISecretResolver>();
+            BrokerCursorTracker? tracker = CreateBrokerTracker(sp, config.Id, opts.CursorAckMode);
             var dispatcher = new RabbitMQMessageDispatcher(
                 config.Id,
                 opts,
                 logger,
                 payloadPool,
                 secretResolver,
-                CreateCatchUp(sp, config.Id, payloadPool));
+                CreateCatchUp(sp, config.Id, payloadPool, tracker),
+                tracker);
             return TrackLag(sp, dispatcher, () => dispatcher.Lag);
         });
 
@@ -546,7 +552,25 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMessageDispatcher>(sp => sp.GetRequiredService<FixOutboundDispatcher>());
     }
 
-    private static StreamCatchUp? CreateCatchUp(IServiceProvider services, string dispatcherId, DispatchPayloadPool pool)
+    private static BrokerCursorTracker? CreateBrokerTracker(
+        IServiceProvider services,
+        string dispatcherId,
+        CursorAckMode mode)
+    {
+        ISessionLog? log = services.GetService<ISessionLog>();
+        if (log is null || services.GetService<SessionLogOptions>() is null)
+        {
+            return null;
+        }
+
+        return new BrokerCursorTracker(log.OpenBroker(dispatcherId), mode);
+    }
+
+    private static StreamCatchUp? CreateCatchUp(
+        IServiceProvider services,
+        string dispatcherId,
+        DispatchPayloadPool pool,
+        IConsumerState? state = null)
     {
         ISessionLog? log = services.GetService<ISessionLog>();
         SessionLogOptions? options = services.GetService<SessionLogOptions>();
@@ -555,7 +579,7 @@ public static class ServiceCollectionExtensions
             return null;
         }
 
-        return new StreamCatchUp(log.Reader, log.OpenBroker(dispatcherId), pool, options.CatchUpIdleMs);
+        return new StreamCatchUp(log.Reader, state ?? log.OpenBroker(dispatcherId), pool, options.CatchUpIdleMs);
     }
 
     private static TDispatcher TrackLag<TDispatcher>(IServiceProvider services, TDispatcher dispatcher, Func<long> lag)

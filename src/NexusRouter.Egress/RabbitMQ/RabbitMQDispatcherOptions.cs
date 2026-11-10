@@ -1,3 +1,5 @@
+using NexusRouter.Egress;
+
 namespace NexusRouter.Egress.RabbitMQ;
 
 /// <summary>
@@ -51,6 +53,11 @@ public sealed class RabbitMQDispatcherOptions
     public ushort? PrefetchCount { get; init; }
 
     /// <summary>
+    /// Quando o cursor durável avança. <see cref="CursorAckMode.OnBrokerAck"/> liga publisher confirms.
+    /// </summary>
+    public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
+
+    /// <summary>
     /// Rejeita host, porta, exchange ou capacidade inválidos.
     /// </summary>
     /// <exception cref="ArgumentException">Falta host, exchange ou o nome de uma variável.</exception>
@@ -68,5 +75,9 @@ public sealed class RabbitMQDispatcherOptions
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ChannelCapacity);
+        if (!Enum.IsDefined(CursorAckMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(CursorAckMode), CursorAckMode, "CursorAckMode é desconhecido.");
+        }
     }
 }
