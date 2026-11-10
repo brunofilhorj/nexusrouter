@@ -322,9 +322,20 @@ public sealed class SessionLogTests
 
     private static void Delete(string directory)
     {
-        if (Directory.Exists(directory))
+        // O manager (await using) só libera os arquivos mapeados ao sair do método, depois deste finally.
+        // No Windows, apagar arquivo mapeado lança IOException; a limpeza vira best-effort e o resto fica no %TEMP%.
+        try
         {
-            Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 }

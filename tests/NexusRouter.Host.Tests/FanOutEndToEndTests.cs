@@ -410,8 +410,12 @@ public sealed class FanOutEndToEndTests
             && bytes[start + 7] == 0x01;
     }
 
+    // A sessão valida SendingTime (52) contra o relógio local (TD-06); um valor fixo cairia fora da tolerância.
+    private static string SendingTimeNow() =>
+        DateTime.UtcNow.ToString("yyyyMMdd-HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture);
+
     private static byte[] CreateLogonAcknowledgement() =>
-        CreateFixFrame("35=A", "49=EXCHANGE", "56=CLIENT", "34=1", "52=20260101-12:00:00", "98=0", "108=30");
+        CreateFixFrame("35=A", "49=EXCHANGE", "56=CLIENT", "34=1", $"52={SendingTimeNow()}", "98=0", "108=30");
 
     private static byte[] CreateExecutionReport(int index)
     {
@@ -421,7 +425,7 @@ public sealed class FanOutEndToEndTests
             "49=EXCHANGE",
             "56=CLIENT",
             $"34={sequence}",
-            "52=20260101-12:00:01",
+            $"52={SendingTimeNow()}",
             $"11=E2E{index:D3}",
             "150=0",
             "39=0",

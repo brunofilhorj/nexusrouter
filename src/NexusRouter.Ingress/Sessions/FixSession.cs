@@ -42,6 +42,8 @@ public sealed class FixSession : IHostedService
     private readonly FixSessionStateMachine _stateMachine = new();
     private readonly SessionId _sessionId;
     private readonly SemaphoreSlim _outboundGate = new(1, 1);
+    private readonly FixSessionMetrics? _metrics;
+    private readonly TimeProvider _timeProvider;
 
     private CancellationTokenSource? _stoppingCts;
     private Task? _runTask;
@@ -69,6 +71,8 @@ public sealed class FixSession : IHostedService
     /// <param name="secretResolver">Resolve a senha do certificado TLS pela chave em <paramref name="options"/>, sob demanda.</param>
     /// <param name="logger">Log estruturado da sessão.</param>
     /// <param name="sessionLog">Log de sessão. O frame original é gravado antes da máquina de estados.</param>
+    /// <param name="metrics">Contadores de rejeição. Nulo desliga a métrica.</param>
+    /// <param name="timeProvider">Relógio da checagem de SendingTime. Nulo usa o relógio do sistema.</param>
     /// <exception cref="ArgumentNullException">Alguma dependência é nula.</exception>
     /// <exception cref="ArgumentException">Host, comp IDs ou BeginString são inválidos.</exception>
     /// <exception cref="ArgumentOutOfRangeException">A porta, o HeartBtInt, o limite de heartbeats ou o timeout de Logon é inválido.</exception>
@@ -80,7 +84,9 @@ public sealed class FixSession : IHostedService
         ChannelWriter<AuditRecord> auditChannel,
         ISecretResolver secretResolver,
         ILogger<FixSession> logger,
-        ISessionLog sessionLog)
+        ISessionLog sessionLog,
+        FixSessionMetrics? metrics = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(frameDecoder);
@@ -116,6 +122,14 @@ public sealed class FixSession : IHostedService
         if (options.LogonTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(options.LogonTimeout), options.LogonTimeout, "O timeout de Logon deve ser positivo.");
+        }
+
+        if (options.SendingTimeTolerance < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options.SendingTimeTolerance),
+                options.SendingTimeTolerance,
+                "A tolerância de SendingTime não pode ser negativa.");
         }
 
         if (options.CancelOnDisconnectType is < 0 or > 3)
@@ -158,6 +172,8 @@ public sealed class FixSession : IHostedService
         _logger = logger;
         _sessionId = new SessionId(options.SessionId);
         _sessionLog = sessionLog.OpenStream(options.SessionId);
+        _metrics = metrics;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -435,6 +451,11 @@ public sealed class FixSession : IHostedService
     {
         while (_frameDecoder.TryDecode(ref buffer, out IngressFrame decoded))
         {
+            if (!IsFrameValid(in decoded))
+            {
+                continue;
+            }
+
             LogRef logRef = AppendOriginal(in decoded);
             var frame = new IngressFrame(
                 _sessionId,
@@ -443,6 +464,105 @@ public sealed class FixSession : IHostedService
                 decoded.FrameLength,
                 logRef);
             Dispatch(in frame);
+        }
+    }
+
+    /// <summary>
+    /// Valida o frame antes do log e do router. Frame inválido gera Reject, é contado e não segue adiante.
+    /// </summary>
+    private bool IsFrameValid(in IngressFrame decoded)
+    {
+        ReadOnlySequence<byte> raw = decoded.RawBuffer;
+        int length = raw.Length > int.MaxValue ? int.MaxValue : (int)raw.Length;
+        if (decoded.FrameLength > 0 && decoded.FrameLength < length)
+        {
+            length = decoded.FrameLength;
+        }
+
+        if (length == 0)
+        {
+            return true;
+        }
+
+        FixFrameValidation result;
+        bool isReject;
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+        if (raw.IsSingleSegment)
+        {
+            ReadOnlySpan<byte> span = raw.FirstSpan[..length];
+            result = FixFrameValidator.Validate(span, _options, now);
+            isReject = result.IsValid ? false : IsRejectMessage(span);
+        }
+        else
+        {
+            byte[] rented = ArrayPool<byte>.Shared.Rent(length);
+            try
+            {
+                raw.Slice(0, length).CopyTo(rented);
+                result = FixFrameValidator.Validate(rented.AsSpan(0, length), _options, now);
+                isReject = result.IsValid ? false : IsRejectMessage(rented.AsSpan(0, length));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+
+        if (result.IsValid)
+        {
+            return true;
+        }
+
+        _metrics?.RecordReject(_sessionId.Value, result.SessionRejectReason, result.RefTagId);
+        _logger.LogWarning(
+            "Sessão {SessionId} rejeitou frame de entrada: {Text} (RefSeqNum {RefSeqNum}, RefTagID {RefTagId})",
+            _sessionId.Value,
+            result.Text,
+            result.RefSeqNum,
+            result.RefTagId);
+
+        // Um Reject inválido não é respondido com outro Reject, para não gerar laço entre as pontas.
+        if (!isReject)
+        {
+            SendReject(in result);
+        }
+
+        return false;
+    }
+
+    private static bool IsRejectMessage(ReadOnlySpan<byte> frame) => frame.IndexOf("\u000135=3\u0001"u8) >= 0;
+
+    private void SendReject(in FixFrameValidation validation)
+    {
+        byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
+        try
+        {
+            _outboundGate.Wait();
+            try
+            {
+                long sequence = Interlocked.Increment(ref _nextOutboundSequence);
+                Span<byte> message = FixMessageBuilder.BuildReject(
+                    rented,
+                    _options,
+                    sequence,
+                    validation.RefSeqNum,
+                    validation.RefTagId,
+                    validation.SessionRejectReason,
+                    validation.Text);
+                WriteSocket(message);
+            }
+            finally
+            {
+                _outboundGate.Release();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "Sessão {SessionId} não enviou o Reject", _sessionId.Value);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
         }
     }
 

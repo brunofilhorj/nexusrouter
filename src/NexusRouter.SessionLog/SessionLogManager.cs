@@ -272,7 +272,10 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         if (Volatile.Read(ref _stopped) == 0 && Volatile.Read(ref _started) == 1)
         {
             SimulateCrash();
+            return;
         }
+
+        ReleaseUnstartedMaps();
     }
 
     /// <summary>
@@ -284,7 +287,24 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         if (Volatile.Read(ref _stopped) == 0 && Volatile.Read(ref _started) == 1)
         {
             await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            return;
         }
+
+        ReleaseUnstartedMaps();
+    }
+
+    /// <summary>
+    /// Libera streams e índices abertos quando o manager nunca foi iniciado. Sem isso, o mapeamento fica
+    /// aberto até o fim do processo e, no Windows, bloqueia outra abertura dos mesmos arquivos.
+    /// </summary>
+    private void ReleaseUnstartedMaps()
+    {
+        if (Volatile.Read(ref _started) == 1 || Interlocked.Exchange(ref _stopped, 1) != 0)
+        {
+            return;
+        }
+
+        DisposeMaps();
     }
 
     private ClientBinding CreateClient(string dispatcherId, string clientKey, bool unclean)
@@ -297,6 +317,16 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         ConsumerStateStore.StateDocument? document = store.Load();
         long nextOut = document is null || document.NextOut < 1 ? 1 : document.NextOut;
         int epoch = document is null ? 0 : (int)document.Epoch;
+
+        // A varredura abre cada .cidx; precisa vir antes do ClientIndex mapear o arquivo do dia.
+        // No Windows, o mapeamento aberto impede outra abertura do mesmo arquivo.
+        long uncleanFloor = 0;
+        if (unclean && document is not null)
+        {
+            long last = ClientIndex.ScanLastPublished(directory, _options.IndexSlotsPerSegment);
+            uncleanFloor = Math.Max(nextOut, last + 1) + _options.UncleanRestartSeqMargin;
+        }
+
         index = new ClientIndex(
             dispatcherId + "/" + clientKey,
             directory,
@@ -305,11 +335,9 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
             nextOut,
             () => Volatile.Read(ref _tradingDay),
             Locate);
-        if (unclean && document is not null)
+        if (uncleanFloor > 0)
         {
-            long last = ClientIndex.ScanLastPublished(directory, _options.IndexSlotsPerSegment);
-            long floor = Math.Max(nextOut, last + 1);
-            index.SetNextOut(floor + _options.UncleanRestartSeqMargin);
+            index.SetNextOut(uncleanFloor);
         }
 
         _states.Add(store);
