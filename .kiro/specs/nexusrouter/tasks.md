@@ -1193,7 +1193,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-07 — Acceptor FIX: seqnum de entrada, `Logout` na recusa e detecção de silêncio
+- [x] TD-07 — Acceptor FIX: seqnum de entrada, `Logout` na recusa e detecção de silêncio
 
 **Origem:** `notes/seqnum-rethink.md` §4 e §7.3. **Tamanho:** M. **Depende de:** TD-03, TD-04, TD-05 (autenticação do Logon, para que arquivos só sejam criados após Logon aceito).
 

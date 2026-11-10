@@ -324,13 +324,13 @@ internal sealed class FixAcceptedSession
         }
     }
 
-    private async Task SendLogoutAsync(ReadOnlySpan<byte> text, CancellationToken cancellationToken)
+    private async Task SendLogoutAsync(ReadOnlyMemory<byte> text, CancellationToken cancellationToken)
     {
         byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
         try
         {
             long sequence = NextSequence(admin: true);
-            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence, text).Length;
+            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence, text.Span).Length;
             await WritePipeAsync(rented.AsMemory(0, written), cancellationToken).ConfigureAwait(false);
         }
         finally
