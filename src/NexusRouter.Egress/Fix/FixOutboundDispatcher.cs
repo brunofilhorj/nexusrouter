@@ -412,7 +412,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            string? reject = DecideLogon(logon.Value, recovery, binding, out long skipFrom, out bool gapFillLogon, out bool echoReset);
+            string? reject = DecideLogon(logon.Value, recovery, binding, out long skipFrom, out long resumeFrom, out bool gapFillLogon, out bool echoReset);
             if (reject is null)
             {
                 Remember(binding);
@@ -439,6 +439,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 HeartBtInt = heartBtInt,
                 SkipFrom = reject is null ? skipFrom : 0,
                 GapFillLogonSequence = reject is null && gapFillLogon,
+                ResumeFrom = reject is null ? resumeFrom : 0,
                 RejectText = reject,
                 LogoutTimeoutSeconds = recovery.LogoutTimeoutSeconds,
                 State = binding.State,
@@ -664,10 +665,12 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         AcceptorRecoveryOptions recovery,
         ClientBinding binding,
         out long skipFrom,
+        out long resumeFrom,
         out bool gapFillLogon,
         out bool echoReset)
     {
         skipFrom = 0;
+        resumeFrom = 0;
         gapFillLogon = false;
         echoReset = false;
         if (logon.ResetSequence)
@@ -716,9 +719,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 }
                 else
                 {
-                    // Reenvio de aplicação N..M-1 com PossDup fica no TD-08.
-                    // Até lá o intervalo continua no .cidx e o cliente pede por ResendRequest.
-                    // O gap-fill abaixo cobre só o seq que o Logon de resposta vai consumir.
+                    // Modo 2 (§3.4.7): com 789 = N o router reenvia N..M-1 pelo .cidx com PossDupFlag=Y
+                    // e depois cobre o seq do Logon de resposta com um gap-fill. A sessão faz isso ao iniciar.
+                    resumeFrom = logon.NextExpected;
                     gapFillLogon = true;
                 }
             }

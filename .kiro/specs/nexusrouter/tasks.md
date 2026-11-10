@@ -889,7 +889,7 @@ Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com
 
 ---
 
-- [ ] T-47 — Recuperação para clientes de broker pelo cursor
+- [x] T-47 — Recuperação para clientes de broker pelo cursor
 
 **Objetivo:** Kafka e RabbitMQ não identificam o assinante na entrega. A recuperação se dá pelo cursor persistido do dispatcher, não por API paralela.
 
@@ -905,7 +905,7 @@ Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com
 
 ---
 
-- [ ] T-48 — Testes da retransmissão sobre o log
+- [x] T-48 — Testes da retransmissão sobre o log
 
 **Objetivo:** Cobrir reenvio por seqnum, isolamento por UUID, ao menos uma vez no broker e o fato de o hot path não ser bloqueado por consumidor lento.
 

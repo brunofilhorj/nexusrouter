@@ -59,6 +59,10 @@ internal sealed class FixAcceptedSession
     private long _lastInboundTicks;
     private long _resendFrom;
     private long _resendTo;
+    private long _resumeFrom;
+    private long _resumeTo;
+    private long _resumeGapFrom;
+    private long _resumeGapTo;
 
     /// <summary>
     /// Cria a sessão. O Logon de resposta sai em <see cref="StartAsync"/>.
@@ -170,7 +174,15 @@ internal sealed class FixAcceptedSession
         // QuickFIX envia o Logon (seq M) e só depois o SequenceReset-GapFill.
         // O dicionário FIX não fixa essa ordem. NewSeqNo é o próximo seq do router (M+1).
         long nextOut = _index.NextOut;
-        if (_plan.SkipFrom > 0 && _plan.SkipFrom < nextOut)
+        if (_plan.ResumeFrom > 0 && _plan.ResumeFrom < nextOut - 1)
+        {
+            // O ReadLoop reenvia ResumeFrom..M-1 e só então cobre o seq do Logon (M) com o gap-fill.
+            _resumeFrom = _plan.ResumeFrom;
+            _resumeTo = nextOut - 2;
+            _resumeGapFrom = nextOut - 1;
+            _resumeGapTo = nextOut;
+        }
+        else if (_plan.SkipFrom > 0 && _plan.SkipFrom < nextOut)
         {
             TryEnqueueGapFill(_plan.SkipFrom, nextOut);
         }
@@ -654,6 +666,17 @@ internal sealed class FixAcceptedSession
 
         try
         {
+            if (_resumeTo > 0)
+            {
+                // Retomada por 789 (§3.4.7, modo 2): aplicação N..M-1 com PossDupFlag=Y, depois o gap-fill do seq do Logon.
+                long from = _resumeFrom;
+                long to = _resumeTo;
+                _resumeFrom = 0;
+                _resumeTo = 0;
+                await ResendAsync(from, to, cancellationToken).ConfigureAwait(false);
+                TryEnqueueGapFill(_resumeGapFrom, _resumeGapTo);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 while (FixWireFrame.TryTakeFrame(buffer.AsSpan(0, count), out int frameLength))
