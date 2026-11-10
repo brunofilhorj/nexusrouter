@@ -54,6 +54,11 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
     public int ChannelCapacity { get; init; } = 8192;
 
     /// <summary>
+    /// Máximo de <c>SenderCompID</c> distintos com arquivos no log de sessão neste dispatcher.
+    /// </summary>
+    public int MaxClients { get; init; } = 64;
+
+    /// <summary>
     /// TLS do socket aceito. Desligado por omissão.
     /// </summary>
     public TlsOptions Tls { get; init; } = new();
@@ -110,6 +115,7 @@ public sealed class FixOutboundDispatcherOptions : DispatcherOptions, IValidateO
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.HeartBtInt, nameof(options.HeartBtInt)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.LogonTimeoutSeconds, nameof(options.LogonTimeoutSeconds)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));
+        ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.MaxClients, nameof(options.MaxClients)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.NonNegative(options.AcceptRetryBaseDelayMs, nameof(options.AcceptRetryBaseDelayMs)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.NonNegative(options.AcceptRetryMaxDelayMs, nameof(options.AcceptRetryMaxDelayMs)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Jitter(options.AcceptRetryJitterFactor, nameof(options.AcceptRetryJitterFactor)));

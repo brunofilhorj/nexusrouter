@@ -49,6 +49,12 @@ public sealed class FixOutboundDispatcherOptions
     public int ChannelCapacity { get; init; } = 8192;
 
     /// <summary>
+    /// Máximo de <c>SenderCompID</c> distintos que podem ter arquivos no log de sessão por instância.
+    /// Passado o limite, o Logon de um <c>SenderCompID</c> novo é recusado com <c>Logout</c>.
+    /// </summary>
+    public int MaxClients { get; init; } = 64;
+
+    /// <summary>
     /// Quando <see langword="true"/>, o socket aceito passa por TLS antes do Logon.
     /// </summary>
     public bool TlsEnabled { get; init; }
@@ -136,6 +142,7 @@ public sealed class FixOutboundDispatcherOptions
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ChannelCapacity);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxClients);
         if (SlotPublishTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(SlotPublishTimeout), SlotPublishTimeout, "O timeout de publicação de slot deve ser positivo.");
