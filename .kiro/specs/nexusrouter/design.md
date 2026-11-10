@@ -131,7 +131,7 @@ O `RouterEngine` é o coração do sistema. É stateless do ponto de vista de ro
 
 **FanOut:** Para cada dispatcher registrado no span `RouteContext.Dispatchers`, o router chama `TryWrite` no `Channel<DispatchPayload>` do dispatcher. Isso é não bloqueante por design. O channel é o caminho de entrega ao vivo.
 
-> **Revisão de 2026-11-06 (`notes/session-log-rethink.md`), aplicada em TD-04a.** A thread da sessão de ingress, que é o escritor único do stream no log de sessão (§3.4.3), grava o frame original logo após o `TryDecode`, antes do `SessionFSM`, do `PassThroughRewriter` e do fan-out. O fan-out recebe só a referência `(stream, época, seq de entrada)` no `DispatchPayload`. Com isso, channel cheio deixa de descartar: vira lag do dispatcher, que alcança lendo do log pelo cursor. Rota sem dispatcher também não descarta — a mensagem fica no log. A métrica de lag por dispatcher substitui a antiga métrica de descarte por channel cheio. A descrição acima vale como o caminho de entrega ao vivo; a durabilidade vem do log.
+> **Revisão de 2026-11-06 (`notes/backlog-sessao-fix.md`), aplicada em TD-04a.** A thread da sessão de ingress, que é o escritor único do stream no log de sessão (§3.4.3), grava o frame original logo após o `TryDecode`, antes do `SessionFSM`, do `PassThroughRewriter` e do fan-out. O fan-out recebe só a referência `(stream, época, seq de entrada)` no `DispatchPayload`. Com isso, channel cheio deixa de descartar: vira lag do dispatcher, que alcança lendo do log pelo cursor. Rota sem dispatcher também não descarta — a mensagem fica no log. A métrica de lag por dispatcher substitui a antiga métrica de descarte por channel cheio. A descrição acima vale como o caminho de entrega ao vivo; a durabilidade vem do log.
 
 ---
 
@@ -305,14 +305,14 @@ Hypertable em `ingress_ts`, `chunk_time_interval = 1 day`. Script de bootstrap e
 
 #### 3.4.3 Retransmissão sobre o log de sessão em arquivo
 
-> **Revisão de 2026-11-06 (`notes/session-log-rethink.md`).** A versão anterior desta seção guardava o replay por cliente na hypertable `client_replay_messages`, com opt-in diário. Ela foi substituída por um log de sessão em arquivo que grava **todas** as mensagens antes do fan-out. A hypertable não será criada; o PostgreSQL + TimescaleDB fica só com a auditoria (`ingress_fix_messages`).
+> **Revisão de 2026-11-06 (`notes/backlog-sessao-fix.md`).** A versão anterior desta seção guardava o replay por cliente na hypertable `client_replay_messages`, com opt-in diário. Ela foi substituída por um log de sessão em arquivo que grava **todas** as mensagens antes do fan-out. A hypertable não será criada; o PostgreSQL + TimescaleDB fica só com a auditoria (`ingress_fix_messages`).
 
 **Por que arquivo, e não a hypertable:** a recuperação de sessão é o caminho de que a entrega ao vivo depende. A gravação em banco é assíncrona e, se virasse síncrona, acrescentaria milissegundos e uma dependência externa ao caminho que menos pode ter as duas. O log em arquivo é append sequencial no page cache, na casa dos microssegundos, e sobrevive a crash de processo sem o banco de pé. O Timescale continua servindo a auditoria e o histórico de longo prazo, onde a latência não importa.
 
 **Formato.** Segmentos append-only por stream de ingress, rotacionados por dia de pregão e por época (um reset de seqnum ou a virada de pregão começa uma época nova). Cada segmento tem:
 
 - `.log` — registros `[len][seq][ts][crc][payload]`, com o frame como entrou.
-- `.index` denso — como o seqnum FIX é contíguo, a entrada `seq - base` guarda o offset do registro. Busca O(1), 8 bytes por mensagem (cerca de 4 MB por dia a 500 mil mensagens; ver `notes/session-log-rethink.md` §8.3). Não há busca binária nem varredura.
+- `.index` denso — como o seqnum FIX é contíguo, a entrada `seq - base` guarda o offset do registro. Busca O(1), 8 bytes por mensagem (cerca de 4 MB por dia a 500 mil mensagens; ver `notes/backlog-sessao-fix.md` §1). Não há busca binária nem varredura.
 
 O segmento tem tamanho fixo (`SegmentSizeMB`) e é pré-alocado. Se encher antes da virada do dia, abre outro segmento do mesmo dia e época. O próximo segmento é pré-alocado e tocado (page-in) por uma task de background, para que a troca no hot path seja só a troca de um ponteiro. Se a task não terminou a tempo, a troca é síncrona e conta em `sessionlog_sync_rotation_total`.
 
@@ -320,7 +320,7 @@ Um escritor único por stream grava sem lock, em arquivo mapeado em memória. Na
 
 **O frame gravado é o original.** O log guarda o frame como o counterpart enviou, antes do `PassThroughRewriter` (que reescreve o frame in-place). Por isso o append acontece na sessão de ingress logo após o `TryDecode`, e não dentro do fan-out. A sessão extrai o `MsgSeqNum` (tag 34) do frame decodificado para ser o `seq de entrada`.
 
-**O payload fica gravado uma vez.** Cada cliente tem só um índice `seq do cliente -> posição no log de entrada` (arquivo `.cidx`, uma entrada de 16 bytes por seqnum: `kind u8`, `flags u8`, `stream u16`, `segment u32`, `offset u64`; cerca de 8 MB por cliente por dia a 500 mil mensagens). `kind` é `1` (aplicação, aponta para o log de entrada), `2` (administrativa gerada para este cliente: Heartbeat, TestRequest, Logon etc.; sem payload, vira gap-fill) ou `0` (slot ainda não publicado). N clientes não geram N cópias do payload (resolve `notes/replay-rethink.md` §1). O estado por consumidor (próximo seqnum de saída, próximo seqnum de entrada esperado, época e cursor por stream) fica num arquivo pequeno, com flush por mensagem ou por intervalo (padrão de 5 s), configurável.
+**O payload fica gravado uma vez.** Cada cliente tem só um índice `seq do cliente -> posição no log de entrada` (arquivo `.cidx`, uma entrada de 16 bytes por seqnum: `kind u8`, `flags u8`, `stream u16`, `segment u32`, `offset u64`; cerca de 8 MB por cliente por dia a 500 mil mensagens). `kind` é `1` (aplicação, aponta para o log de entrada), `2` (administrativa gerada para este cliente: Heartbeat, TestRequest, Logon etc.; sem payload, vira gap-fill) ou `0` (slot ainda não publicado). N clientes não geram N cópias do payload (resolve `notes/backlog-sessao-fix.md` §1). O estado por consumidor (próximo seqnum de saída, próximo seqnum de entrada esperado, época e cursor por stream) fica num arquivo pequeno, com flush por mensagem ou por intervalo (padrão de 5 s), configurável.
 
 **O fan-out recebe a referência do log.** Channel do dispatcher cheio e rota sem dispatcher deixam de descartar: viram lag recuperável pelo cursor. A métrica de lag por dispatcher substitui a de descarte por channel cheio.
 
