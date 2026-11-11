@@ -25,10 +25,10 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 7 | Observabilidade e Benchmarks | T-33 → T-36 |
 | Fase 8 | Testes | T-37 → T-43 |
 | Fase 9 | Retransmissão por cliente (sobre o log de sessão) | T-44, T-47, T-48 (T-45 e T-46 removidas) |
-| Fase 10 | Egress WebSocket | T-49 → T-53 |
+| Fase 10 | Egress WebSocket | T-49a → T-53 |
 | Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-08 (inclui TD-04a, TD-04b) e TD-10 → TD-14 (TD-09 foi absorvido pelo TD-04; o ID não é reutilizado) |
 
-**Ordem de execução.** TD-01 a TD-08 já estão concluídos, então as dependências da Fase 9 e de T-50 a T-53 estão atendidas. TD-10 a TD-12 são independentes das Fases 9 e 10. T-49 não depende do log. Quem encontrar uma task com a dependência desmarcada deve avisar e parar (`AGENTS.md`).
+**Ordem de execução.** TD-01 a TD-08 já estão concluídos, e T-44, T-47 e T-48 também. T-49a a T-49d não usam o log. Índice e replay continuam dependendo de T-44, TD-04 e TD-04a. TD-10a a TD-10d, TD-11 e TD-12a a TD-12c são independentes das Fases 9 e 10. Quem encontrar uma task com a dependência desmarcada deve avisar e parar (`AGENTS.md`).
 
 ---
 
@@ -931,96 +931,260 @@ Depende de TD-04 (log de sessão), TD-04a (sessão grava no log e dispatcher com
 
 ## Fase 10 — Egress WebSocket
 
-Acceptor para aplicação web ou nativa. Depende de T-19 (`DispatcherBase`). T-50 a T-53 dependem também de TD-04 e TD-04a (log e índice por cliente), e o replay na sessão de T-44. A projeção não entra no router: o hot path continua entregando o `DispatchPayload` inteiro.
+Acceptor para aplicação web ou nativa. Tasks de T-49a a T-53. T-49a a T-49d não usam o log e partem de T-19 (`DispatcherBase`). Índice e replay continuam dependendo de T-44, TD-04 e TD-04a. A projeção não entra no router: o hot path continua entregando o `DispatchPayload` inteiro.
 
-- [ ] T-49 — Implementar o acceptor `WebSocketMessageDispatcher`
+- [ ] T-49a — `WebSocketDispatcherOptions` no Egress e validação da Seção 6
 
-**Objetivo:** Escutar, completar o upgrade WebSocket e manter N sessões vivas, cada uma com fila própria.
+**Tamanho:** P. **Depende de:** T-19.
 
-**Entradas:** `requirements.md` (FR-EGR-12), `design.md` (Seção 3.3.1 — Upgrade e Liveness; Seção 6 — `Type: WebSocket`)
+**Objetivo:** Declarar as options do dispatcher WebSocket no Egress e validá-las pela Seção 6. O Host já tem a classe espelhada.
+
+**Entradas:** `requirements.md` (FR-EGR-12), `design.md` (Seção 6 — `Type: WebSocket`), `src/NexusRouter.Host/Configuration/WebSocketDispatcherOptions.cs`
 
 **Passos:**
-1. Criar `src/NexusRouter.Egress/WebSocket/WebSocketMessageDispatcher.cs` estendendo `DispatcherBase<WebSocketDispatcherOptions>` e `WebSocketDispatcherOptions.cs` com os campos da Seção 6: escuta, `AllowedOrigins`, heartbeat, timeouts, limites de frame e de campos, capacidade da fila por sessão, TLS de servidor opcional. Sem diretório de sequence store: o `seq` vem do `SessionLog` (Seção 6 do design).
-2. `ConnectAsync` abre `TcpListener`. Com TLS ligado, o socket aceito passa pelo wrap de servidor já usado no acceptor FIX, antes do HTTP. Exigir `Upgrade: websocket` e subprotocolo `nexusrouter.v1`. `Origin` presente só passa se estiver em `AllowedOrigins`; lista vazia recusa qualquer `Origin`. Falha de upgrade responde HTTP e fecha o TCP, sem criar sessão. O socket aceito vira `WebSocket` por `WebSocket.CreateFromStream`.
-3. Cada conexão é uma `WebSocketAcceptedSession` com channel bounded próprio. Channel cheio descarta só aquela sessão e incrementa métrica. O loop de accept e as outras sessões seguem.
-4. Ping de protocolo a cada `HeartbeatIntervalSeconds`. Após `MissedHeartbeatLimit` pongs ausentes, encerrar a sessão. Frame `{ "type": "heartbeat" }` recebe eco.
-5. `StopAsync` completa o channel do dispatcher, fecha as sessões e drena.
+1. Criar `src/NexusRouter.Egress/WebSocket/WebSocketDispatcherOptions.cs` com os campos da Seção 6: escuta, `AllowedOrigins`, heartbeat, timeouts, limites de frame e de campos, capacidade da fila por sessão, TLS de servidor opcional. Sem diretório de sequence store: o `seq` vem do `SessionLog` (Seção 6 do design).
+2. Validar as options na subida, conforme a Seção 6. A classe do Host permanece a espelhada; esta fatia é a do Egress.
+3. `WebSocketMessageDispatcher` estende `DispatcherBase<WebSocketDispatcherOptions>`. A escuta fica para T-49b.
 
-**Saída:** Um cliente completa o upgrade em `nexusrouter.v1`, permanece na sessão enquanto responde ao ping, e um cliente lento não impede o accept nem as outras sessões.
+**Saída:** Options do Egress alinhadas à Seção 6 e recusadas quando a configuração é inválida.
 
 ---
 
-- [ ] T-50 — Logon WebSocket: identidade, encoding e filtro de campos
+- [ ] T-49b — Upgrade WebSocket: TLS, HTTP, subprotocolo e `Origin`
 
-**Objetivo:** O primeiro frame declara quem é o cliente e o que aquela conexão quer receber.
+**Tamanho:** P. **Depende de:** T-49a.
 
-**Entradas:** `requirements.md` (FR-EGR-12, NFR-SEC-04), `design.md` (Seção 3.3.1 — Logon)
+**Objetivo:** Aceitar o TCP, completar o upgrade e responder HTTP quando o handshake falha, sem criar sessão.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Upgrade), T-49a
+
+**Passos:**
+1. `ConnectAsync` abre `TcpListener`. Com TLS ligado, o socket aceito passa pelo wrap de servidor já usado no acceptor FIX, antes do HTTP.
+2. Exigir `Upgrade: websocket` e subprotocolo `nexusrouter.v1`. `Origin` presente só passa se estiver em `AllowedOrigins`; lista vazia recusa qualquer `Origin`.
+3. Falha de upgrade responde HTTP e fecha o TCP, sem criar sessão. O socket aceito vira `WebSocket` por `WebSocket.CreateFromStream`.
+4. Testes: `Origin` fora de `AllowedOrigins` não completa o upgrade. Upgrade sem o subprotocolo `nexusrouter.v1` também não.
+
+**Saída:** Um cliente com `Origin` aceita e subprotocolo `nexusrouter.v1` completa o upgrade. Origem recusada ou subprotocolo ausente recebe resposta HTTP e não vira sessão.
+
+---
+
+- [ ] T-49c — `WebSocketAcceptedSession` com channel bounded
+
+**Tamanho:** P. **Depende de:** T-49b.
+
+**Objetivo:** Cada conexão aceita vira uma sessão com fila própria. Channel cheio descarta só aquela sessão.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Upgrade), T-49b
+
+**Passos:**
+1. Cada conexão é uma `WebSocketAcceptedSession` com channel bounded próprio.
+2. Channel cheio descarta só aquela sessão e incrementa métrica. O loop de accept e as outras sessões seguem.
+3. Teste: fila de uma sessão cheia não impede a outra sessão de receber o frame.
+
+**Saída:** Um cliente lento não impede o accept nem as outras sessões. A métrica conta o descarte daquela sessão.
+
+---
+
+- [ ] T-49d — Ping, eco de heartbeat e `StopAsync`
+
+**Tamanho:** P. **Depende de:** T-49c.
+
+**Objetivo:** Manter a sessão viva enquanto o cliente responde, derrubá-la depois do limite de pongs e fechá-la no stop.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Liveness), T-49c
+
+**Passos:**
+1. Ping de protocolo a cada `HeartbeatIntervalSeconds`. Após `MissedHeartbeatLimit` pongs ausentes, encerrar a sessão.
+2. Frame `{ "type": "heartbeat" }` recebe eco.
+3. `StopAsync` completa o channel do dispatcher, fecha as sessões e drena.
+
+**Saída:** Um cliente permanece na sessão enquanto responde ao ping, cai depois do limite de pongs ausentes, e o `StopAsync` fecha e drena as sessões.
+
+---
+
+- [ ] T-50a — Primeiro frame `logon`: `clientId` e token
+
+**Tamanho:** P. **Depende de:** T-49c, T-44.
+
+**Objetivo:** O primeiro frame autentica o cliente cadastrado neste dispatcher. Falha fecha a sessão sem logar o token.
+
+**Entradas:** `requirements.md` (FR-EGR-12, NFR-SEC-04), `design.md` (Seção 3.3.1 — Logon), T-44 (cadastro `Clients`)
 
 **Passos:**
 1. O primeiro frame de dados, dentro de `LogonTimeoutSeconds`, tem de ser texto JSON `logon`, no máximo `MaxControlFrameBytes`. Outro frame, ou silêncio até o timeout, fecha a sessão.
-2. `clientId` tem de estar cadastrado para este `DispatcherId`. O `token` é comparado em tempo constante com o valor da variável nomeada em `TokenEnvVar`. Token divergente ou cliente desconhecido devolve `{ "type": "reject", "reason": "unauthorized" }` e fecha. O valor do token não entra em log nem na URL.
-3. `encoding` é `json` ou `binary`. `fields` omitido ou vazio significa todas as propriedades de aplicação. Lista presente é de tags FIX, no máximo `MaxFields`, sem duplicata, na ordem pedida. As tags de sessão 8, 9, 10, 34, 35, 49, 52 e 56 saem da lista. Tag desconhecida no filtro é ignorada.
-4. `replay` ausente vale `false`. Não há escolha diária: o log grava tudo. `replay: true` liga o reenvio automático ao reconectar, do último `seq` entregue ao fim do log. O ack ecoa se está ligado para esta conexão.
-5. Um novo Logon do mesmo `ClientId` fecha o socket anterior e continua o `seq` do `IClientIndex` daquele cliente (`NextOut`).
-6. Sucesso: texto `logonAck` com `replay`, `encoding`, `fields` (ausente quando a projeção é completa) e `nextSeq`. Até o ack, a sessão não recebe execução.
+2. `clientId` tem de estar cadastrado para este `DispatcherId`. O `token` é comparado em tempo constante com o valor da variável nomeada em `TokenEnvVar`.
+3. Token divergente ou cliente desconhecido devolve `{ "type": "reject", "reason": "unauthorized" }` e fecha. O valor do token não entra em log nem na URL.
 
-**Saída:** Duas conexões no mesmo dispatcher podem pedir projeções diferentes. Conexão sem cadastro ou com token errado não recebe mensagem de ordem.
+**Saída:** Conexão sem cadastro ou com token errado recebe `reject` / `unauthorized` e fecha, sem mensagem de ordem e sem o token em log.
 
 ---
 
-- [ ] T-51 — Projetar JSON ou binário por sessão, fora do hot path
+- [ ] T-50b — `encoding`, filtro de tags e `logonAck`
 
-**Objetivo:** Entregar para cada sessão logada só o encoding e os campos pedidos no Logon dela.
+**Tamanho:** P. **Depende de:** T-50a.
 
-**Entradas:** `requirements.md` (FR-EGR-12, FR-HLP-01), `design.md` (Seção 3.3.1 — Projeção)
+**Objetivo:** O Logon fixa o que a conexão recebe. Até o ack, a sessão não recebe `exec`.
+
+**Entradas:** `requirements.md` (FR-EGR-12), `design.md` (Seção 3.3.1 — Logon), T-50a
 
 **Passos:**
-1. Criar `WebSocketFrameEncoder`. No consume loop, sem sessão logada, reservar o `seq` e publicar a entrada no `IClientIndex` do cliente cadastrado, sem tokenizar nem projetar. O payload fica no log.
-2. Com ao menos uma sessão logada, tokenizar o body uma vez. Usar o `FixMessage` quando o ingresso veio em `Parse`. Em `PassThrough`, tokenizar o frame cru neste loop. Essa tokenização não roda na thread do router.
-3. Para cada sessão, gravar o envelope (`type=exec`, `seq`, `msgType`, `ts`) mais os campos selecionados. Valores permanecem a string ASCII do FIX, sem conversão numérica. Sem filtro, a ordem é a do wire. Com filtro, a ordem é a da lista.
-4. JSON sai em frame de texto, com as tags como chaves string. Binário sai em frame binário little-endian, no layout da Seção 3.3.1 (`u8 type`, `u64 seq`, `u64 ts`, `msgType`, `u16 fieldCount`, depois `u16 tag` + `u16 valueLen` + bytes).
-5. Reservar o `seq` com `IClientIndex.ReserveSeq`, publicar a entrada com `PublishApp(seq, LogRef)` e fazer `TryWrite` dos bytes projetados na fila da sessão. A task da sessão é quem escreve no socket. Frame acima de `MaxOutboundFrameBytes` é descartado só naquela sessão.
-6. O estado do `seq` vem do `IConsumerState` e do `IClientIndex`, no mesmo padrão do acceptor FIX. Não há `SequenceNumberStore` próprio.
+1. `encoding` é `json` ou `binary`. `fields` omitido ou vazio significa todas as propriedades de aplicação. Lista presente é de tags FIX, no máximo `MaxFields`, sem duplicata, na ordem pedida.
+2. As tags de sessão 8, 9, 10, 34, 35, 49, 52 e 56 saem da lista. Tag desconhecida no filtro é ignorada.
+3. `replay` ausente vale `false`. Não há escolha diária: o log grava tudo. O reenvio ao reconectar fica para T-52c.
+4. Sucesso: texto `logonAck` com `replay`, `encoding`, `fields` (ausente quando a projeção é completa) e `nextSeq`. Até o ack, a sessão não recebe `exec`.
+5. Teste: o `logonAck` ecoa `replay` conforme o Logon dessa conexão. Não há escolha congelada por dia.
 
-**Saída:** Um cliente `json` com `fields: [55, 54, 38]` recebe só essas tags em texto. Um cliente `binary` sem `fields` recebe o body de aplicação inteiro em binário. Nenhuma das duas projeções altera o fan-out dos outros dispatchers.
+**Saída:** Duas conexões no mesmo dispatcher podem pedir projeções diferentes. O ack descreve a projeção desta conexão, e nenhum `exec` sai antes dele.
 
 ---
 
-- [ ] T-52 — Pedido `replay` na sessão e reenvio ao reconectar
+- [ ] T-50c — Novo Logon do mesmo `ClientId` continua o `seq`
 
-**Objetivo:** O cliente WebSocket recupera pelo `seq` na própria sessão, lendo do índice dele no log de sessão.
+**Tamanho:** P. **Depende de:** T-50b, TD-04, TD-04a.
 
-**Entradas:** `requirements.md` (FR-RPL-08, FR-RPL-05), `design.md` (Seção 3.3.1 — Replay; Seção 3.4.3 — Cliente WebSocket; Seção 3.4.4). Depende de T-44, T-51, TD-04 e TD-04a.
+**Objetivo:** Uma segunda conexão do mesmo cliente substitui a anterior e segue o `seq` do índice.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Logon), `IClientIndex`, T-50b
 
 **Passos:**
-1. Não há escolha diária nem canal de replay. O log grava tudo. O `logonAck` mostra se o reenvio automático (`replay: true`) está ligado para a conexão.
+1. Um novo Logon do mesmo `ClientId` fecha o socket anterior.
+2. O `seq` continua do `IClientIndex` daquele cliente (`NextOut`).
+
+**Saída:** A conexão nova herda o `seq` e a anterior está fechada.
+
+---
+
+- [ ] T-51a — Reservar `seq` sem sessão logada
+
+**Tamanho:** P. **Depende de:** T-50c.
+
+**Objetivo:** Sem sessão logada, o consume loop reserva o `seq` e publica no índice, sem tokenizar. O `seq` permanece contíguo.
+
+**Entradas:** `requirements.md` (FR-EGR-12, FR-HLP-01), `design.md` (Seção 3.3.1 — Projeção), T-50c
+
+**Passos:**
+1. No consume loop, sem sessão logada, reservar o `seq` com `IClientIndex.ReserveSeq` e publicar a entrada com `PublishApp(seq, LogRef)`, sem tokenizar nem projetar. O payload fica no log.
+2. O estado do `seq` vem do `IConsumerState` e do `IClientIndex`, no mesmo padrão do acceptor FIX. Não há `SequenceNumberStore` próprio.
+3. Teste: sem sessão logada, o cliente conhecido continua recebendo `seq` contíguo no índice, de forma que recupera as mensagens ao reconectar.
+
+**Saída:** O índice do cliente cadastrado avança contíguo mesmo sem sessão logada.
+
+---
+
+- [ ] T-51b — Encoder JSON da projeção
+
+**Tamanho:** P. **Depende de:** T-51a.
+
+**Objetivo:** Selecionar os campos e montar o frame JSON. Teste puro, sem socket.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Projeção), T-51a
+
+**Passos:**
+1. Criar `WebSocketFrameEncoder` para o texto JSON. Envelope com `type`, `seq`, `msgType` e `ts`. Tags como chaves string. Valores permanecem a string ASCII do FIX, sem conversão numérica.
+2. Sem filtro, a ordem é a do wire. Com filtro, a ordem é a da lista.
+3. Teste puro, sem socket: seletor de campos e o JSON resultante. Um payload com `fields: [55, 54, 38]` produz só essas tags, na ordem da lista.
+
+**Saída:** O encoder JSON devolve o envelope e as tags pedidas, na ordem do wire ou da lista, sem abrir socket.
+
+---
+
+- [ ] T-51c — Encoder binário little-endian
+
+**Tamanho:** P. **Depende de:** T-51b.
+
+**Objetivo:** Montar o frame binário little-endian da Seção 3.3.1. Teste puro, sem socket.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Projeção), T-51b
+
+**Passos:**
+1. Binário sai em frame binário little-endian, no layout da Seção 3.3.1: `u8 type`, `u64 seq`, `u64 ts`, `msgType`, `u16 fieldCount`, depois `u16 tag` + `u16 valueLen` + bytes.
+2. Teste puro, sem socket, do layout.
+
+**Saída:** O frame binário bate o layout da Seção 3.3.1.
+
+---
+
+- [ ] T-51d — Projeção no consume loop, fora do router
+
+**Tamanho:** P. **Depende de:** T-51c, T-49c.
+
+**Objetivo:** Com sessão logada, tokenizar uma vez no consume loop, projetar por sessão e descartar só o frame acima do teto.
+
+**Entradas:** `requirements.md` (FR-EGR-12, FR-HLP-01), `design.md` (Seção 3.3.1 — Projeção), T-51c, T-49c
+
+**Passos:**
+1. Com ao menos uma sessão logada, tokenizar o body uma vez. Usar o `FixMessage` quando o ingresso veio em `Parse`. Em `PassThrough`, tokenizar o frame cru neste loop. Essa tokenização não roda na thread do router.
+2. Para cada sessão, gravar o envelope (`type=exec`, `seq`, `msgType`, `ts`) mais os campos selecionados, com o encoder da conexão. Reservar o `seq` com `IClientIndex.ReserveSeq`, publicar a entrada com `PublishApp(seq, LogRef)` e fazer `TryWrite` dos bytes projetados na fila da sessão. A task da sessão é quem escreve no socket.
+3. Frame acima de `MaxOutboundFrameBytes` é descartado só naquela sessão.
+
+**Saída:** Cada sessão logada recebe só o encoding e os campos do Logon dela. O descarte por tamanho não atinge as outras sessões. Nenhuma projeção altera o fan-out dos outros dispatchers.
+
+---
+
+- [ ] T-52a — Pedido `replay` na sessão
+
+**Tamanho:** P. **Depende de:** T-50b, T-49d.
+
+**Objetivo:** Aceitar o frame `replay` e encerrar a sessão diante de qualquer outro tipo.
+
+**Entradas:** `requirements.md` (FR-RPL-08, FR-RPL-05), `design.md` (Seção 3.3.1 — Replay), T-50b, T-49d
+
+**Passos:**
+1. Não há escolha diária nem canal de replay. O log grava tudo. O `logonAck` (T-50b) mostra se o reenvio automático está ligado para a conexão.
 2. Aceitar `{ "type": "replay", "fromSeq", "toSeq" }`. `toSeq` 0 significa até o último `seq` enviado (`NextOut - 1`). `fromSeq` e `toSeq` do pedido são inclusivos.
-3. Ler o `IClientIndex` daquele `ClientId` no intervalo e, para cada entrada de aplicação, ler o frame de entrada pelo `LogRef` (`ISessionLogReader`), projetar com o `encoding` e o `fields` da conexão atual e reenviar na ordem do `seq`. Rodar no consume loop da sessão, nunca no hot path.
-4. Entrada administrativa, slot sem registro (fora da época atual ou antes do início do log retido) ou trecho com falha de gravação vira `{ "type": "gap", "fromSeq", "toSeq" }`, com `fromSeq` inclusivo e `toSeq` exclusivo, agrupando o trecho contíguo. Slot `NotYet` espera até `SlotPublishTimeoutMs`.
-5. Com `replay: true` no Logon, ao reconectar, reemitir automaticamente do último `seq` entregue ao fim do log.
-6. Reconnect com outro `encoding` ou outro `fields` muda a projeção também do replay, porque o log guarda o frame de entrada. Entrada de outro `ClientId` não sai nesta sessão.
-7. Frame de entrada que não seja `logon`, `heartbeat` ou `replay` encerra a sessão.
+3. Frame de entrada que não seja `logon`, `heartbeat` ou `replay` encerra a sessão.
 
-**Saída:** O cliente recupera qualquer intervalo ainda retido pelo `seq`, com a projeção da conexão atual. Trecho sem registro volta como `gap`.
+**Saída:** Um frame `replay` bem formado é aceito, com o intervalo inclusivo. Qualquer outro tipo encerra a sessão.
 
 ---
 
-- [ ] T-53 — Testes do acceptor WebSocket, da projeção e do replay
+- [ ] T-52b — Reenvio pelo índice e `gap`
 
-**Objetivo:** Cobrir isolamento entre sessões, o contrato do Logon e a retransmissão a partir do log.
+**Tamanho:** P. **Depende de:** T-52a, T-51d.
 
-**Entradas:** T-49, T-50, T-51, T-52
+**Objetivo:** Ler o índice daquele `ClientId`, reler o frame pelo `LogRef` e reenviar na ordem do `seq`, na projeção da conexão. Onde não houver registro, devolver `gap` contíguo.
+
+**Entradas:** `requirements.md` (FR-RPL-08, FR-RPL-05), `design.md` (Seção 3.3.1 — Replay; Seção 3.4.3 — Cliente WebSocket; Seção 3.4.4), T-52a, T-51d
+
+**Passos:**
+1. Ler o `IClientIndex` daquele `ClientId` no intervalo e, para cada entrada de aplicação, ler o frame de entrada pelo `LogRef` (`ISessionLogReader`), projetar com o `encoding` e o `fields` da conexão atual e reenviar na ordem do `seq`. Rodar no consume loop da sessão, nunca no hot path.
+2. Entrada administrativa, slot sem registro (fora da época atual ou antes do início do log retido) ou trecho com falha de gravação vira `{ "type": "gap", "fromSeq", "toSeq" }`, com `fromSeq` inclusivo e `toSeq` exclusivo, agrupando o trecho contíguo. Slot `NotYet` espera até `SlotPublishTimeoutMs`.
+3. Entrada de outro `ClientId` não sai nesta sessão.
+4. Teste: o pedido `replay` devolve os frames do intervalo, projetados com o `encoding` e o `fields` da conexão. Entrada administrativa e slot sem registro voltam como `gap`.
+
+**Saída:** O cliente recupera qualquer intervalo ainda retido pelo `seq`, com a projeção da conexão atual. Trecho sem registro volta como `gap` contíguo.
+
+---
+
+- [ ] T-52c — `replay: true` ao reconectar
+
+**Tamanho:** P. **Depende de:** T-52b, T-50c.
+
+**Objetivo:** Com `replay: true`, reemitir ao reconectar, do último `seq` entregue ao fim do log. Outro encoding ou outra lista de fields muda também o replay.
+
+**Entradas:** `design.md` (Seção 3.3.1 — Replay), T-52b, T-50c
+
+**Passos:**
+1. Com `replay: true` no Logon, ao reconectar, reemitir automaticamente do último `seq` entregue ao fim do log.
+2. Reconnect com outro `encoding` ou outro `fields` muda a projeção também do replay, porque o log guarda o frame de entrada.
+3. Teste: reconnect com outra lista de campos — o `exec` novo e o replay de `seq` antigo seguem a lista nova.
+
+**Saída:** A reconexão com `replay: true` cobre o trecho ainda não entregue, na projeção desta conexão.
+
+---
+
+- [ ] T-53 — Duas projeções da mesma ordem e token errado
+
+**Tamanho:** P. **Depende de:** T-51d, T-52c.
+
+**Objetivo:** Um teste de integração: duas projeções da mesma ordem e um terceiro cliente recusado.
+
+**Entradas:** T-51d, T-52c
 
 **Passos:**
 1. Dois clientes no mesmo dispatcher: um `json` com `fields: [11, 55]`, outro `binary` sem filtro. Cada um recebe só a sua projeção da mesma ordem. Um terceiro com token errado recebe `reject` e nenhum `exec`.
-2. `Origin` fora de `AllowedOrigins` não completa o upgrade. Upgrade sem o subprotocolo `nexusrouter.v1` também não.
-3. Fila de uma sessão cheia não impede a outra sessão de receber o frame.
-4. O `logonAck` ecoa `replay` conforme o Logon dessa conexão. Não há escolha congelada por dia.
-5. O pedido `replay` devolve os frames do intervalo, projetados com o `encoding` e o `fields` da conexão. Entrada administrativa e slot sem registro voltam como `gap`.
-6. Reconnect com outra lista de campos: o `exec` novo e o replay de `seq` antigo seguem a lista nova.
-7. Sem sessão logada, o cliente conhecido continua recebendo `seq` contíguo no índice e recupera as mensagens ao reconectar.
 
-**Saída:** Testes automatizados demonstram projeção por Logon, isolamento de cliente lento e replay pelo `seq` da sessão sobre o log.
+**Saída:** O teste demonstra a projeção por Logon na mesma ordem e que o token errado não recebe `exec`.
 
 ---
 
@@ -1229,27 +1393,72 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-10 — Segregação nativa nos dispatchers de broker (routing key e headers)
+- [ ] TD-10a — Tag 440, `HeaderFields` e a decisão do Kafka
 
-**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** M. **Depende de:** TD-04b.
+**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-04b.
 
-**Objetivo:** O consumidor de Kafka e de RabbitMQ consegue receber só o recorte que lhe interessa, sem o router decidir quem recebe o quê. O RabbitMQ segrega no servidor (binding em topic ou headers exchange). O Kafka carrega metadados em record headers, que o consumidor usa para filtrar. Isto não é o filtro de roteamento por consumidor, que continua fora do backlog.
+**Objetivo:** Confirmar a tag 440, expor `HeaderFields` e o template de routing key, e registrar a decisão do ponto em aberto. Sem config, a routing key continua fixa e só sai o header de idempotência. O router não decide quem recebe o quê.
 
-**Entradas:** `notes/replay-rethink.md` §3, `KafkaMessageDispatcher`, `RabbitMQMessageDispatcher`, `KafkaDispatcherOptions`, `RabbitMQDispatcherOptions`, `docs/FIX44Entrypoint.xml`.
+**Entradas:** `notes/replay-rethink.md` §3, `KafkaDispatcherOptions`, `RabbitMQDispatcherOptions`, `docs/FIX44Entrypoint.xml`.
 
-**Pontos em aberto (decidir com o usuário antes do passo 3):**
-- Kafka ganha também tópico por critério (por exemplo por participante), ou só headers e partition key?
+**Pontos em aberto (decidir com o usuário nesta fatia, antes de TD-10b):**
+- Kafka: o texto atual segue com record headers e a partição que já existe, sem tópico por critério. Registrar essa decisão. Esta fatia não escolhe outro tópico.
 - Quais tags entram por padrão: 11, 55, 49, 440?
 
 **Passos:**
 1. Confirmar no dicionário B3 (`docs/FIX44Entrypoint.xml`) que a tag 440 (ClearingAccount) é a certa para segregar por conta e quais outras tags valem como dimensão.
 2. Options: lista de tags a carimbar (`HeaderFields`) nos dois brokers e, no RabbitMQ, um template de routing key hierárquica (por exemplo `fix.<440>.<55>`). Sem configuração, o comportamento atual é mantido (routing key fixa, só o header de idempotência).
-3. Ler só as tags configuradas no consume loop do dispatcher, por scanner de campos, sem parse completo. Nunca na thread do router. Reaproveitar o `FixMessage` quando o ingresso veio em `Parse`.
-4. RabbitMQ: montar a routing key e os headers por mensagem. A exchange e os bindings são do operador; o dispatcher só publica. Kafka: record headers com as tags e a estratégia de partição já existente.
-5. Valor ausente na mensagem usa um marcador fixo na routing key e omite o header, sem lançar.
-6. Testes: routing key e headers esperados para uma mensagem de teste, mensagem sem a tag, e o header de idempotência do TD-04b intacto.
+3. Registrar no desenho a decisão do Kafka: record headers e a partição que já existe, sem tópico por critério.
 
-**Saída:** Um consumidor RabbitMQ faz bind em `fix.ACCT1.#` e recebe só aquela conta. Um consumidor Kafka filtra por header sem desserializar o payload. O cursor e a entrega ao menos uma vez não mudam.
+**Saída:** As options existem e, sem `HeaderFields`, Kafka e RabbitMQ seguem como hoje. A decisão do tópico Kafka está registrada.
+
+---
+
+- [ ] TD-10b — Scanner das tags configuradas no consume loop
+
+**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10a.
+
+**Objetivo:** Ler só as tags configuradas, no consume loop do dispatcher, e tratar valor ausente sem lançar.
+
+**Entradas:** `KafkaMessageDispatcher`, `RabbitMQMessageDispatcher`, TD-10a.
+
+**Passos:**
+1. Ler só as tags configuradas no consume loop do dispatcher, por scanner de campos, sem parse completo. Nunca na thread do router. Reaproveitar o `FixMessage` quando o ingresso veio em `Parse`.
+2. Valor ausente na mensagem usa um marcador fixo na routing key e omite o header, sem lançar.
+
+**Saída:** O consume loop devolve o valor das tags pedidas, ou o marcador e a omissão do header quando a tag não está na mensagem.
+
+---
+
+- [ ] TD-10c — Routing key e headers no RabbitMQ
+
+**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10b.
+
+**Objetivo:** O RabbitMQ publica a routing key e os headers por mensagem. A exchange e os bindings continuam com o operador.
+
+**Entradas:** `RabbitMQMessageDispatcher`, `RabbitMQDispatcherOptions`, TD-10b.
+
+**Passos:**
+1. Montar a routing key e os headers por mensagem. A exchange e os bindings são do operador; o dispatcher só publica.
+2. Testes: tag presente, tag ausente e o header de idempotência do TD-04b intacto.
+
+**Saída:** Um consumidor RabbitMQ faz bind em `fix.ACCT1.#` e recebe só aquela conta. Mensagem sem a tag usa o marcador na routing key e omite o header. O header de idempotência permanece.
+
+---
+
+- [ ] TD-10d — Record headers no Kafka
+
+**Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10b.
+
+**Objetivo:** O Kafka carimba as mesmas tags em record headers, sem mudar cursor nem entrega.
+
+**Entradas:** `KafkaMessageDispatcher`, `KafkaDispatcherOptions`, TD-10b.
+
+**Passos:**
+1. Carimbar as tags configuradas em record headers, com a estratégia de partição já existente. Sem tópico por critério.
+2. Teste: os headers levam as mesmas tags do scanner, o cursor não anda por causa do carimbo e a entrega ao menos uma vez permanece a do TD-04b.
+
+**Saída:** Um consumidor Kafka filtra por header sem desserializar o payload. O cursor e a entrega ao menos uma vez não mudam.
 
 ---
 
@@ -1271,26 +1480,56 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-12 — Dia de pregão e reset diário de seqnum
+- [ ] TD-12a — Registrar quem vira o dia de pregão
 
-**Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** M. **Depende de:** TD-04, TD-05.
+**Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-04, TD-05.
 
-**Objetivo:** Definir quem decide a virada do dia de pregão e fazer o initiator zerar o seqnum e abrir uma época nova no primeiro Logon do dia, como a B3 faz.
+**Objetivo:** Registrar em `design.md` §3.4.3 quem vira o dia e o fuso. Esta fatia não implementa o reset. Continua bloqueada até a decisão.
 
-**Entradas:** `notes/seqnum-rethink.md` §2 e §4, `b3-guidelines.md`, `SessionLogManager`, `FixSession`, `FixMessageBuilder.BuildLogon`.
+**Entradas:** `notes/seqnum-rethink.md` §2 e §4, `b3-guidelines.md`, `design.md` §3.4.3.
 
 **Fatos documentados (PDFs da B3):** ao fim da sessão o gateway derruba a conexão e o seqnum volta a 1. No Drop Copy, o reset ocorre de terça a quinta às 23:00 BRT, com todos os clientes desconectados. De domingo para segunda o número não é resetado.
 
-**Ponto em aberto (decidir com o usuário antes de implementar):** quem define o dia de pregão: relógio UTC, calendário B3 ou o primeiro Logon com `141=Y`. Registrar a decisão no `design.md` (§3.4.3) antes do passo 2.
+**Ponto em aberto (decidir com o usuário antes de registrar; a task fica bloqueada até lá):** quem define o dia de pregão: relógio UTC, calendário B3 ou o primeiro Logon com `141=Y`. Esta edição não escolhe a regra.
 
 **Passos:**
-1. Decidir e registrar a regra de virada de dia e o fuso.
-2. Implementar a virada: o `SessionLogManager` e o `FixSession` abrem época nova (`BeginEpoch`) e zeram `nextOut` e `nextInExpected` no primeiro Logon do dia, enviando `141=Y` (TD-05).
-3. Sessões fora do horário da B3 (domingo para segunda no Drop Copy) não zeram.
-4. Retenção por dia de pregão passa a usar a mesma regra.
-5. Testes com relógio injetado: virada de dia, domingo para segunda, restart no mesmo dia (não zera).
+1. Com a decisão do usuário, registrar em `design.md` §3.4.3 a regra de virada de dia e o fuso.
+
+**Saída:** `design.md` §3.4.3 diz quem vira o dia e em qual fuso. Nenhum seqnum é zerado por esta fatia.
+
+---
+
+- [ ] TD-12b — `BeginEpoch` no primeiro Logon do dia
+
+**Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-12a.
+
+**Objetivo:** No primeiro Logon do dia, abrir época nova e zerar os contadores, com `141=Y`. Restart no mesmo dia não zera.
+
+**Entradas:** `design.md` §3.4.3, `SessionLogManager`, `FixSession`, `FixMessageBuilder.BuildLogon`, TD-12a.
+
+**Passos:**
+1. O `SessionLogManager` e o `FixSession` abrem época nova (`BeginEpoch`) e zeram `nextOut` e `nextInExpected` no primeiro Logon do dia, enviando `141=Y` (TD-05).
+2. Restart no mesmo dia não zera.
+3. Testes com relógio injetado: virada de dia zera e abre época; restart no mesmo dia continua de onde parou.
 
 **Saída:** O initiator reconecta no dia seguinte com seqnum 1 e época nova, e no mesmo dia continua de onde parou.
+
+---
+
+- [ ] TD-12c — Domingo para segunda e retenção
+
+**Origem:** `notes/seqnum-rethink.md` §4; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-12b.
+
+**Objetivo:** Domingo para segunda não zera o seqnum. A retenção por dia de pregão usa a mesma regra de virada.
+
+**Entradas:** `design.md` §3.4.3, `SessionLogManager`, TD-12b.
+
+**Passos:**
+1. Sessões fora do horário da B3 (domingo para segunda no Drop Copy) não zeram.
+2. Retenção por dia de pregão passa a usar a mesma regra.
+3. Teste com relógio injetado: de domingo para segunda o `seq` e a época permanecem, e a retenção corta pelo mesmo dia de pregão.
+
+**Saída:** A passagem de domingo para segunda não abre época nova, e a retenção segue a regra registrada em TD-12a.
 
 ---
 
@@ -1362,9 +1601,21 @@ T-01 (scaffold)
                           │    │    ├── T-23 (Serializer)
                           │    │    └── T-24 (TLS)
                           │    │         └── T-25 (SeqNum Store)
-                          │    └── T-49 (WebSocket acceptor)
-                          │         └── T-50 (Logon WS)
-                          │              └── T-51 (projeção)
+                          │    └── T-49a (options WebSocket)
+                          │         └── T-49b (upgrade)
+                          │              └── T-49c (sessão e fila)
+                          │                   ├── T-49d (liveness)
+                          │                   └── T-50a (token) ◄── também T-44
+                          │                        └── T-50b (encoding e fields)
+                          │                             ├── T-50c (seq) ◄── também TD-04, TD-04a
+                          │                             │    └── T-51a (seq sem sessão)
+                          │                             │         └── T-51b (encoder JSON)
+                          │                             │              └── T-51c (encoder binário)
+                          │                             │                   └── T-51d (projeção) ◄── também T-49c
+                          │                             └── T-52a (pedido replay) ◄── também T-49d
+                          │                                  └── T-52b (reenvio) ◄── também T-51d
+                          │                                       └── T-52c (replay ao reconectar) ◄── também T-50c
+                          │                                            └── T-53 (integração) ◄── também T-51d
                           │
                           ├── T-26 (AuditChannel)
                           │    └── T-27 (AuditWriter + IAuditSink Serilog/Postgres)
@@ -1384,9 +1635,6 @@ T-22 + T-25 + T-27 + T-31
       ├── T-47 (broker recupera pelo cursor)
       └── T-48 (testes de retransmissão)
       [T-45 e T-46 removidas]
-T-51 + T-44 + TD-04a
- └── T-52 (replay na sessão WS)
-      └── T-53 (testes WS)
 
 Fase 11 (melhorias e débitos)
 T-11 ── TD-01 (GapFill no ResendRequest) [feito]
@@ -1400,12 +1648,17 @@ TD-03 (steering x PDFs B3)
  │    └── TD-06 (validação e Reject)
  └── TD-07 (acceptor FIX) ◄── TD-04 + TD-05 (Logon autenticado antes de criar arquivos)
 
-TD-04b ── TD-10 (segregação nos brokers)
+TD-04b ── TD-10a (tag 440, options, decisão)
+          └── TD-10b (scanner no consume loop)
+               ├── TD-10c (routing key e headers no RabbitMQ)
+               └── TD-10d (record headers no Kafka)
 TD-06 ── TD-11 (SequenceReset recebido no initiator)
-TD-04 + TD-05 ── TD-12 (dia de pregão e reset diário)
+TD-04 + TD-05 ── TD-12a (registrar dia e fuso; bloqueada na decisão)
+                 └── TD-12b (BeginEpoch no primeiro Logon)
+                      └── TD-12c (domingo e retenção)
 
 TD-04 inclui o portão de latência do append (FR-RPL-09); TD-04a só começa com ele aprovado.
 
-Ordem de execução: TD-01 a TD-08 estão concluídos. Pendentes: Fase 9 (T-44, T-47, T-48), Fase 10 (T-49 a T-53)
-e TD-10 a TD-12, independentes entre si.
+Ordem de execução: TD-01 a TD-08 estão concluídos. T-44, T-47 e T-48 também.
+Pendentes: Fase 10 (T-49a a T-53) e, independentes entre si, TD-10a a TD-10d, TD-11 e TD-12a a TD-12c.
 ```
