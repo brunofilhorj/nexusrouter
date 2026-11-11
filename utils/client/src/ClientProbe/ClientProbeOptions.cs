@@ -104,6 +104,18 @@ public sealed class ClientProbeOptions
 
         /// <summary>Heartbeat interval, in seconds.</summary>
         public int HeartBtInt { get; set; } = 20;
+
+        /// <summary>Default for the Logon 141=Y flag. False continues the stored sequence.</summary>
+        public bool ResetSeqNum { get; set; }
+
+        /// <summary>Default for sending 789 (NextExpectedMsgSeqNum) on Logon.</summary>
+        public bool SendNextExpected { get; set; } = true;
+
+        /// <summary>
+        /// Folder for the per-session sequence files, relative to the app base directory when not rooted.
+        /// Empty keeps sequence numbers in memory only (they still survive reconnects, not restarts).
+        /// </summary>
+        public string StateDirectory { get; set; } = "";
     }
 
     /// <summary>Defaults for the egress WebSocket screen. The page opens that socket itself.</summary>

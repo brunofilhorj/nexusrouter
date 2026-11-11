@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 using Confluent.Kafka;
@@ -162,10 +163,22 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
             _tracker?.Track(payload.LogRef);
         }
 
+        byte[] value;
+        if (Options.PayloadEncoding == BrokerPayloadEncoding.Json)
+        {
+            var buffer = new ArrayBufferWriter<byte>(512);
+            FixJsonProjector.Write(payload.RawBuffer.Memory.Span, DateTime.UtcNow.Ticks, buffer);
+            value = buffer.WrittenSpan.ToArray();
+        }
+        else
+        {
+            value = payload.RawBuffer.Memory.ToArray();
+        }
+
         await publish(
             Options.Topic,
             _partitionStrategy.GetPartition(payload),
-            payload.RawBuffer.Memory.ToArray(),
+            value,
             identity,
             cancellationToken).ConfigureAwait(false);
 

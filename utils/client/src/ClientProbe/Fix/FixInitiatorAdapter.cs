@@ -9,9 +9,21 @@ namespace ClientProbe.Fix;
 /// <summary>
 /// Minimal FIX 4.4 initiator against the NexusRouter acceptor. Sends Logon, waits for the Logon back
 /// (state <see cref="ProbeState.Live"/>), sends Heartbeat when idle and Logout on disconnect.
-/// <c>MsgSeqNum</c> exists only for this session; nothing is persisted. Application frames go to
-/// telemetry; Heartbeat, TestRequest and Logon do not.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Sequence numbers live in <see cref="FixSeqStore"/>, keyed by SenderCompID and TargetCompID, so a
+/// reconnect continues where the previous connection stopped. <see cref="FixProfile.ResetSeqNum"/>
+/// sends 141=Y and restarts both sides at 1. <see cref="FixProfile.SendNextExpected"/> sends 789 with
+/// the next MsgSeqNum the probe expects, so the acceptor resends what was missed.
+/// </para>
+/// <para>
+/// Incoming MsgSeqNum is checked: a gap without 789 triggers one ResendRequest (7=first missing, 16=0);
+/// SequenceReset (35=4) moves the expected number forward; a ResendRequest from the acceptor is answered
+/// with one SequenceReset-GapFill, because the probe sends only session messages. Application frames,
+/// including PossDup resends, go to telemetry; Heartbeat, TestRequest, Logon and SequenceReset do not.
+/// </para>
+/// </remarks>
 public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
@@ -20,18 +32,20 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
     private static readonly TimeSpan HeartbeatTick = TimeSpan.FromSeconds(1);
 
     private readonly TimeProvider _time;
+    private readonly FixSeqStore _store;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private ActiveSession? _active;
     private volatile FixSessionSnapshot? _snapshot;
 
     /// <summary>Creates the adapter.</summary>
     /// <param name="publisher">Telemetry entry point.</param>
-    /// <param name="options">Probe options.</param>
+    /// <param name="options">Probe options. <c>Fix.StateDirectory</c> enables sequence persistence.</param>
     /// <param name="time">Clock.</param>
     public FixInitiatorAdapter(ITelemetryPublisher publisher, IOptions<ClientProbeOptions> options, TimeProvider time)
         : base(ProbeTransport.Fix, publisher, options, time)
     {
         _time = time;
+        _store = new FixSeqStore(ResolveDirectory(options.Value.Fix.StateDirectory));
     }
 
     /// <inheritdoc />
@@ -58,8 +72,21 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         SetState(ProbeState.Connecting);
         SetEndpoint(fix.Endpoint);
 
+        var key = FixSeqStore.Key(fix.SenderCompId, fix.TargetCompId);
+        if (fix.ResetSeqNum)
+        {
+            _store.Set(key, FixSeqState.Initial);
+            _store.Flush(key);
+        }
+
+        var stored = _store.Get(key);
         var client = new TcpClient { NoDelay = true };
-        var session = new ActiveSession(client, fix, new FixSessionWriter(fix.SenderCompId, fix.TargetCompId, _time));
+        var session = new ActiveSession(client, fix, new FixSessionWriter(fix.SenderCompId, fix.TargetCompId, _time), key)
+        {
+            OutSeq = stored.LastOut,
+            NextIn = stored.NextInExpected,
+        };
+
         try
         {
             using (var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
@@ -71,7 +98,9 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             session.Stream = client.GetStream();
             _active = session;
             session.ReadLoop = Task.Run(() => ReadLoopAsync(session), CancellationToken.None);
-            await SendAsync(session, seq => session.Writer.Logon(seq, fix.HeartBtInt), CancellationToken.None).ConfigureAwait(false);
+            int? nextExpected = fix.SendNextExpected ? session.NextIn : null;
+            await SendAsync(session, seq => session.Writer.Logon(seq, fix.HeartBtInt, fix.ResetSeqNum, nextExpected), CancellationToken.None)
+                .ConfigureAwait(false);
             session.HeartbeatLoop = Task.Run(() => HeartbeatLoopAsync(session), CancellationToken.None);
 
             await session.LogonReceived.Task.WaitAsync(LogonTimeout, ct).ConfigureAwait(false);
@@ -152,18 +181,46 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
     /// <summary>Handles one frame. Returns false when the session ended.</summary>
     private async Task<bool> HandleFrameAsync(ActiveSession session, byte[] frame)
     {
-        if (TryGetInt(frame, "\u000134="u8, out var seq))
+        var msgType = GetMsgType(frame);
+        var hasSeq = TryGetInt(frame, "\u000134="u8, out var seq);
+        if (hasSeq)
         {
             session.LastReceivedSeq = seq;
         }
 
-        switch (GetMsgType(frame))
+        if (msgType == "4")
+        {
+            // SequenceReset: GapFill or Reset both move the expected number forward. Never backwards.
+            if (TryGetInt(frame, "\u000136="u8, out var newSeqNo) && newSeqNo > session.NextIn)
+            {
+                session.NextIn = newSeqNo;
+            }
+
+            ClearGapIfFilled(session);
+            session.Dirty = true;
+            return true;
+        }
+
+        if (hasSeq)
+        {
+            await CheckIncomingSeqAsync(session, frame, msgType, seq).ConfigureAwait(false);
+        }
+
+        switch (msgType)
         {
             case "0":
                 return true;
             case "1":
                 var testReqId = GetTag(frame, "\u0001112="u8);
                 await SendAsync(session, n => session.Writer.Heartbeat(n, testReqId), session.Cts.Token).ConfigureAwait(false);
+                return true;
+            case "2":
+                // The probe sends only session messages, so one gap fill covers any resend range.
+                if (TryGetInt(frame, "\u00017="u8, out var beginSeqNo) && beginSeqNo > 0)
+                {
+                    await SendGapFillAsync(session, beginSeqNo, session.Cts.Token).ConfigureAwait(false);
+                }
+
                 return true;
             case "A":
                 if (State == ProbeState.Connecting)
@@ -184,6 +241,62 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         }
     }
 
+    /// <summary>Advances the expected MsgSeqNum, or reacts to a gap or a number below the expected one.</summary>
+    private async Task CheckIncomingSeqAsync(ActiveSession session, byte[] frame, string? msgType, int seq)
+    {
+        if (msgType == "A" && GetTag(frame, "\u0001141="u8) == "Y")
+        {
+            // Acceptor confirmed the reset: its Logon is seq 1 of the new sequence.
+            session.NextIn = seq + 1;
+            session.GapFrom = 0;
+            session.Dirty = true;
+            return;
+        }
+
+        if (seq == session.NextIn)
+        {
+            session.NextIn = seq + 1;
+            ClearGapIfFilled(session);
+            session.Dirty = true;
+            return;
+        }
+
+        if (seq > session.NextIn)
+        {
+            if (session.GapFrom != 0)
+            {
+                // Resend already pending; the acceptor sends up to the latest (16=0).
+                session.GapUntil = Math.Max(session.GapUntil, seq);
+                return;
+            }
+
+            session.GapFrom = session.NextIn;
+            session.GapUntil = seq;
+            if (msgType == "A" && session.Profile.SendNextExpected)
+            {
+                // With 789 the acceptor resends NextIn..seq-1 on its own and gap-fills its Logon.
+                return;
+            }
+
+            await SendAsync(session, n => session.Writer.ResendRequest(n, session.GapFrom, 0), session.Cts.Token).ConfigureAwait(false);
+            return;
+        }
+
+        if (GetTag(frame, "\u000143="u8) != "Y")
+        {
+            SetLastError($"MsgSeqNum {seq} abaixo do esperado {session.NextIn} sem PossDupFlag.");
+        }
+    }
+
+    private static void ClearGapIfFilled(ActiveSession session)
+    {
+        if (session.GapFrom != 0 && session.NextIn > session.GapUntil)
+        {
+            session.GapFrom = 0;
+            session.GapUntil = 0;
+        }
+    }
+
     private async Task HeartbeatLoopAsync(ActiveSession session)
     {
         var interval = TimeSpan.FromSeconds(Math.Max(1, session.Profile.HeartBtInt));
@@ -192,6 +305,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         {
             while (await timer.WaitForNextTickAsync(session.Cts.Token).ConfigureAwait(false))
             {
+                Persist(session);
                 if (State != ProbeState.Live || _time.GetElapsedTime(session.LastSendTimestamp) < interval)
                 {
                     continue;
@@ -224,11 +338,42 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             await session.Stream!.WriteAsync(frame, ct).ConfigureAwait(false);
             session.OutSeq = seq;
             session.LastSendTimestamp = _time.GetTimestamp();
+            session.Dirty = true;
+            Persist(session);
         }
         finally
         {
             _writeGate.Release();
         }
+    }
+
+    /// <summary>Answers a ResendRequest: GapFill with 34=BeginSeqNo and 36=next outgoing. OutSeq does not move.</summary>
+    private async Task SendGapFillAsync(ActiveSession session, int beginSeqNo, CancellationToken ct)
+    {
+        await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var next = session.OutSeq + 1;
+            var frame = session.Writer.GapFill(Math.Min(beginSeqNo, next), next);
+            await session.Stream!.WriteAsync(frame, ct).ConfigureAwait(false);
+            session.LastSendTimestamp = _time.GetTimestamp();
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    private void Persist(ActiveSession session)
+    {
+        if (!session.Dirty)
+        {
+            return;
+        }
+
+        session.Dirty = false;
+        _store.Set(session.Key, new FixSeqState(session.OutSeq, session.NextIn));
+        _store.Flush(session.Key);
     }
 
     /// <summary>Moves to Faulted (unless the session is already stopping), records the error and closes the socket.</summary>
@@ -239,6 +384,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             return;
         }
 
+        Persist(session);
         _snapshot = session.Snapshot();
         SetState(ProbeState.Faulted, error);
         session.LogonReceived.TrySetResult();
@@ -279,6 +425,8 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
                 // Sockets are closed; the loops end on their own.
             }
         }
+
+        Persist(session);
     }
 
     private void ClearAfterStop(ActiveSession session)
@@ -289,6 +437,16 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         }
 
         session.Dispose();
+    }
+
+    private static string? ResolveDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        return Path.IsPathRooted(directory) ? directory : Path.Combine(AppContext.BaseDirectory, directory);
     }
 
     private static string? GetMsgType(ReadOnlySpan<byte> frame) => GetTag(frame, "\u000135="u8);
@@ -313,22 +471,28 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         return text is not null && int.TryParse(text, out value);
     }
 
-    private sealed class ActiveSession(TcpClient client, FixProfile profile, FixSessionWriter writer) : IDisposable
+    private sealed class ActiveSession(TcpClient client, FixProfile profile, FixSessionWriter writer, string key) : IDisposable
     {
         public TcpClient Client { get; } = client;
         public FixProfile Profile { get; } = profile;
         public FixSessionWriter Writer { get; } = writer;
+        public string Key { get; } = key;
         public CancellationTokenSource Cts { get; } = new();
         public TaskCompletionSource LogonReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public NetworkStream? Stream { get; set; }
         public Task? ReadLoop { get; set; }
         public Task? HeartbeatLoop { get; set; }
         public volatile int OutSeq;
+        public volatile int NextIn = 1;
         public volatile int LastReceivedSeq;
+        public volatile int GapFrom;
+        public volatile int GapUntil;
+        public volatile bool Dirty;
         public long LastSendTimestamp;
         public int Faulted;
 
-        public FixSessionSnapshot Snapshot() => new(Profile.SenderCompId, Profile.TargetCompId, OutSeq, LastReceivedSeq);
+        public FixSessionSnapshot Snapshot() =>
+            new(Profile.SenderCompId, Profile.TargetCompId, OutSeq, LastReceivedSeq, NextIn, GapFrom);
 
         public void Close()
         {

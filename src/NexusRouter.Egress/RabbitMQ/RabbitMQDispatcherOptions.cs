@@ -58,6 +58,11 @@ public sealed class RabbitMQDispatcherOptions
     public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
 
     /// <summary>
+    /// Formato do corpo publicado. <see cref="BrokerPayloadEncoding.Json"/> é o default.
+    /// </summary>
+    public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
+    /// <summary>
     /// Rejeita host, porta, exchange ou capacidade inválidos.
     /// </summary>
     /// <exception cref="ArgumentException">Falta host, exchange ou o nome de uma variável.</exception>
@@ -75,6 +80,11 @@ public sealed class RabbitMQDispatcherOptions
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ChannelCapacity);
+        if (!Enum.IsDefined(PayloadEncoding))
+        {
+            throw new ArgumentOutOfRangeException(nameof(PayloadEncoding), PayloadEncoding, "PayloadEncoding é desconhecido.");
+        }
+
         if (!Enum.IsDefined(CursorAckMode))
         {
             throw new ArgumentOutOfRangeException(nameof(CursorAckMode), CursorAckMode, "CursorAckMode é desconhecido.");

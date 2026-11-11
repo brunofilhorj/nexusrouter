@@ -24,7 +24,16 @@ export interface AdapterState {
   lastError: string | null;
   counters: CounterState;
   /** FIX session identity and sequence numbers (FR-UI-09). Only for `fix` while a session exists. */
-  session?: { senderCompId: string; targetCompId: string; msgSeqNum: number; lastReceivedSeqNum: number } | null;
+  session?: {
+    senderCompId: string;
+    targetCompId: string;
+    msgSeqNum: number;
+    lastReceivedSeqNum: number;
+    /** Next MsgSeqNum the probe expects from the acceptor (sent as 789 on Logon). */
+    nextExpectedSeqNum: number;
+    /** First missing MsgSeqNum while a resend is pending, or 0. */
+    gapFrom: number;
+  } | null;
 }
 
 /** Snapshot of the three adapters. */
@@ -33,7 +42,7 @@ export interface ProbeState {
 }
 
 /** Profile sent to `/v1/connect`. Secrets travel only here, never to storage. */
-export type ProbeProfile = Record<string, string | number>;
+export type ProbeProfile = Record<string, string | number | boolean>;
 
 /** Error raised for a non-2xx answer. */
 export class ApiError extends Error {

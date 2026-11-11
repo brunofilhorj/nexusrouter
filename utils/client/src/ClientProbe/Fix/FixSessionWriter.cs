@@ -32,8 +32,52 @@ public sealed class FixSessionWriter
     /// <param name="msgSeqNum">MsgSeqNum (tag 34).</param>
     /// <param name="heartBtInt">Heartbeat interval, in seconds.</param>
     /// <returns>The complete frame.</returns>
-    public byte[] Logon(int msgSeqNum, int heartBtInt) =>
-        Build("A", msgSeqNum, $"98=0{Soh}108={heartBtInt.ToString(CultureInfo.InvariantCulture)}{Soh}");
+    public byte[] Logon(int msgSeqNum, int heartBtInt) => Logon(msgSeqNum, heartBtInt, resetSeqNum: false, nextExpectedMsgSeqNum: null);
+
+    /// <summary>
+    /// Writes a Logon (35=A) with EncryptMethod=0, the given HeartBtInt and the recovery tags.
+    /// </summary>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34). Must be 1 when <paramref name="resetSeqNum"/> is set.</param>
+    /// <param name="heartBtInt">Heartbeat interval, in seconds.</param>
+    /// <param name="resetSeqNum">Adds ResetSeqNumFlag 141=Y.</param>
+    /// <param name="nextExpectedMsgSeqNum">Adds NextExpectedMsgSeqNum 789 when not null.</param>
+    /// <returns>The complete frame.</returns>
+    public byte[] Logon(int msgSeqNum, int heartBtInt, bool resetSeqNum, int? nextExpectedMsgSeqNum)
+    {
+        var extra = $"98=0{Soh}108={heartBtInt.ToString(CultureInfo.InvariantCulture)}{Soh}";
+        if (resetSeqNum)
+        {
+            extra += $"141=Y{Soh}";
+        }
+
+        if (nextExpectedMsgSeqNum is int next)
+        {
+            extra += $"789={next.ToString(CultureInfo.InvariantCulture)}{Soh}";
+        }
+
+        return Build("A", msgSeqNum, extra);
+    }
+
+    /// <summary>Writes a ResendRequest (35=2).</summary>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34).</param>
+    /// <param name="beginSeqNo">BeginSeqNo (tag 7).</param>
+    /// <param name="endSeqNo">EndSeqNo (tag 16). 0 means "up to the latest".</param>
+    /// <returns>The complete frame.</returns>
+    public byte[] ResendRequest(int msgSeqNum, int beginSeqNo, int endSeqNo) =>
+        Build("2", msgSeqNum, $"7={beginSeqNo.ToString(CultureInfo.InvariantCulture)}{Soh}16={endSeqNo.ToString(CultureInfo.InvariantCulture)}{Soh}");
+
+    /// <summary>
+    /// Writes a SequenceReset-GapFill (35=4, 123=Y) with PossDupFlag=Y. The probe sends only session
+    /// messages, so it answers any ResendRequest with a single gap fill.
+    /// </summary>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34): the BeginSeqNo of the request being answered.</param>
+    /// <param name="newSeqNo">NewSeqNo (tag 36): the probe's next outgoing MsgSeqNum.</param>
+    /// <returns>The complete frame.</returns>
+    public byte[] GapFill(int msgSeqNum, int newSeqNo)
+    {
+        var now = SendingTime();
+        return Build("4", msgSeqNum, $"43=Y{Soh}122={now}{Soh}123=Y{Soh}36={newSeqNo.ToString(CultureInfo.InvariantCulture)}{Soh}");
+    }
 
     /// <summary>Writes a Heartbeat (35=0).</summary>
     /// <param name="msgSeqNum">MsgSeqNum (tag 34).</param>
@@ -62,9 +106,12 @@ public sealed class FixSessionWriter
         return sum % 256;
     }
 
+    private string SendingTime() =>
+        _time.GetUtcNow().UtcDateTime.ToString("yyyyMMdd-HH:mm:ss.fff", CultureInfo.InvariantCulture);
+
     private byte[] Build(string msgType, int msgSeqNum, string extra)
     {
-        var sendingTime = _time.GetUtcNow().UtcDateTime.ToString("yyyyMMdd-HH:mm:ss.fff", CultureInfo.InvariantCulture);
+        var sendingTime = SendingTime();
         var body = $"35={msgType}{Soh}49={_senderCompId}{Soh}56={_targetCompId}{Soh}" +
                    $"34={msgSeqNum.ToString(CultureInfo.InvariantCulture)}{Soh}52={sendingTime}{Soh}{extra}";
         var bodyBytes = Encoding.ASCII.GetBytes(body);

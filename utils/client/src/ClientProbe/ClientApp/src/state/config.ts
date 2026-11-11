@@ -12,8 +12,16 @@ export type ConfigTab = 'kafka' | 'rabbit' | 'fix' | 'ws';
 /** Persistable (non-secret) fields per tab, all kept as strings. */
 export interface PersistedConfig {
   kafka: { host: string; port: string; topic: string; groupId: string };
-  rabbit: { host: string; port: string; exchange: string; routingKey: string };
-  fix: { host: string; port: string; senderCompId: string; targetCompId: string };
+  rabbit: { host: string; port: string; exchange: string; routingKey: string; username: string };
+  /** `resetSeqNum` and `sendNextExpected` are checkboxes stored as 'true' / 'false'. */
+  fix: {
+    host: string;
+    port: string;
+    senderCompId: string;
+    targetCompId: string;
+    resetSeqNum: string;
+    sendNextExpected: string;
+  };
   ws: { host: string; port: string; clientId: string };
 }
 
@@ -28,8 +36,15 @@ const STORAGE_KEY = 'clientpanel.config';
 /** Defaults follow design §7. WebSocket host and port start empty. */
 export const DEFAULT_CONFIG: PersistedConfig = {
   kafka: { host: '127.0.0.1', port: '19092', topic: 'fix.ordexec.raw', groupId: 'probe-local' },
-  rabbit: { host: '127.0.0.1', port: '5672', exchange: 'fix.orders', routingKey: 'fix.raw' },
-  fix: { host: '127.0.0.1', port: '6001', senderCompId: 'PROBE', targetCompId: 'NEXUSROUTER' },
+  rabbit: { host: '127.0.0.1', port: '5672', exchange: 'fix.orders', routingKey: 'fix.raw', username: '' },
+  fix: {
+    host: '127.0.0.1',
+    port: '6001',
+    senderCompId: 'PROBE',
+    targetCompId: 'NEXUSROUTER',
+    resetSeqNum: 'false',
+    sendNextExpected: 'true',
+  },
   ws: { host: '', port: '', clientId: '' },
 };
 
