@@ -208,6 +208,69 @@ A configuração é validada na subida (fail-closed): é obrigatório ao menos u
 
 Consulte `docs/EntryPointMessageSpecs.pdf` e `.kiro/steering/b3-guidelines.md` para detalhes completos de configuração do protocolo B3.
 
+### Tags FIX customizadas do NexusRouter
+
+O NexusRouter reserva dois blocos de tags user-defined. Toda tag nova do projeto sai deles e é registrada na tabela abaixo.
+
+| Bloco         | Uso                                                                 | Base FIX                                   |
+|---------------|---------------------------------------------------------------------|--------------------------------------------|
+| `19000–19099` | Clientes internos da MonteBravo (a tag não sai da firma)            | 10000–19999, uso interno de uma firma      |
+| `21000–21099` | Clientes parceiros (contraparte externa, acordo bilateral)          | 20000–39999, user-defined bilateral        |
+
+Os blocos ficam longe das faixas que a B3 já ocupa no `docs/FIX44Entrypoint.xml`: `5000–9999`, `100xx` e `35001–35551`. Os clientes recebem os frames da B3 em pass-through e carregam as tags da B3 e as nossas no mesmo dicionário, então um número em comum quebraria o parse. Não use tags fora destes blocos. Antes de alocar um número novo, confira que ele não existe no dicionário da B3.
+
+| Tag     | Nome         | Mensagem         | Bloco   | Status                 |
+|---------|--------------|------------------|---------|------------------------|
+| `19001` | `ReplayMode` | Logon (`35=A`)   | interno | planejada (TD-15b a TD-15d) |
+
+#### `ReplayMode` (19001): o que o cliente recebe ao conectar
+
+Um cliente FIX que conecta ao acceptor (`FixOutbound`) durante o dia escolhe o que recebe:
+
+| Valor | Modo         | Efeito                                                                 |
+|-------|--------------|------------------------------------------------------------------------|
+| `1`   | `FromLogon`  | Só as mensagens que chegarem depois do Logon. O que passou é ignorado. |
+| `2`   | `StartOfDay` | Todas as mensagens do dia, desde a meia-noite, a partir do seq 1, seguidas do tráfego ao vivo. |
+
+Regras:
+
+- O dia vira à meia-noite (fuso `America/Sao_Paulo` por padrão), como no QuickFIX: o router abre um storage novo e o seq dos clientes volta a 1.
+- O modo vale quando o Logon abre uma época nova do cliente: com `ResetSeqNumFlag` (`141=Y`) ou no primeiro Logon do cliente no dia. `141=Y` sempre zera o seq dos dois lados; o modo só decide se a época começa com o histórico do dia ou vazia.
+- Reconexão sem `141=Y` continua de onde parou pela recuperação normal (`789` ou `ResendRequest`). A tag `19001` é ignorada nesse caso.
+- Sem a tag, vale o `Recovery.ReplayMode` configurado no dispatcher ou no `ClientOverrides` do `SenderCompID`. Com a tag, ela prevalece. Valor fora da tabela recebe `Logout` com `Text`.
+
+Exemplo de Logon pedindo o dia inteiro:
+
+```text
+8=FIX.4.4|9=...|35=A|34=1|49=OMS1|56=NEXUSROUTER|52=...|98=0|108=30|141=Y|19001=2|10=...
+```
+
+**QuickFIX/n (C#):** adicione a tag no `ToAdmin` e declare o campo no dicionário do cliente.
+
+```csharp
+public void ToAdmin(Message message, SessionID sessionId)
+{
+    if (message.Header.GetString(Tags.MsgType) == MsgType.LOGON)
+    {
+        message.SetField(new ResetSeqNumFlag(true));
+        message.SetField(new IntField(19001, 2)); // 1 = FromLogon, 2 = StartOfDay
+    }
+}
+```
+
+```xml
+<!-- No dicionário do cliente: campo em <fields> e referência na mensagem Logon -->
+<field number="19001" name="ReplayMode" type="INT" />
+<message name="Logon" msgtype="A" msgcat="admin">
+  <!-- campos existentes -->
+  <field name="ReplayMode" required="N" />
+</message>
+```
+
+**QuickFIX/J:** mesmo padrão em `toAdmin`, com `message.setInt(19001, 2)`.
+
+**ClientProbe:** o perfil FIX tem um seletor do modo. Use-o junto com "zerar sequência no próximo logon".
+
 ---
 
 ## Git e ambientes
