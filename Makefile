@@ -24,7 +24,7 @@ help: ## Lista os alvos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
 up: infra install ## Infra + simulador + painel do sim + NexusRouter + painel do cliente
-	@$(MAKE) -j4 --output-sync=none sim-backend sim-panel router client-panel
+	@$(MAKE) -j4 sim-backend sim-panel router client-panel
 
 infra: ## Kafka, RabbitMQ e TimescaleDB via docker compose
 	docker compose up -d
