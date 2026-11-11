@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Globalization;
+
+using NexusRouter.Domain.Models;
 
 namespace NexusRouter.Egress;
 
@@ -8,6 +11,8 @@ namespace NexusRouter.Egress;
 /// </summary>
 public static class BrokerHeaderFields
 {
+    internal const string MissingValueMarker = "_missing";
+
     /// <summary>
     /// Confere a lista de tags. Vazia é válida.
     /// </summary>
@@ -141,6 +146,140 @@ public static class BrokerHeaderFields
         }
 
         return any ? null : "RoutingKeyTemplate precisa de ao menos um placeholder <tag>.";
+    }
+
+    /// <summary>
+    /// Lê somente as tags configuradas, reutilizando o snapshot parseado quando disponível.
+    /// </summary>
+    /// <param name="payload">Payload cujo buffer permanece válido durante o envio.</param>
+    /// <param name="headerFields">Tags que serão publicadas nos headers.</param>
+    /// <returns>Valores alinhados à lista de tags; nulo indica que a tag não existe.</returns>
+    /// <remarks>Chamado no consume loop, nunca na thread do router.</remarks>
+    internal static ReadOnlyMemory<byte>?[] ReadValues(DispatchPayload payload, IReadOnlyList<int> headerFields)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(headerFields);
+
+        if (headerFields.Count == 0)
+        {
+            return [];
+        }
+
+        IMemoryOwner<byte>? rawBuffer = payload.RawBuffer;
+        if (rawBuffer is null)
+        {
+            throw new InvalidOperationException("O payload não tem buffer para leitura das tags FIX.");
+        }
+
+        var values = new ReadOnlyMemory<byte>?[headerFields.Count];
+        if (payload.TryGetParsedMessage(out FixMessage message))
+        {
+            ReadOnlySpan<FixField> fields = message.Fields;
+            int found = 0;
+            for (int fieldIndex = 0; fieldIndex < fields.Length; fieldIndex++)
+            {
+                FixField field = fields[fieldIndex];
+                for (int tagIndex = 0; tagIndex < headerFields.Count; tagIndex++)
+                {
+                    if (field.Tag == headerFields[tagIndex] && values[tagIndex] is null)
+                    {
+                        values[tagIndex] = field.Value;
+                        found++;
+                    }
+                }
+
+                if (found == headerFields.Count)
+                {
+                    break;
+                }
+            }
+
+            return values;
+        }
+
+        Scan(rawBuffer.Memory, headerFields, values);
+        return values;
+    }
+
+    /// <summary>
+    /// Nome estável do header que transporta o valor de uma tag FIX.
+    /// </summary>
+    /// <param name="tag">Tag configurada.</param>
+    /// <returns>Nome no formato <c>FIX-{tag}</c>.</returns>
+    internal static string HeaderName(int tag) =>
+        string.Concat("FIX-", tag.ToString(CultureInfo.InvariantCulture));
+
+    private static void Scan(
+        ReadOnlyMemory<byte> frame,
+        IReadOnlyList<int> headerFields,
+        ReadOnlyMemory<byte>?[] values)
+    {
+        const byte Soh = 0x01;
+        ReadOnlySpan<byte> bytes = frame.Span;
+        int index = 0;
+        int found = 0;
+
+        while (index < bytes.Length && found < headerFields.Count)
+        {
+            if (bytes[index] == Soh)
+            {
+                index++;
+                continue;
+            }
+
+            if (!TryReadTag(bytes, ref index, out int tag))
+            {
+                break;
+            }
+
+            int valueStart = index;
+            int separator = bytes[index..].IndexOf(Soh);
+            int valueLength = separator < 0 ? bytes.Length - valueStart : separator;
+            index = separator < 0 ? bytes.Length : valueStart + valueLength + 1;
+
+            for (int tagIndex = 0; tagIndex < headerFields.Count; tagIndex++)
+            {
+                if (tag == headerFields[tagIndex] && values[tagIndex] is null)
+                {
+                    values[tagIndex] = frame.Slice(valueStart, valueLength);
+                    found++;
+                    break;
+                }
+            }
+        }
+    }
+
+    private static bool TryReadTag(ReadOnlySpan<byte> bytes, ref int index, out int tag)
+    {
+        int start = index;
+        tag = 0;
+        while (index < bytes.Length)
+        {
+            byte digit = bytes[index];
+            if (digit is < (byte)'0' or > (byte)'9')
+            {
+                break;
+            }
+
+            int numeric = digit - (byte)'0';
+            if (tag > (int.MaxValue - numeric) / 10)
+            {
+                tag = 0;
+                return false;
+            }
+
+            tag = (tag * 10) + numeric;
+            index++;
+        }
+
+        if (index == start || index >= bytes.Length || bytes[index] != (byte)'=')
+        {
+            tag = 0;
+            return false;
+        }
+
+        index++;
+        return true;
     }
 
     private static bool Contains(IReadOnlyList<int> headerFields, int tag)
