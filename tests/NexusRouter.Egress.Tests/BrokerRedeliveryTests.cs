@@ -109,7 +109,7 @@ public sealed class BrokerRedeliveryTests
             NullLogger<KafkaMessageDispatcher>.Instance,
             pool,
             ThrowingSecretResolver.Instance,
-            (topic, partition, value, identity, cancellationToken) =>
+            (topic, partition, value, identity, _, cancellationToken) =>
                 gate.PublishAsync(identity, blockOnSecond, cancellationToken),
             tracker,
             new StreamCatchUp(reader, tracker, pool, catchUpIdleMs: 1000));
