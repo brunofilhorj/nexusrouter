@@ -38,9 +38,15 @@ public sealed class RabbitMQDispatcherOptions
     public required string Exchange { get; init; }
 
     /// <summary>
-    /// Routing key. Vazio publica só na exchange.
+    /// Routing key fixa. Vazio publica só na exchange.
     /// </summary>
     public string RoutingKey { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Template hierárquico, por exemplo <c>fix.&lt;1&gt;.&lt;55&gt;</c>.
+    /// Nulo ou vazio mantém <see cref="RoutingKey"/>. Cada placeholder tem de estar em <see cref="HeaderFields"/>.
+    /// </summary>
+    public string? RoutingKeyTemplate { get; init; }
 
     /// <summary>
     /// Capacidade do channel de entrada deste dispatcher.
@@ -61,6 +67,11 @@ public sealed class RabbitMQDispatcherOptions
     /// Formato do corpo publicado. <see cref="BrokerPayloadEncoding.Json"/> é o default.
     /// </summary>
     public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
+    /// <summary>
+    /// Tags FIX carimbadas nos headers da mensagem. Vazio mantém só o header de idempotência.
+    /// </summary>
+    public IReadOnlyList<int> HeaderFields { get; init; } = [];
 
     /// <summary>
     /// Rejeita host, porta, exchange ou capacidade inválidos.
@@ -89,5 +100,8 @@ public sealed class RabbitMQDispatcherOptions
         {
             throw new ArgumentOutOfRangeException(nameof(CursorAckMode), CursorAckMode, "CursorAckMode é desconhecido.");
         }
+
+        BrokerHeaderFields.EnsureTags(HeaderFields);
+        BrokerHeaderFields.EnsureRoutingKeyTemplate(RoutingKeyTemplate, HeaderFields);
     }
 }

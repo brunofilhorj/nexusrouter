@@ -165,6 +165,8 @@ O producer é **agnóstico ao provedor**. `ConnectAsync` monta um `ProducerConfi
 
 **`RabbitMQMessageDispatcher`:** Encapsula um `IModel` (cliente clássico) ou `IChannel` (futuro cliente async v7+). Cada instância de dispatcher mantém um channel dedicado para evitar contenção. O flag mandatory e as confirmações de publisher são configuráveis — desabilitados por padrão para latência mínima.
 
+**Segregação por tag (TD-10a, 2026-11-11).** O router não escolhe o consumidor. `HeaderFields` lista as tags FIX que o consume loop carimba. Lista vazia, o default, não acrescenta header: a routing key do RabbitMQ continua `RoutingKey` e o único header segue sendo o de idempotência do TD-04b. No RabbitMQ, `RoutingKeyTemplate` (por exemplo `fix.<1>.<55>`) só entra quando preenchido; cada `<tag>` tem de estar em `HeaderFields`. A exchange e os bindings ficam com o operador. No Kafka não há tópico por critério: as mesmas tags viram record headers e a partição continua a de `PartitionStrategy`. O dicionário B3 (`docs/FIX44Entrypoint.xml` 1.0.61) não tem a tag 440 (`ClearingAccount`); a conta é a tag 1 (`Account`). Dimensões presentes e usadas como exemplo: 1 (`Account`), 11 (`ClOrdID`), 49 (`SenderCompID`) e 55 (`Symbol`).
+
 #### 3.3.1 `WebSocketMessageDispatcher`
 
 Acceptor para aplicação web ou nativa. O NexusRouter escuta; o cliente abre o WebSocket. O hot path não muda: o router continua fazendo `TryEnqueue` do `DispatchPayload` inteiro. JSON, binário e filtro de campos existem só no consume loop deste dispatcher, e só quando há sessão logada.
@@ -718,6 +720,7 @@ NexusRouter:
       SaslMechanism: None
       PartitionStrategy: ByClOrdId
       ChannelCapacity: 16384
+      # HeaderFields: [1, 55]       # vazio = só o header de idempotência; sem tópico por critério
 
     # Exemplo Amazon MSK SASL/SCRAM (produção). Secrets só via env.
     # - Id: "kafka-msk"
@@ -762,6 +765,8 @@ NexusRouter:
       VirtualHost: "/trading"
       Exchange: "dropcopy.fanout"
       RoutingKey: ""
+      # RoutingKeyTemplate: "fix.<1>.<55>"  # vazio = RoutingKey fixa; a conta é a tag 1, não a 440
+      # HeaderFields: [1, 55]
       CursorAckMode: OnBrokerAck         # publisher confirms; cursor avança na confirmação
       ChannelCapacity: 8192
 
@@ -1063,3 +1068,4 @@ Contribuições estimadas dos componentes do hot path para a latência end-to-en
 | Índice por cliente escrito pela task de consumo e pela sessão aceita, em slots distintos | Escritor único por cliente com lock ou fila | O `seq` já vem de `Interlocked`. Slots distintos não precisam de lock, e `kind` publica o slot |
 | Seq de saída salta depois de queda, nunca regride | Retomar do último valor persistido | Regredir repete seqnum já entregue. Saltar é tolerado pelo FIX e vira gap-fill |
 | Falha do log não para o roteamento | Parar o roteamento se o log falhar | A entrega ao vivo é o objetivo de latência. Perde-se só a garantia de recuperar o trecho, com métrica e alerta |
+| Carimbo opcional por `HeaderFields`; Kafka em record headers na partição já existente | Tópico Kafka por conta, ou a tag 440 como conta | A 440 não está no dicionário B3. Sem `HeaderFields` o publish não muda. O operador liga `fix.<1>.<55>` no RabbitMQ |

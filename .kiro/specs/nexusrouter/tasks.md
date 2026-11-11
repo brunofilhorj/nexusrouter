@@ -1393,7 +1393,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-10a — Tag 440, `HeaderFields` e a decisão do Kafka
+- [x] TD-10a — Tag 440, `HeaderFields` e a decisão do Kafka
 
 **Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-04b.
 
@@ -1401,9 +1401,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 **Entradas:** `notes/replay-rethink.md` §3, `KafkaDispatcherOptions`, `RabbitMQDispatcherOptions`, `docs/FIX44Entrypoint.xml`.
 
-**Pontos em aberto (decidir com o usuário nesta fatia, antes de TD-10b):**
-- Kafka: o texto atual segue com record headers e a partição que já existe, sem tópico por critério. Registrar essa decisão. Esta fatia não escolhe outro tópico.
-- Quais tags entram por padrão: 11, 55, 49, 440?
+**Decisão (2026-11-11):** `HeaderFields` vazio por padrão. A conta é a tag 1 (`Account`); a 440 não está em `docs/FIX44Entrypoint.xml`. Kafka: record headers e a partição já configurada, sem tópico por critério.
 
 **Passos:**
 1. Confirmar no dicionário B3 (`docs/FIX44Entrypoint.xml`) que a tag 440 (ClearingAccount) é a certa para segregar por conta e quais outras tags valem como dimensão.

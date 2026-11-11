@@ -38,6 +38,11 @@ public sealed class KafkaDispatcherOptions
     public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
 
     /// <summary>
+    /// Tags FIX carimbadas como record headers. Vazio mantém só o header de idempotência.
+    /// </summary>
+    public IReadOnlyList<int> HeaderFields { get; init; } = [];
+
+    /// <summary>
     /// Protocolo de transporte e autenticação.
     /// </summary>
     public KafkaSecurityProtocol SecurityProtocol { get; init; } = KafkaSecurityProtocol.Plaintext;
@@ -135,6 +140,8 @@ public sealed class KafkaDispatcherOptions
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(PartitionCount);
         }
+
+        BrokerHeaderFields.EnsureTags(HeaderFields);
     }
 
     /// <summary>

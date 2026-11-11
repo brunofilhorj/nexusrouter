@@ -43,9 +43,15 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
     public required string Exchange { get; init; }
 
     /// <summary>
-    /// Routing key. Vazio publica só na exchange.
+    /// Routing key fixa. Vazio publica só na exchange.
     /// </summary>
     public string RoutingKey { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Template hierárquico, por exemplo <c>fix.&lt;1&gt;.&lt;55&gt;</c>.
+    /// Nulo ou vazio mantém <see cref="RoutingKey"/>. Cada placeholder tem de estar em <see cref="HeaderFields"/>.
+    /// </summary>
+    public string? RoutingKeyTemplate { get; init; }
 
     /// <summary>
     /// Capacidade do channel de entrada deste dispatcher.
@@ -66,6 +72,11 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
     /// Formato do corpo publicado: <c>Json</c> (default) ou <c>Raw</c> (frame FIX bruto).
     /// </summary>
     public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
+    /// <summary>
+    /// Tags FIX carimbadas nos headers da mensagem. Vazio mantém só o header de idempotência.
+    /// </summary>
+    public List<int> HeaderFields { get; init; } = [];
 
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
@@ -90,6 +101,8 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.CursorAckMode, nameof(options.CursorAckMode)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.PayloadEncoding, nameof(options.PayloadEncoding)));
+        ConfigurationChecks.Add(failures, BrokerHeaderFields.TagsError(options.HeaderFields));
+        ConfigurationChecks.Add(failures, BrokerHeaderFields.RoutingKeyTemplateError(options.RoutingKeyTemplate, options.HeaderFields));
         return ConfigurationChecks.From(failures);
     }
 }
