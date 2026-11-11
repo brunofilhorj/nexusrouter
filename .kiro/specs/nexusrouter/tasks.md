@@ -26,7 +26,7 @@ No Kiro, use o task runner desta spec (`nexusrouter`). No Cursor, execute a pró
 | Fase 8 | Testes | T-37 → T-43 |
 | Fase 9 | Retransmissão por cliente (sobre o log de sessão) | T-44, T-47, T-48 (T-45 e T-46 removidas) |
 | Fase 10 | Egress WebSocket | T-49 → T-53 |
-| Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-08 (inclui TD-04a, TD-04b) e TD-10 → TD-12 (TD-09 foi absorvido pelo TD-04; o ID não é reutilizado) |
+| Fase 11 | Melhorias e débitos técnicos | TD-01 → TD-08 (inclui TD-04a, TD-04b) e TD-10 → TD-14 (TD-09 foi absorvido pelo TD-04; o ID não é reutilizado) |
 
 **Ordem de execução.** TD-01 a TD-08 já estão concluídos, então as dependências da Fase 9 e de T-50 a T-53 estão atendidas. TD-10 a TD-12 são independentes das Fases 9 e 10. T-49 não depende do log. Quem encontrar uma task com a dependência desmarcada deve avisar e parar (`AGENTS.md`).
 
@@ -1291,6 +1291,25 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 5. Testes com relógio injetado: virada de dia, domingo para segunda, restart no mesmo dia (não zera).
 
 **Saída:** O initiator reconecta no dia seguinte com seqnum 1 e época nova, e no mesmo dia continua de onde parou.
+
+---
+
+- [x] TD-13 — Payload JSON nos dispatchers de broker (`PayloadEncoding`)
+
+**Origem:** FR-EGR-13. **Tamanho:** M. **Depende de:** TD-04b.
+
+**Objetivo:** Kafka e RabbitMQ publicam por padrão um envelope JSON legível em vez do frame FIX bruto, com opção de voltar ao bruto.
+
+**Entradas:** FR-EGR-13, `KafkaMessageDispatcher`, `RabbitMQMessageDispatcher`, options de Egress e de Host.
+
+**Passos:**
+1. `BrokerPayloadEncoding` (`Json` default, `Raw`) nas options de Egress e de Host, validado na subida.
+2. `FixJsonProjector`: projeta o frame no envelope `{"type","msgType","ts","fields"}`, na ordem do wire, sem as tags 8, 9, 10 e 35; tag repetida vira array.
+3. Projeção no consume loop do dispatcher, nunca no hot path. Log de sessão e cursor seguem sobre o frame bruto. No RabbitMQ, `Json` marca `content_type=application/json`.
+4. `appsettings.json` roteia a sessão também para `rabbitmq-fix-raw`. README documenta o `PayloadEncoding`.
+5. Testes: `FixJsonProjectorTests` e `FanOutEndToEndTests`.
+
+**Saída:** Um consumidor de Kafka ou RabbitMQ recebe JSON por padrão e frame bruto com `PayloadEncoding: Raw`.
 
 ---
 

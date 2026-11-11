@@ -62,6 +62,11 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
     /// </summary>
     public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
 
+    /// <summary>
+    /// Formato do corpo publicado: <c>Json</c> (default) ou <c>Raw</c> (frame FIX bruto).
+    /// </summary>
+    public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
 
@@ -84,6 +89,7 @@ public sealed class RabbitMQDispatcherOptions : DispatcherOptions, IValidateOpti
         ConfigurationChecks.Add(failures, ConfigurationChecks.Required(options.Exchange, nameof(options.Exchange)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.ChannelCapacity, nameof(options.ChannelCapacity)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.CursorAckMode, nameof(options.CursorAckMode)));
+        ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.PayloadEncoding, nameof(options.PayloadEncoding)));
         return ConfigurationChecks.From(failures);
     }
 }

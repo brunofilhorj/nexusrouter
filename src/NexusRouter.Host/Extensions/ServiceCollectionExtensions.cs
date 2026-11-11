@@ -483,6 +483,7 @@ public static class ServiceCollectionExtensions
                 ChannelCapacity = config.ChannelCapacity,
                 PartitionStrategy = config.PartitionStrategy,
                 PartitionCount = config.PartitionCount,
+                PayloadEncoding = config.PayloadEncoding,
             };
             ILogger<KafkaMessageDispatcher> logger = sp.GetRequiredService<ILogger<KafkaMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();
@@ -521,6 +522,7 @@ public static class ServiceCollectionExtensions
                 ChannelCapacity = config.ChannelCapacity,
                 PrefetchCount = config.PrefetchCount,
                 CursorAckMode = config.CursorAckMode,
+                PayloadEncoding = config.PayloadEncoding,
             };
             ILogger<RabbitMQMessageDispatcher> logger = sp.GetRequiredService<ILogger<RabbitMQMessageDispatcher>>();
             DispatchPayloadPool payloadPool = sp.GetRequiredService<DispatchPayloadPool>();

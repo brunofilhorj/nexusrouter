@@ -33,6 +33,11 @@ public sealed class KafkaDispatcherOptions
     public CursorAckMode CursorAckMode { get; init; } = CursorAckMode.OnBrokerAck;
 
     /// <summary>
+    /// Formato do corpo publicado. <see cref="BrokerPayloadEncoding.Json"/> é o default.
+    /// </summary>
+    public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
+    /// <summary>
     /// Protocolo de transporte e autenticação.
     /// </summary>
     public KafkaSecurityProtocol SecurityProtocol { get; init; } = KafkaSecurityProtocol.Plaintext;
@@ -95,6 +100,11 @@ public sealed class KafkaDispatcherOptions
         if (!Enum.IsDefined(CursorAckMode))
         {
             throw new ArgumentOutOfRangeException(nameof(CursorAckMode), CursorAckMode, "CursorAckMode é desconhecido.");
+        }
+
+        if (!Enum.IsDefined(PayloadEncoding))
+        {
+            throw new ArgumentOutOfRangeException(nameof(PayloadEncoding), PayloadEncoding, "PayloadEncoding é desconhecido.");
         }
 
         if (Acks == 0 && CursorAckMode == CursorAckMode.OnBrokerAck)

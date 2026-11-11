@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 using Microsoft.Extensions.Logging;
@@ -138,6 +139,13 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         }
 
         ReadOnlyMemory<byte> body = payload.RawBuffer.Memory;
+        if (Options.PayloadEncoding == BrokerPayloadEncoding.Json)
+        {
+            var buffer = new ArrayBufferWriter<byte>(512);
+            FixJsonProjector.Write(body.Span, DateTime.UtcNow.Ticks, buffer);
+            body = buffer.WrittenMemory;
+        }
+
         string? identity = BrokerIdentity.Format(payload.LogRef);
         if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
         {
@@ -174,13 +182,22 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         {
             IModel model = _model ?? throw new InvalidOperationException("O model RabbitMQ não está aberto.");
             IBasicProperties? properties = null;
-            if (identity is not null)
+            bool json = Options.PayloadEncoding == BrokerPayloadEncoding.Json;
+            if (identity is not null || json)
             {
                 properties = model.CreateBasicProperties();
-                properties.Headers = new Dictionary<string, object>
+                if (json)
                 {
-                    [BrokerIdentity.HeaderName] = Encoding.UTF8.GetBytes(identity),
-                };
+                    properties.ContentType = "application/json";
+                }
+
+                if (identity is not null)
+                {
+                    properties.Headers = new Dictionary<string, object>
+                    {
+                        [BrokerIdentity.HeaderName] = Encoding.UTF8.GetBytes(identity),
+                    };
+                }
             }
 
             model.BasicPublish(Options.Exchange, Options.RoutingKey, mandatory: false, basicProperties: properties, body: body);

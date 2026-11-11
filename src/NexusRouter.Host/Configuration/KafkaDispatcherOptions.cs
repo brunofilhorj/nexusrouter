@@ -88,6 +88,11 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
     public int ChannelCapacity { get; init; } = 16384;
 
     /// <summary>
+    /// Formato do corpo publicado: <c>Json</c> (default) ou <c>Raw</c> (frame FIX bruto).
+    /// </summary>
+    public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
+
+    /// <summary>
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
 
@@ -108,6 +113,7 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.SecurityProtocol, nameof(options.SecurityProtocol)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.SaslMechanism, nameof(options.SaslMechanism)));
         ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.PartitionStrategy, nameof(options.PartitionStrategy)));
+        ConfigurationChecks.Add(failures, ConfigurationChecks.Defined(options.PayloadEncoding, nameof(options.PayloadEncoding)));
         if (options.Acks is not (0 or 1 or -1))
         {
             failures.Add("Acks aceita 0, 1 ou -1.");

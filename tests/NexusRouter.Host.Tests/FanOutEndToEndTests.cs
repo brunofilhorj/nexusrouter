@@ -92,8 +92,8 @@ public sealed class FanOutEndToEndTests
             List<byte[]> rabbitMessages = await ReadRabbitAsync(rabbit.Hostname, rabbit.GetMappedPublicPort(5672));
             await host.StopAsync();
 
-            AssertPayloads(kafkaMessages, "Kafka");
-            AssertPayloads(rabbitMessages, "RabbitMQ");
+            AssertPayloads(kafkaMessages, "Kafka", json: true);
+            AssertPayloads(rabbitMessages, "RabbitMQ", json: false);
             AssertSerilog(auditPath);
             await AssertPostgresAsync(postgres.GetConnectionString());
         }
@@ -153,6 +153,7 @@ public sealed class FanOutEndToEndTests
             ["NexusRouter:Dispatchers:1:Exchange"] = RabbitExchange,
             ["NexusRouter:Dispatchers:1:RoutingKey"] = RabbitRoutingKey,
             ["NexusRouter:Dispatchers:1:ChannelCapacity"] = "1024",
+            ["NexusRouter:Dispatchers:1:PayloadEncoding"] = "Raw",
             ["NexusRouter:SessionLog:Directory"] = Path.Combine(Path.GetDirectoryName(auditPath) ?? Path.GetTempPath(), "sessionlog"),
             ["NexusRouter:SessionLog:SegmentSizeMB"] = "1",
             ["NexusRouter:SessionLog:IndexSlotsPerSegment"] = "1000",
@@ -309,6 +310,13 @@ public sealed class FanOutEndToEndTests
     private static bool IsExecutionReport(ReadOnlySpan<byte> frame)
     {
         string message = Encoding.ASCII.GetString(frame);
+        if (message.StartsWith('{'))
+        {
+            // PayloadEncoding=Json: envelope com msgType.
+            using var doc = System.Text.Json.JsonDocument.Parse(message);
+            return doc.RootElement.TryGetProperty("msgType", out var msgType) && msgType.GetString() == "8";
+        }
+
         foreach (string field in message.Split('\x01', StringSplitOptions.RemoveEmptyEntries))
         {
             if (field.StartsWith("35=", StringComparison.Ordinal))
@@ -320,13 +328,15 @@ public sealed class FanOutEndToEndTests
         return false;
     }
 
-    private static void AssertPayloads(List<byte[]> payloads, string destination)
+    private static void AssertPayloads(List<byte[]> payloads, string destination, bool json)
     {
         Assert.Equal(MessageCount, payloads.Count);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (byte[] payload in payloads)
         {
-            string clOrdId = GetFieldValue(payload, 11);
+            string clOrdId = json
+                ? System.Text.Json.JsonDocument.Parse(payload).RootElement.GetProperty("fields").GetProperty("11").GetString()!
+                : GetFieldValue(payload, 11);
             Assert.StartsWith("E2E", clOrdId, StringComparison.Ordinal);
             ids.Add(clOrdId);
         }

@@ -34,7 +34,7 @@ nexusrouter/
 │   │   └── nexusrouter/
 │   │       ├── requirements.md       — Requisitos Funcionais e Não Funcionais
 │   │       ├── design.md             — Documento de Design de Arquitetura
-│   │       └── tasks.md              — Plano de tarefas incremental (T-01 → T-43)
+│   │       └── tasks.md              — Plano de tarefas incremental (T-01 → T-53)
 │   └── steering/
 │       ├── coding-standards.md       — Convenções .NET 10 C#, regras do hot path
 │       ├── b3-guidelines.md          — Regras de protocolo FIX 4.4 do B3 EntryPoint
@@ -50,8 +50,14 @@ nexusrouter/
 │   ├── deploy-to-staging.yml         — deploy em tag vX.Y.Z-rc.N
 │   └── deploy-to-production.yml      — deploy em tag vX.Y.Z
 ├── .env.example
+├── Makefile                          — atalhos de build/test
 ├── README.md
-└── (src/, tests/, NexusRouter.slnx — criados na Fase 1, Tarefa T-01)
+├── NexusRouter.slnx                  — solução principal
+├── src/                              — Audit, Domain, Egress, Host, Ingress, Router, SessionLog
+├── tests/                            — testes unitários, integração e benchmarks
+└── utils/
+    ├── sim/                          — simulador do gateway B3 (ver seção abaixo)
+    └── client/                       — ClientProbe: cliente FIX/RabbitMQ de apoio, com painel web
 ```
 
 ---
@@ -172,7 +178,7 @@ Os destinos de saída são configurados em `src/NexusRouter.Host/appsettings.jso
   | `Kafka`       | Producer Kafka        | disponível              |
   | `RabbitMQ`    | Publisher RabbitMQ    | disponível              |
   | `FixOutbound` | Acceptor FIX outbound | disponível              |
-  | `WebSocket`   | Acceptor WebSocket    | não implementado (T-28) |
+  | `WebSocket`   | Acceptor WebSocket    | disponível              |
 
 - **`Sessions[].Routes`** — cada sessão de ingresso lista, por `DispatcherId`, para quais dispatchers suas mensagens fazem fan-out.
 
@@ -191,10 +197,12 @@ Para habilitar **um** dispatcher numa sessão, aponte uma rota para o `Id` dele.
   }
 ],
 "Dispatchers": [
-  { "Id": "kafka-fix-raw", "Type": "Kafka", "BootstrapServers": "127.0.0.1:19092", "Topic": "fix.ordexec.raw" },
-  { "Id": "rabbitmq-fix-raw", "Type": "RabbitMQ", "Host": "127.0.0.1", "Exchange": "fix.orders", "RoutingKey": "fix.raw" }
+  { "Id": "kafka-fix-raw", "Type": "Kafka", "BootstrapServers": "127.0.0.1:19092", "Topic": "fix.ordexec.raw", "PayloadEncoding": "Raw" },
+  { "Id": "rabbitmq-fix-raw", "Type": "RabbitMQ", "Host": "127.0.0.1", "Exchange": "fix.orders", "RoutingKey": "fix.raw", "PayloadEncoding": "Json" }
 ]
 ```
+
+**Formato do corpo (Kafka e RabbitMQ).** `PayloadEncoding` define o que é publicado: `Json` (default) ou `Raw`. `Json` publica o envelope `{"type":"exec","msgType":"8","ts":<ticks UTC>,"fields":{"11":"...",...}}`, com valores como string ASCII do FIX, na ordem do wire, sem as tags 8, 9, 10 e 35 em `fields`; tag repetida (grupo) vira array. `Raw` publica o frame FIX bruto. No RabbitMQ, `Json` marca `content_type=application/json`. Quem consome o frame bruto precisa declarar `"PayloadEncoding": "Raw"`. O log de sessão e o cursor seguem sobre o frame bruto nos dois casos.
 
 A configuração é validada na subida (fail-closed): é obrigatório ao menos uma sessão e um dispatcher, `Id` de dispatcher não pode repetir, um `DispatcherId` não pode repetir na mesma sessão, e toda rota deve apontar para um `Id` existente. Credenciais (Kafka SASL, RabbitMQ) vêm por variáveis de ambiente, nunca no `appsettings.json`.
 
@@ -255,7 +263,7 @@ git push origin v1.0.0
 
 Este projeto segue o **Spec-Driven Development (SDD)**. A fonte da verdade é `.kiro/`; o Cursor e o Kiro devem ler os mesmos arquivos (ver `AGENTS.md`).
 
-Todas as tarefas de implementação estão em `.kiro/specs/nexusrouter/tasks.md` (T-01 → T-43 em 8 fases). O comportamento do agente é governado por:
+Todas as tarefas de implementação estão em `.kiro/specs/nexusrouter/tasks.md` (T-01 → T-53). O comportamento do agente é governado por:
 
 - `.kiro/steering/coding-standards.md` — Convenções C#, regras do hot path, padrões de teste
 - `.kiro/steering/b3-guidelines.md` — Regras do protocolo B3 EntryPoint, catálogo de mensagens, restrições de campos
