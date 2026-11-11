@@ -24,6 +24,8 @@ interface FieldDef {
   key: string;
   label: string;
   secret?: boolean;
+  /** Checkbox stored as 'true' / 'false'. */
+  checkbox?: boolean;
 }
 
 const TABS: readonly { id: ConfigTab; label: string }[] = [
@@ -45,6 +47,7 @@ const FIELDS: Record<ConfigTab, readonly FieldDef[]> = {
     { key: 'port', label: 'Porta' },
     { key: 'exchange', label: 'Exchange' },
     { key: 'routingKey', label: 'Routing key' },
+    { key: 'username', label: 'Usuário (vazio usa RABBITMQ_DEFAULT_USER)' },
     { key: 'password', label: 'Senha (só nesta sessão)', secret: true },
   ],
   fix: [
@@ -52,6 +55,8 @@ const FIELDS: Record<ConfigTab, readonly FieldDef[]> = {
     { key: 'port', label: 'Porta' },
     { key: 'senderCompId', label: 'SenderCompID' },
     { key: 'targetCompId', label: 'TargetCompID' },
+    { key: 'resetSeqNum', label: 'Zerar sequência no próximo Logon (141=Y)', checkbox: true },
+    { key: 'sendNextExpected', label: 'Enviar NextExpectedMsgSeqNum (789)', checkbox: true },
   ],
   ws: [
     { key: 'host', label: 'Host' },
@@ -76,7 +81,7 @@ export function ConfigModal({ onClose }: ConfigModalProps): JSX.Element {
   };
 
   const onChange = (def: FieldDef) => (event: ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value;
+    const value = def.checkbox ? String(event.target.checked) : event.target.value;
     if (def.secret) {
       const next = tab === 'rabbit' ? { rabbitPassword: value } : { wsToken: value };
       setSecrets(next);
@@ -131,17 +136,24 @@ export function ConfigModal({ onClose }: ConfigModalProps): JSX.Element {
         aria-labelledby={`${baseId}-tab-${tab}`}
         className={styles.panel}
       >
-        {FIELDS[tab].map((def) => (
-          <label key={def.key} className={styles.field}>
-            <span>{def.label}</span>
-            <input
-              type={def.secret ? 'password' : 'text'}
-              autoComplete={def.secret ? 'off' : undefined}
-              value={valueOf(def)}
-              onChange={onChange(def)}
-            />
-          </label>
-        ))}
+        {FIELDS[tab].map((def) =>
+          def.checkbox ? (
+            <label key={def.key} className={styles.check}>
+              <input type="checkbox" checked={valueOf(def) === 'true'} onChange={onChange(def)} />
+              <span>{def.label}</span>
+            </label>
+          ) : (
+            <label key={def.key} className={styles.field}>
+              <span>{def.label}</span>
+              <input
+                type={def.secret ? 'password' : 'text'}
+                autoComplete={def.secret ? 'off' : undefined}
+                value={valueOf(def)}
+                onChange={onChange(def)}
+              />
+            </label>
+          ),
+        )}
       </div>
     </aside>
   );

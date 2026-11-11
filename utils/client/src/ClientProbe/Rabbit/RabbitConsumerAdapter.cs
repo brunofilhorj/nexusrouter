@@ -41,6 +41,18 @@ public sealed class RabbitConsumerAdapter : ProbeAdapterBase
         SetState(ProbeState.Connecting);
         SetEndpoint(rabbit.Endpoint);
 
+        var userName = rabbit.Username ?? Environment.GetEnvironmentVariable(rabbit.UsernameEnvVar);
+        // The modal password lives only in this factory/connection; it is never stored elsewhere.
+        var password = rabbit.Password ?? Environment.GetEnvironmentVariable(rabbit.PasswordEnvVar);
+        if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(password))
+        {
+            // RabbitMQ refuses a blank user/password and the client only reports "endpoints not reachable".
+            SetState(
+                ProbeState.Faulted,
+                $"Credenciais RabbitMQ ausentes: preencha usuário e senha no modal ou defina {rabbit.UsernameEnvVar} e {rabbit.PasswordEnvVar} no ambiente do probe.");
+            return;
+        }
+
         try
         {
             var factory = new ConnectionFactory
@@ -48,9 +60,8 @@ public sealed class RabbitConsumerAdapter : ProbeAdapterBase
                 HostName = rabbit.Host,
                 Port = rabbit.Port,
                 VirtualHost = rabbit.VirtualHost,
-                UserName = Environment.GetEnvironmentVariable(rabbit.UsernameEnvVar) ?? "",
-                // The modal password lives only in this factory/connection; it is never stored elsewhere.
-                Password = rabbit.Password ?? Environment.GetEnvironmentVariable(rabbit.PasswordEnvVar) ?? "",
+                UserName = userName,
+                Password = password,
                 AutomaticRecoveryEnabled = false,
                 DispatchConsumersAsync = false,
             };
@@ -81,8 +92,30 @@ public sealed class RabbitConsumerAdapter : ProbeAdapterBase
             or OperationInterruptedException or IOException or ArgumentException or InvalidOperationException)
         {
             CloseAll();
-            SetState(ProbeState.Faulted, ex.Message);
+            SetState(ProbeState.Faulted, Describe(ex));
         }
+    }
+
+    /// <summary>
+    /// <see cref="BrokerUnreachableException"/> hides the real cause (refused login, refused socket)
+    /// behind a generic message. Appends the innermost cause so the card shows what happened.
+    /// </summary>
+    /// <param name="ex">Exception raised while connecting.</param>
+    /// <returns>Message for the connection card.</returns>
+    public static string Describe(Exception ex)
+    {
+        var root = ex;
+        while (root.InnerException is not null)
+        {
+            root = root.InnerException;
+        }
+
+        if (root is AuthenticationFailureException or PossibleAuthenticationFailureException)
+        {
+            return $"{ex.Message} Causa: autenticação recusada pelo broker ({root.Message}).";
+        }
+
+        return ReferenceEquals(root, ex) ? ex.Message : $"{ex.Message} Causa: {root.Message}";
     }
 
     /// <inheritdoc />

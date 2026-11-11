@@ -11,6 +11,7 @@ namespace ClientProbe.Probe;
 /// <param name="UsernameEnvVar">Name of the environment variable that holds the user name.</param>
 /// <param name="PasswordEnvVar">Name of the environment variable that holds the password.</param>
 /// <param name="Password">Explicit password sent by the modal. Memory only; null falls back to the environment variable.</param>
+/// <param name="Username">Explicit user name sent by the modal; null falls back to the environment variable.</param>
 public sealed record RabbitProfile(
     string Host,
     int Port,
@@ -19,7 +20,8 @@ public sealed record RabbitProfile(
     string RoutingKey,
     string UsernameEnvVar,
     string PasswordEnvVar,
-    string? Password = null) : ProbeProfile
+    string? Password = null,
+    string? Username = null) : ProbeProfile
 {
     /// <inheritdoc />
     public override ProbeTransport Transport => ProbeTransport.Rabbit;
@@ -34,7 +36,8 @@ public sealed record RabbitProfile(
             .Append(", Port = ").Append(Port)
             .Append(", VirtualHost = ").Append(VirtualHost)
             .Append(", Exchange = ").Append(Exchange)
-            .Append(", RoutingKey = ").Append(RoutingKey);
+            .Append(", RoutingKey = ").Append(RoutingKey)
+            .Append(", Username = ").Append(Username);
         return true;
     }
 }

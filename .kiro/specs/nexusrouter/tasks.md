@@ -1313,6 +1313,24 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
+- [x] TD-14 — ClientProbe: seqnum persistido e entrega JSON do RabbitMQ
+
+**Origem:** TD-13. **Tamanho:** M. **Depende de:** TD-13.
+
+**Objetivo:** O ClientProbe (`utils/client`) acompanha o payload JSON publicado pelo RabbitMQ e mantém o seqnum FIX entre execuções.
+
+**Entradas:** `utils/client/src/ClientProbe` (`Fix/`, `Rabbit/`, `Probe/`, `Telemetry/`, `ClientApp/`), TD-13.
+
+**Passos:**
+1. `FixSeqStore`: persiste o seqnum do initiator do probe, usado por `FixInitiatorAdapter` e `FixSessionWriter`.
+2. `RabbitConsumerAdapter` e `ShortFieldExtractor` leem o corpo JSON do TD-13; perfis (`FixProfile`, `RabbitProfile`, `ProbeProfileParser`) e `appsettings.json` ganham as opções correspondentes.
+3. Painel web (`ConfigModal`, `FixScreen`, `config.ts`, `profile.ts`, `client.ts`) expõe as novas opções.
+4. Testes: `FixInitiatorAdapterTests`, `ShortFieldExtractorTests`, `RabbitConsumerAdapterTests`.
+
+**Saída:** O probe lê mensagens JSON do RabbitMQ e retoma o seqnum FIX da execução anterior.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```

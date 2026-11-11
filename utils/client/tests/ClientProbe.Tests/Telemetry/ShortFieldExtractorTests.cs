@@ -24,6 +24,24 @@ public sealed class ShortFieldExtractorTests
     }
 
     [Fact]
+    public void Extract_JsonEnvelope_FillsShortFields()
+    {
+        var e = Run("""{"type":"exec","msgType":"8","ts":1,"fields":{"11":"ORD1","55":"PETR4","39":"2"}}""");
+        Assert.Equal("8", e.MsgType);
+        Assert.Equal("ORD1", e.Fields["11"]);
+        Assert.Equal("PETR4", e.Fields["55"]);
+        Assert.Equal("2", e.Fields["39"]);
+        Assert.False(e.Fields.ContainsKey("54"));
+    }
+
+    [Fact]
+    public void Extract_InvalidJson_IsParseFailure()
+    {
+        var e = Run("{not json");
+        Assert.Null(e.MsgType);
+    }
+
+    [Fact]
     public void Extract_MissingTags_AreNotListed()
     {
         var e = Run("8=FIX.4.4\u000135=0\u0001");

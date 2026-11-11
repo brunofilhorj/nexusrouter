@@ -76,6 +76,7 @@ public sealed class ProbeProfileParser
     {
         var d = _defaults.Rabbit;
         var password = Optional(source, "password");
+        var username = Optional(source, "username")?.Trim();
         return new RabbitProfile(
             Text(source, "host", d.Host),
             Port(source, "port", d.Port),
@@ -84,7 +85,8 @@ public sealed class ProbeProfileParser
             Text(source, "routingKey", d.RoutingKey),
             Text(source, "usernameEnvVar", d.UsernameEnvVar),
             Text(source, "passwordEnvVar", d.PasswordEnvVar),
-            string.IsNullOrEmpty(password) ? null : password);
+            string.IsNullOrEmpty(password) ? null : password,
+            string.IsNullOrEmpty(username) ? null : username);
     }
 
     private FixProfile ParseFix(JsonElement? source)
@@ -101,7 +103,27 @@ public sealed class ProbeProfileParser
             Port(source, "port", d.Port),
             Text(source, "senderCompId", d.SenderCompId),
             Text(source, "targetCompId", d.TargetCompId),
-            heartBtInt);
+            heartBtInt,
+            Flag(source, "resetSeqNum", d.ResetSeqNum),
+            Flag(source, "sendNextExpected", d.SendNextExpected));
+    }
+
+    private static bool Flag(JsonElement? source, string name, bool fallback)
+    {
+        if (source is not { } obj || !obj.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null or JsonValueKind.Undefined => fallback,
+            JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed) => parsed,
+            JsonValueKind.String when string.IsNullOrWhiteSpace(value.GetString()) => fallback,
+            _ => throw Invalid($"{name} must be true or false."),
+        };
     }
 
     private static string? Optional(JsonElement? source, string name)

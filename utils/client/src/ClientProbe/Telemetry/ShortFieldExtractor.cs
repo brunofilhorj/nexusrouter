@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using ClientProbe.Probe;
 
 namespace ClientProbe.Telemetry;
@@ -20,6 +21,11 @@ public static class ShortFieldExtractor
     /// <returns>The event. <see cref="ProbeEvent.MsgType"/> is null when tag 35 is missing.</returns>
     public static ProbeEvent Extract(ProbeTransport transport, ReadOnlySpan<byte> frame, DateTimeOffset receivedAt, int previewLength)
     {
+        if (!frame.IsEmpty && frame[0] == (byte)'{')
+        {
+            return ExtractJson(transport, frame, receivedAt, previewLength);
+        }
+
         string? msgType = null;
         Dictionary<string, string>? fields = null;
         var rest = frame;
@@ -51,6 +57,52 @@ public static class ShortFieldExtractor
                     break;
                 }
             }
+        }
+
+        return new ProbeEvent(
+            transport,
+            receivedAt,
+            msgType,
+            fields ?? (IReadOnlyDictionary<string, string>)System.Collections.Frozen.FrozenDictionary<string, string>.Empty,
+            Preview(frame, previewLength));
+    }
+
+    /// <summary>
+    /// Reads the router JSON envelope (<c>PayloadEncoding=Json</c>):
+    /// <c>{"type":"exec","msgType":"8","ts":...,"fields":{"11":"..."}}</c>.
+    /// Invalid JSON yields an event with a null <see cref="ProbeEvent.MsgType"/> (parse failure).
+    /// </summary>
+    private static ProbeEvent ExtractJson(ProbeTransport transport, ReadOnlySpan<byte> frame, DateTimeOffset receivedAt, int previewLength)
+    {
+        string? msgType = null;
+        Dictionary<string, string>? fields = null;
+        try
+        {
+            var reader = new Utf8JsonReader(frame);
+            using var doc = JsonDocument.ParseValue(ref reader);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("msgType", out var type) && type.ValueKind == JsonValueKind.String)
+                {
+                    msgType = type.GetString();
+                }
+
+                if (root.TryGetProperty("fields", out var values) && values.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var wanted in FieldTags)
+                    {
+                        if (values.TryGetProperty(wanted, out var value) && value.ValueKind == JsonValueKind.String)
+                        {
+                            (fields ??= [])[wanted] = value.GetString() ?? "";
+                        }
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            msgType = null;
         }
 
         return new ProbeEvent(

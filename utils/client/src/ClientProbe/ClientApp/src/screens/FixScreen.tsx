@@ -40,8 +40,9 @@ export function FixScreen(): JSX.Element {
       />
       {session ? (
         <p className={styles.session}>
-          Sessão {session.senderCompId} → {session.targetCompId} · MsgSeqNum {session.msgSeqNum} · último
-          recebido {session.lastReceivedSeqNum}
+          Sessão {session.senderCompId} → {session.targetCompId} · MsgSeqNum enviado {session.msgSeqNum} · último
+          recebido {session.lastReceivedSeqNum} · próximo esperado {session.nextExpectedSeqNum}
+          {session.gapFrom > 0 ? ` · aguardando reenvio desde ${session.gapFrom}` : ''}
         </p>
       ) : null}
       <StatsRow

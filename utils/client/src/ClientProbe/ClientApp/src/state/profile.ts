@@ -34,12 +34,16 @@ export function buildProfile(transport: ProbeTransport): ProbeProfile {
       });
     }
     case 'rabbit': {
-      const { host, port, exchange, routingKey } = config.rabbit;
-      return compact({ host, port, exchange, routingKey, password: getSecrets().rabbitPassword });
+      const { host, port, exchange, routingKey, username } = config.rabbit;
+      return compact({ host, port, exchange, routingKey, username, password: getSecrets().rabbitPassword });
     }
     case 'fix': {
-      const { host, port, senderCompId, targetCompId } = config.fix;
-      return compact({ host, port, senderCompId, targetCompId });
+      const { host, port, senderCompId, targetCompId, resetSeqNum, sendNextExpected } = config.fix;
+      return {
+        ...compact({ host, port, senderCompId, targetCompId }),
+        resetSeqNum: resetSeqNum === 'true',
+        sendNextExpected: sendNextExpected === 'true',
+      };
     }
   }
 }
