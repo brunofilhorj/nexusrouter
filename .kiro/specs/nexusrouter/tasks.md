@@ -1568,6 +1568,182 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
+### TD-15 — Storage diário e modo de entrega no Logon (contexto comum de TD-15a a TD-15d)
+
+**Origem:** teste manual de 2026-11-11 com o ClientProbe.
+
+**Problema observado:** o `FixOutboundDispatcher.SendAsync` só numera uma mensagem no índice dos clientes já conhecidos (`_known`). O cliente só entra nessa lista no primeiro Logon (`Remember`). Mensagens recebidas antes disso ficam apenas no log de ingress. Com `141=Y`, o `ResetClient` abre uma época vazia. Com `789`, não há nada a reenviar porque o índice do cliente está vazio. Resultado: um cliente que conecta no meio do dia não recebe o que já passou, em nenhuma combinação de flags.
+
+**Objetivo:** Um cliente FIX (ClientProbe ou QuickFIX) que conecta durante o dia escolhe entre receber do Logon em diante (`FromLogon`) ou receber tudo do dia (`StartOfDay`). O dia segue o QuickFIX: à meia-noite o router abre um storage novo para o dia. Os brokers continuam com o fluxo atual pelo cursor.
+
+**Decisões do usuário (2026-11-11):**
+- A escolha do modo vem da configuração do acceptor, por dispatcher e por `SenderCompID` (`ClientOverrides`), e pode ser sobrescrita por uma tag do Logon.
+- O dia vira à meia-noite, como no QuickFIX, e o router cria um storage novo para o dia.
+- `141=Y` sempre zera os seqnums dos dois lados. O modo decide se a época nova começa com o histórico do dia ou vazia. Reconexão sem `141=Y` segue a recuperação normal (`789` / `ResendRequest`, TD-07 e TD-08).
+
+A tag `ReplayMode` (19001), os blocos reservados e o uso pelos clientes estão no README, seção "Tags FIX customizadas do NexusRouter", que é a fonte de verdade.
+
+Cada fatia abaixo registra a própria regra em `requirements.md` §2.4.1 e `design.md` §3.4.3/§3.4.7. A virada do storage do router é independente do seqnum do initiator com a B3, que continua com TD-12a/b/c.
+
+---
+
+- [ ] TD-15a — Storage diário: virada à meia-noite
+
+**Tamanho:** M. **Depende de:** TD-07, TD-08, T-44.
+
+**Objetivo:** À meia-noite o router abre um storage novo para o dia, como o QuickFIX.
+
+**Entradas:** contexto (`./scripts/task.sh nexusrouter TD-15`), `design.md` §3.4.3, §3.4.5 e §3.4.6, `SessionLogManager`, `ClientIndex`, `StreamCatchUp`, `BrokerCursorTracker`, `FixOutboundDispatcher`, `FixAcceptedSession`.
+
+**Passos:**
+1. Registrar a regra de virada (novo FR-RPL-14, parte 1) e o fuso no `design.md` §3.4.3.
+2. Opção `SessionLog.DayRolloverTimeZone` (default `America/Sao_Paulo`), validada na subida. Relógio injetável.
+3. À meia-noite: época nova no log de ingress e nos índices por cliente (`{yyyyMMdd}-e{epoch}` do §3.4.6). As sessões aceitas conectadas recebem `Logout` com `Text` e voltam com seq 1.
+4. Restart no mesmo dia não abre storage novo.
+5. Brokers atravessam a virada pela drenagem de época do `StreamCatchUp`, sem perda e sem duplicata além do "ao menos uma vez" do TD-04b.
+6. Testes com relógio injetado: (a) virada abre storage novo, derruba as sessões aceitas e o dia novo começa vazio; (b) restart no mesmo dia não abre storage novo; (c) broker entrega tudo do dia anterior e segue no dia novo.
+
+**Saída:** O storage do router vira à meia-noite, e um restart no mesmo dia continua no storage do dia.
+
+---
+
+- [ ] TD-15b — `ReplayMode`: opção, tag 19001 e modo `FromLogon`
+
+**Tamanho:** P. **Depende de:** TD-15a.
+
+**Objetivo:** O acceptor decide o modo de cada Logon. Esta fatia entrega a decisão e o `FromLogon`. O `StartOfDay` vem na TD-15c.
+
+**Entradas:** contexto (`./scripts/task.sh nexusrouter TD-15`), README "Tags FIX customizadas do NexusRouter", `design.md` §3.4.7, `AcceptorRecoveryOptions`, `AcceptorClientOverride`, options do Host, `FixOutboundDispatcher` (`TryAcceptLogon`, `DecideLogon`).
+
+**Passos:**
+1. Registrar os modos e a precedência (FR-RPL-14, parte 2) no `design.md` §3.4.7, incluindo o default.
+2. `Recovery.ReplayMode` (`FromLogon` | `StartOfDay`) em `AcceptorRecoveryOptions`, sobrescrita em `AcceptorClientOverride` e no options do Host, com validação.
+3. Ler a tag 19001 no Logon (`1` = `FromLogon`, `2` = `StartOfDay`). Ela prevalece sobre a configuração. Valor desconhecido leva a `Logout` com `Text`.
+4. O modo só vale quando o Logon abre uma época do cliente: com `141=Y`, ou no primeiro Logon do cliente no dia (índice do dia inexistente). Reconexão sem `141=Y` com índice do dia mantém o TD-07 e o TD-08.
+5. Até a TD-15c, `StartOfDay` é aceito e se comporta como `FromLogon`, com `WARN` no log.
+6. Métrica e log do modo aplicado por Logon.
+7. Testes: (a) `FromLogon` recebe só o tráfego ao vivo; (b) a tag sobrescreve a configuração; (c) valor inválido recebe `Logout`; (d) reconexão sem `141=Y` segue o TD-07 e o TD-08.
+
+**Saída:** O modo de cada Logon é resolvido e aplicado. `FromLogon` funciona de ponta a ponta.
+
+---
+
+- [ ] TD-15c — Modo `StartOfDay`: backfill do dia no índice do cliente
+
+**Tamanho:** P. **Depende de:** TD-15b.
+
+**Objetivo:** Um cliente com `StartOfDay` recebe tudo do dia a partir do seq 1 e depois o tráfego ao vivo.
+
+**Entradas:** contexto (`./scripts/task.sh nexusrouter TD-15`), `design.md` §3.4.4 (escritores do `.cidx`, transição channel ↔ log), `FixOutboundDispatcher.SendAsync`, `ClientIndex`, `ISessionLog` (leitura do log de ingress), `FixAcceptedSession`.
+
+**Passos:**
+1. Ao abrir a época do cliente com `StartOfDay`, numerar no `.cidx`, a partir de 1, todas as mensagens de aplicação do log de ingress do dia, na ordem do log. Só depois o cliente entra na numeração ao vivo do `SendAsync`.
+2. Na junção entre backfill e ao vivo, não pode haver buraco nem duplicata para uma mensagem que chegue durante o backfill. Registrar o mecanismo no `design.md` §3.4.4.
+3. A entrega do backfill usa o caminho de reenvio da sessão (fora do hot path).
+4. Métrica e log da quantidade de mensagens do backfill.
+5. Remover o `WARN` provisório da TD-15b.
+6. Testes: (a) cliente novo com `StartOfDay` recebe as N mensagens anteriores e depois as ao vivo, em ordem e sem duplicata; (b) `141=Y` com `StartOfDay` no meio do dia reentrega o dia desde o seq 1; (c) mensagem que chega durante o backfill não se perde nem duplica.
+
+**Saída:** `StartOfDay` entrega o dia inteiro e emenda com o ao vivo sem buraco.
+
+---
+
+- [ ] TD-15d — ClientProbe: seletor do `ReplayMode`
+
+**Tamanho:** P. **Depende de:** TD-15b.
+
+**Objetivo:** O ClientProbe envia a tag 19001 no Logon.
+
+**Entradas:** README "Tags FIX customizadas do NexusRouter", `utils/client/src/ClientProbe` (`Probe/FixProfile.cs`, `Probe/ProbeProfileParser.cs`, `Fix/FixSessionWriter.cs`, `Fix/FixInitiatorAdapter.cs`, `appsettings.json`, painel web).
+
+**Passos:**
+1. Opção do modo no `FixProfile`, no `ProbeProfileParser` e no `appsettings.json` (sem valor = não envia a tag).
+2. O `FixSessionWriter` envia `19001` no Logon quando o modo está definido.
+3. Seletor no painel web, ao lado de "zerar sequência no próximo logon".
+4. Mudar o status da tag 19001 no README para "disponível" quando a TD-15c também estiver entregue.
+5. Testes: `FixSessionWriter` com e sem a tag; parser do perfil.
+
+**Saída:** Pelo probe, o usuário escolhe receber do Logon em diante ou o dia inteiro.
+
+---
+
+### TD-16 — Log de mensagens FIX legível nas duas pontas (contexto comum de TD-16a e TD-16b)
+
+**Origem:** pedido do usuário em 2026-11-11, para auditoria.
+
+**Problema:** o `.log` binário guarda só o que entrou da B3. O `.cidx` guarda ponteiros, e as administrativas do acceptor ficam sem payload (`kind=2`). O que o initiator envia à B3 não é gravado. Hoje uma auditoria não prova o que o router enviou nem para a B3 nem para os clientes. O Timescale (`ingress_fix_messages`) cobre só a entrada.
+
+**Decisões do usuário (2026-11-11):**
+- Log separado, legível como o `messages.log` do QuickFIX (frame com SOH, uma mensagem por linha), sem mexer no formato binário de recuperação.
+- Nenhuma mensagem pode ficar fora do log de auditoria. Descartar está proibido.
+
+**Desenho que cumpre as duas decisões:** o texto é uma **projeção** de logs binários duráveis, nunca alimentado por channel em memória. Um writer em background lê o que já está `committed` e grava o texto, com cursor persistido. Se ele atrasar, o atraso vira métrica de lag, sem perda e sem bloquear o hot path. Depois de uma queda, ele retoma do cursor. Para isso, a saída também precisa estar num log binário (TD-16a).
+
+---
+
+- [ ] TD-16a — Log binário de saída: acceptor e initiator
+
+**Tamanho:** M. **Depende de:** TD-15a.
+
+**Objetivo:** Todo frame que o router escreve num socket FIX fica gravado num log binário durável, antes do envio.
+
+**Entradas:** contexto (`./scripts/task.sh nexusrouter TD-16`), `design.md` §3.4.3 a §3.4.6, `SessionLogManager`/`SessionLogStream`, `FixAcceptedSession` (escritor do socket), `FixSession` (envio do initiator), `SessionLogAppendBenchmark`.
+
+**Passos:**
+1. Registrar no `design.md` §3.4.6 o stream de saída por sessão (pastas, época e dia seguindo a TD-15a) e a regra write-ahead: grava antes de escrever no socket. Um frame gravado e não enviado por queda é aceitável, como no QuickFIX. Enviado sem gravar, nunca.
+2. Acceptor: os bytes finais de cada frame (aplicação reescrita, administrativas, gap-fill e reenvio com `43`/`122`) são gravados pelo escritor único do socket, fora do hot path de ingress.
+3. Initiator: os frames enviados à B3 (Logon, Heartbeat, TestRequest, ResendRequest, Reject, Logout) são gravados no stream de saída da sessão.
+4. Falha de append segue o §3.4.4: estado degradado, métrica e alerta, e a entrega continua (decisão do usuário, 2026-11-11). O frame enviado sem gravação não entra no log de saída, e o trecho fica marcado como degradado para a auditoria. A prevenção é o alerta de disco da TD-17.
+5. Benchmark: custo do append por frame de saída e latência de entrega ao cliente antes e depois.
+6. Testes: cada tipo de frame enviado aparece no log de saída, na ordem do socket; queda simulada entre append e envio.
+
+**Saída:** O que o router envia, nas duas pontas, fica num log binário recuperável.
+
+---
+
+- [ ] TD-16b — Projeção legível `messages.log` com cursor
+
+**Tamanho:** M. **Depende de:** TD-16a.
+
+**Objetivo:** Um arquivo de texto por sessão e por dia, legível como o do QuickFIX, com entrada e saída, sem perda.
+
+**Entradas:** contexto (`./scripts/task.sh nexusrouter TD-16`), `design.md` §3.4.6, resultado da TD-16a, `SessionLogManager`, options do `SessionLog`.
+
+**Passos:**
+1. Registrar no `design.md` o formato da linha (timestamp UTC, direção `IN`/`OUT`, sessão, frame com SOH preservado) e o caminho dos arquivos por dia.
+2. Writer em background por sessão que lê os streams de entrada e de saída até o `committed`, intercala por ordem de gravação e grava o texto. Cursor persistido por stream. Na abertura, confere a última linha para não duplicar.
+3. Métrica de lag do writer (mensagens e tempo atrás do `committed`) e alerta.
+4. A retenção do texto segue a do log binário, por dia (TD-15a). Opção para retenção maior do texto, se necessária para auditoria.
+5. Testes: (a) toda mensagem de entrada e de saída aparece uma vez, na ordem; (b) queda do processo e restart não perdem nem duplicam linhas; (c) writer atrasado não afeta o hot path e alcança depois.
+
+**Saída:** `messages.log` legível por sessão e por dia, com tudo o que entrou e saiu, reconstruível a partir dos logs binários.
+
+---
+
+- [ ] TD-17 — Alerta de disco perto do limite (80% moderado, 90% crítico)
+
+**Origem:** pedido do usuário em 2026-11-11, junto com a decisão do TD-16a (falha de append mantém a entrega). **Tamanho:** P. **Depende de:** TD-04, T-33, T-34.
+
+**Problema:** o alerta do §3.4.4 só dispara quando o append já falhou, com o disco cheio. A partir daí o trecho fica sem gravação para recuperação e para auditoria. Não há aviso antes.
+
+**Objetivo:** Avisar com antecedência quando o volume do storage se aproxima do limite: 80% de uso é alerta moderado, 90% é crítico.
+
+**Entradas:** `design.md` §3.4.4 (Falha de escrita) e §3.4.6, `SessionLogManager` (task de pré-alocação e rotação), options do `SessionLog`, instrumentação do T-33 e endpoint do T-34.
+
+**Passos:**
+1. Registrar a regra no `design.md` §3.4.4, ao lado de "Falha de escrita".
+2. Opções `SessionLog.DiskWarningPercent` (default 80), `SessionLog.DiskCriticalPercent` (default 90) e `SessionLog.DiskCheckIntervalSeconds`, validadas na subida (warning < critical ≤ 100).
+3. Task de background (nunca o hot path) mede o volume de `SessionLog.Directory` e de toda pasta do storage que esteja em outro volume (inclusive a do TD-16b).
+4. Métricas: gauge `sessionlog_disk_used_ratio` e `sessionlog_disk_free_bytes` por volume, e gauge de nível (`0` ok, `1` moderado, `2` crítico).
+5. Log na troca de nível: `Warning` ao passar de 80%, `Critical` ao passar de 90%, `Information` ao voltar. O nível também vai como evento para o channel de auditoria. Com o nível ativo, repetir o log em intervalo configurável, sem inundar.
+6. Os segmentos são pré-alocados (`SegmentSizeMB`). Antes de pré-alocar o próximo segmento, a task confere se ele cabe sem cruzar o nível crítico e, se não couber, emite o crítico na hora.
+7. Documentar no README as métricas e um exemplo de regra Prometheus para os dois níveis. O Alertmanager e o roteamento do alerta ficam fora do repositório.
+8. Testes com medidor de disco injetado: 79% sem alerta; 80% moderado; 90% crítico; volta abaixo de 80% normaliza; pré-alocação que cruzaria 90% emite crítico; opções inválidas falham na subida.
+
+**Saída:** O operador recebe alerta moderado a 80% e crítico a 90% de uso do volume do storage, antes de o append falhar.
+
+---
+
 ## Mapa de Dependências entre Tarefas
 
 ```
@@ -1654,9 +1830,16 @@ TD-06 ── TD-11 (SequenceReset recebido no initiator)
 TD-04 + TD-05 ── TD-12a (registrar dia e fuso; bloqueada na decisão)
                  └── TD-12b (BeginEpoch no primeiro Logon)
                       └── TD-12c (domingo e retenção)
+TD-07 + TD-08 + T-44 ── TD-15a (storage diário, virada à meia-noite)
+                        ├── TD-15b (ReplayMode: opção, tag 19001, FromLogon)
+                        │    ├── TD-15c (StartOfDay: backfill do dia)
+                        │    └── TD-15d (ClientProbe: seletor do modo)
+                        └── TD-16a (log binário de saída, acceptor e initiator)
+                             └── TD-16b (projeção legível messages.log)
+TD-04 + T-33 + T-34 ── TD-17 (alerta de disco 80% / 90%)
 
 TD-04 inclui o portão de latência do append (FR-RPL-09); TD-04a só começa com ele aprovado.
 
 Ordem de execução: TD-01 a TD-08 estão concluídos. T-44, T-47 e T-48 também.
-Pendentes: Fase 10 (T-49a a T-53) e, independentes entre si, TD-10a a TD-10d, TD-11 e TD-12a a TD-12c.
+Pendentes: Fase 10 (T-49a a T-53) e, independentes entre si, TD-10a a TD-10d, TD-11, TD-12a a TD-12c, TD-15a a TD-15d, TD-16a a TD-16b e TD-17.
 ```
