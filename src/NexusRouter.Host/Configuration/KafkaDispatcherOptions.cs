@@ -93,6 +93,11 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
     public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
 
     /// <summary>
+    /// Tags FIX carimbadas como record headers. Vazio mantém só o header de idempotência.
+    /// </summary>
+    public List<int> HeaderFields { get; init; } = [];
+
+    /// <summary>
     /// <inheritdoc />
     public override ValidateOptionsResult Validate(string? name) => Validate(name, this);
 
@@ -137,6 +142,7 @@ public sealed class KafkaDispatcherOptions : DispatcherOptions, IValidateOptions
             ConfigurationChecks.Add(failures, ConfigurationChecks.Positive(options.PartitionCount, nameof(options.PartitionCount)));
         }
 
+        ConfigurationChecks.Add(failures, BrokerHeaderFields.TagsError(options.HeaderFields));
         return ConfigurationChecks.From(failures);
     }
 
