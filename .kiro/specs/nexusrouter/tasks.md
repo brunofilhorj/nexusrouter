@@ -1412,7 +1412,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-10b — Scanner das tags configuradas no consume loop
+- [x] TD-10b — Scanner das tags configuradas no consume loop
 
 **Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10a.
 
@@ -1428,7 +1428,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-10c — Routing key e headers no RabbitMQ
+- [x] TD-10c — Routing key e headers no RabbitMQ
 
 **Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10b.
 
@@ -1444,7 +1444,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-10d — Record headers no Kafka
+- [x] TD-10d — Record headers no Kafka
 
 **Origem:** `notes/replay-rethink.md` §3. **Tamanho:** P. **Depende de:** TD-10b.
 

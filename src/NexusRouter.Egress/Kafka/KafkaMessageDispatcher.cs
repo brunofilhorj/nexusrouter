@@ -45,6 +45,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         int? partition,
         byte[] value,
         string? identity,
+        Headers? headers,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -89,6 +90,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
     /// <param name="publish">Publicação usada no lugar do producer.</param>
     /// <param name="tracker">Marca-d'água do cursor.</param>
     /// <param name="catchUp">Cursor do log de sessão.</param>
+    /// <param name="partitionStrategy">Estratégia de partição usada pelo envio de teste.</param>
     internal KafkaMessageDispatcher(
         string dispatcherId,
         KafkaDispatcherOptions options,
@@ -97,8 +99,9 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         ISecretResolver secretResolver,
         KafkaPublish publish,
         BrokerCursorTracker? tracker,
-        StreamCatchUp? catchUp)
-        : this(dispatcherId, options, logger, payloadPool, secretResolver, partitionStrategy: null, catchUp, tracker)
+        StreamCatchUp? catchUp,
+        IKafkaPartitionStrategy? partitionStrategy = null)
+        : this(dispatcherId, options, logger, payloadPool, secretResolver, partitionStrategy, catchUp, tracker)
     {
         ArgumentNullException.ThrowIfNull(publish);
         _publish = publish;
@@ -158,6 +161,8 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         }
 
         string? identity = BrokerIdentity.Format(payload.LogRef);
+        ReadOnlyMemory<byte>?[] fieldValues = BrokerHeaderFields.ReadValues(payload, Options.HeaderFields);
+        Headers? headers = CreateHeaders(identity, Options.HeaderFields, fieldValues);
         if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
         {
             _tracker?.Track(payload.LogRef);
@@ -180,6 +185,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
             _partitionStrategy.GetPartition(payload),
             value,
             identity,
+            headers,
             cancellationToken).ConfigureAwait(false);
 
         if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
@@ -193,6 +199,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         int? partition,
         byte[] value,
         string? identity,
+        Headers? headers,
         CancellationToken cancellationToken)
     {
         IProducer<Null, byte[]> producer = _producer
@@ -200,7 +207,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         var message = new Message<Null, byte[]>
         {
             Value = value,
-            Headers = CreateHeaders(identity),
+            Headers = headers,
         };
 
         if (Options.Acks == 0)
@@ -221,14 +228,37 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         await producer.ProduceAsync(topic, message, cancellationToken).ConfigureAwait(false);
     }
 
-    private static Headers? CreateHeaders(string? identity)
+    private static Headers? CreateHeaders(
+        string? identity,
+        IReadOnlyList<int> headerFields,
+        ReadOnlyMemory<byte>?[] fieldValues)
     {
-        if (identity is null)
+        bool hasField = false;
+        for (int i = 0; i < fieldValues.Length; i++)
+        {
+            hasField |= fieldValues[i] is not null;
+        }
+
+        if (identity is null && !hasField)
         {
             return null;
         }
 
-        return new Headers { { BrokerIdentity.HeaderName, Encoding.UTF8.GetBytes(identity) } };
+        var headers = new Headers();
+        if (identity is not null)
+        {
+            headers.Add(BrokerIdentity.HeaderName, Encoding.UTF8.GetBytes(identity));
+        }
+
+        for (int i = 0; i < fieldValues.Length; i++)
+        {
+            if (fieldValues[i] is ReadOnlyMemory<byte> value)
+            {
+                headers.Add(BrokerHeaderFields.HeaderName(headerFields[i]), value.ToArray());
+            }
+        }
+
+        return headers;
     }
 
     private void ProduceFireAndForget(IProducer<Null, byte[]> producer, Message<Null, byte[]> message, int? partition)

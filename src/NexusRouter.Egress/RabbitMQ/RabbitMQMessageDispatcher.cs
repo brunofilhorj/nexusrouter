@@ -44,6 +44,8 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
     internal delegate ValueTask RabbitPublish(
         ReadOnlyMemory<byte> body,
         string? identity,
+        string routingKey,
+        Dictionary<string, object>? headers,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -147,6 +149,9 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         }
 
         string? identity = BrokerIdentity.Format(payload.LogRef);
+        ReadOnlyMemory<byte>?[] fieldValues = BrokerHeaderFields.ReadValues(payload, Options.HeaderFields);
+        string routingKey = BuildRoutingKey(fieldValues);
+        Dictionary<string, object>? headers = CreateHeaders(identity, fieldValues);
         if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
         {
             _tracker?.Track(payload.LogRef);
@@ -154,19 +159,19 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
 
         if (_publish is not null)
         {
-            await _publish(body, identity, cancellationToken).ConfigureAwait(false);
+            await _publish(body, identity, routingKey, headers, cancellationToken).ConfigureAwait(false);
         }
         else
         {
             try
             {
-                Publish(body, identity);
+                Publish(body, routingKey, headers);
             }
             catch (Exception ex) when (ex is AlreadyClosedException or BrokerUnreachableException or InvalidOperationException)
             {
                 Logger.LogWarning(ex, "Dispatcher {DispatcherId} perdeu o canal RabbitMQ e vai reconectar.", DispatcherId);
                 Open();
-                Publish(body, identity);
+                Publish(body, routingKey, headers);
             }
         }
 
@@ -176,14 +181,17 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         }
     }
 
-    private void Publish(ReadOnlyMemory<byte> body, string? identity)
+    private void Publish(
+        ReadOnlyMemory<byte> body,
+        string routingKey,
+        Dictionary<string, object>? headers)
     {
         lock (_connectionGate)
         {
             IModel model = _model ?? throw new InvalidOperationException("O model RabbitMQ não está aberto.");
             IBasicProperties? properties = null;
             bool json = Options.PayloadEncoding == BrokerPayloadEncoding.Json;
-            if (identity is not null || json)
+            if (headers is not null || json)
             {
                 properties = model.CreateBasicProperties();
                 if (json)
@@ -191,16 +199,13 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
                     properties.ContentType = "application/json";
                 }
 
-                if (identity is not null)
+                if (headers is not null)
                 {
-                    properties.Headers = new Dictionary<string, object>
-                    {
-                        [BrokerIdentity.HeaderName] = Encoding.UTF8.GetBytes(identity),
-                    };
+                    properties.Headers = headers;
                 }
             }
 
-            model.BasicPublish(Options.Exchange, Options.RoutingKey, mandatory: false, basicProperties: properties, body: body);
+            model.BasicPublish(Options.Exchange, routingKey, mandatory: false, basicProperties: properties, body: body);
             if (Options.CursorAckMode != CursorAckMode.OnBrokerAck)
             {
                 return;
@@ -211,6 +216,81 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
                 throw new TimeoutException($"O dispatcher {DispatcherId} não recebeu a confirmação do RabbitMQ.");
             }
         }
+    }
+
+    private string BuildRoutingKey(ReadOnlyMemory<byte>?[] fieldValues)
+    {
+        string? template = Options.RoutingKeyTemplate;
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return Options.RoutingKey;
+        }
+
+        var builder = new StringBuilder(template.Length);
+        for (int i = 0; i < template.Length; i++)
+        {
+            if (template[i] != '<')
+            {
+                builder.Append(template[i]);
+                continue;
+            }
+
+            int end = template.IndexOf('>', i + 1);
+            int tag = int.Parse(template.AsSpan(i + 1, end - i - 1), System.Globalization.CultureInfo.InvariantCulture);
+            int tagIndex = FindHeaderField(tag);
+            ReadOnlyMemory<byte>? value = fieldValues[tagIndex];
+            builder.Append(value is ReadOnlyMemory<byte> bytes
+                ? Encoding.UTF8.GetString(bytes.Span)
+                : BrokerHeaderFields.MissingValueMarker);
+            i = end;
+        }
+
+        return builder.ToString();
+    }
+
+    private Dictionary<string, object>? CreateHeaders(
+        string? identity,
+        ReadOnlyMemory<byte>?[] fieldValues)
+    {
+        bool hasField = false;
+        for (int i = 0; i < fieldValues.Length; i++)
+        {
+            hasField |= fieldValues[i] is not null;
+        }
+
+        if (identity is null && !hasField)
+        {
+            return null;
+        }
+
+        var headers = new Dictionary<string, object>();
+        if (identity is not null)
+        {
+            headers.Add(BrokerIdentity.HeaderName, Encoding.UTF8.GetBytes(identity));
+        }
+
+        for (int i = 0; i < fieldValues.Length; i++)
+        {
+            if (fieldValues[i] is ReadOnlyMemory<byte> value)
+            {
+                headers.Add(BrokerHeaderFields.HeaderName(Options.HeaderFields[i]), value.ToArray());
+            }
+        }
+
+        return headers;
+    }
+
+    private int FindHeaderField(int tag)
+    {
+        for (int i = 0; i < Options.HeaderFields.Count; i++)
+        {
+            if (Options.HeaderFields[i] == tag)
+            {
+                return i;
+            }
+        }
+
+        throw new InvalidOperationException($"A tag FIX {tag} não está configurada em HeaderFields.");
     }
 
     private void Open()

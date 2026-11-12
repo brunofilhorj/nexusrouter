@@ -45,6 +45,7 @@ public sealed class RabbitMQDispatcherOptions
     /// <summary>
     /// Template hierárquico, por exemplo <c>fix.&lt;1&gt;.&lt;55&gt;</c>.
     /// Nulo ou vazio mantém <see cref="RoutingKey"/>. Cada placeholder tem de estar em <see cref="HeaderFields"/>.
+    /// Uma tag ausente na mensagem usa <c>_missing</c> na routing key.
     /// </summary>
     public string? RoutingKeyTemplate { get; init; }
 
@@ -69,7 +70,7 @@ public sealed class RabbitMQDispatcherOptions
     public BrokerPayloadEncoding PayloadEncoding { get; init; } = BrokerPayloadEncoding.Json;
 
     /// <summary>
-    /// Tags FIX carimbadas nos headers da mensagem. Vazio mantém só o header de idempotência.
+    /// Tags FIX carimbadas nos headers da mensagem como <c>FIX-{tag}</c>. Vazio mantém só o header de idempotência.
     /// </summary>
     public IReadOnlyList<int> HeaderFields { get; init; } = [];
 
