@@ -364,6 +364,18 @@ public sealed class FixSessionIntegrationTests
     {
         public ISessionLogReader Reader { get; } = new NullReader();
 
+        public event Func<CancellationToken, ValueTask>? DayRolloverStarting
+        {
+            add { }
+            remove { }
+        }
+
+        public event Action? DayRolloverCompleted
+        {
+            add { }
+            remove { }
+        }
+
         public ISessionLogStream OpenStream(string sessionId) => new NullStream();
 
         public ClientBinding OpenClient(string dispatcherId, string clientKey) =>

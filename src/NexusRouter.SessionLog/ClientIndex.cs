@@ -92,6 +92,43 @@ internal sealed unsafe class ClientIndex : IClientIndex, IDisposable
     }
 
     /// <summary>
+    /// Finds the newest daily index and its epoch under a client directory.
+    /// </summary>
+    /// <param name="directory">Client directory.</param>
+    /// <param name="day">Trading day of the newest index.</param>
+    /// <param name="epoch">Epoch encoded in the newest index name.</param>
+    /// <returns>True when at least one valid daily index exists.</returns>
+    public static bool TryGetLatestIndex(string directory, out DateOnly day, out int epoch)
+    {
+        day = default;
+        epoch = 0;
+        if (!Directory.Exists(directory))
+        {
+            return false;
+        }
+
+        bool found = false;
+        foreach (string file in Directory.GetFiles(directory, "*.cidx"))
+        {
+            string name = Path.GetFileName(file);
+            if (!SessionLogPaths.TryParseTradingDay(name, out DateOnly candidateDay)
+                || !TryReadEpoch(name, out int candidateEpoch))
+            {
+                continue;
+            }
+
+            if (!found || candidateDay > day || (candidateDay == day && candidateEpoch > epoch))
+            {
+                found = true;
+                day = candidateDay;
+                epoch = candidateEpoch;
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
     /// Highest sequence whose <c>kind</c> is already non-zero. Zero when none is published.
     /// </summary>
     /// <returns>The sequence, or zero.</returns>
@@ -215,6 +252,20 @@ internal sealed unsafe class ClientIndex : IClientIndex, IDisposable
             + epoch.ToString("D3", System.Globalization.CultureInfo.InvariantCulture)
             + ".cidx";
         return new MappedFile(Path.Combine(_directory, name), _slots * 16L);
+    }
+
+    private static bool TryReadEpoch(string fileName, out int epoch)
+    {
+        ReadOnlySpan<char> name = fileName;
+        int marker = name.LastIndexOf("-e", StringComparison.Ordinal);
+        if (marker < 0 || !int.TryParse(name[(marker + 2)..^5], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out epoch))
+        {
+            epoch = 0;
+            return false;
+        }
+
+        return true;
     }
 
     private void WriteSlot(long seq, byte kind, ushort stream, uint segment, ulong offset)

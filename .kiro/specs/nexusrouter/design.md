@@ -309,6 +309,8 @@ Hypertable em `ingress_ts`, `chunk_time_interval = 1 day`. Script de bootstrap e
 
 > **Revisão de 2026-11-06 (`notes/backlog-sessao-fix.md`).** A versão anterior desta seção guardava o replay por cliente na hypertable `client_replay_messages`, com opt-in diário. Ela foi substituída por um log de sessão em arquivo que grava **todas** as mensagens antes do fan-out. A hypertable não será criada; o PostgreSQL + TimescaleDB fica só com a auditoria (`ingress_fix_messages`).
 
+**FR-RPL-14 (parte 1) — virada do storage.** O dia de storage vira à meia-noite no fuso configurado em `SessionLog.DayRolloverTimeZone` (padrão `America/Sao_Paulo`). Na virada, o log de ingress e os índices por cliente passam para uma época nova, com os arquivos nomeados `{yyyyMMdd}-e{epoch}`; os seqnums dos clientes começam em 1. Sessões FIX aceitas que estiverem conectadas recebem `Logout` com `Text` e são fechadas. Um restart durante o mesmo dia reabre os arquivos existentes, sem criar outra época. Dispatchers de broker drenam a época anterior pelo `StreamCatchUp` antes de entregar a nova, preservando a garantia de ao menos uma vez.
+
 **Por que arquivo, e não a hypertable:** a recuperação de sessão é o caminho de que a entrega ao vivo depende. A gravação em banco é assíncrona e, se virasse síncrona, acrescentaria milissegundos e uma dependência externa ao caminho que menos pode ter as duas. O log em arquivo é append sequencial no page cache, na casa dos microssegundos, e sobrevive a crash de processo sem o banco de pé. O Timescale continua servindo a auditoria e o histórico de longo prazo, onde a latência não importa.
 
 **Formato.** Segmentos append-only por stream de ingress, rotacionados por dia de pregão e por época (um reset de seqnum ou a virada de pregão começa uma época nova). Cada segmento tem:
@@ -405,7 +407,7 @@ O princípio é que o seq de saída pode saltar, mas nunca voltar. Saltar é per
 
 | Item | Regra |
 |---|---|
-| `state.json` | JSON legível, gravado pelo flusher (§3.4.4), por escrita em arquivo temporário + rename atômico. Campos: `nextOut`, `nextInExpected`, `epoch`, `updatedAt`. |
+| `state.json` | JSON legível, gravado pelo flusher (§3.4.4), por escrita em arquivo temporário + rename atômico. Campos: `nextOut`, `nextInExpected`, `epoch`, `updatedAt`; o estado de cliente também registra `tradingDay` para recuperar corretamente a virada após retenção ou restart. |
 | `.log`, `.index`, `.cidx` | Binários, mapeados em memória, tamanho fixo pré-alocado (`SegmentSizeMB`, `IndexSlotsPerSegment`). |
 | `clean` | Criado no shutdown limpo depois do flush final, removido na abertura (§3.4.5). |
 | Retenção | Apagar pastas `{yyyyMMdd}-e{epoch}` e `.cidx` mais antigos que `RetentionTradingDays`. `state.json` e `cursor.json` não são apagados. |

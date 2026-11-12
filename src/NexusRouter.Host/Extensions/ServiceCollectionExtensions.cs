@@ -236,6 +236,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(configuration);
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.AddSingleton(options.SessionLog);
         services.AddSingleton<SessionLogManager>();
         services.AddSingleton<ISessionLog>(sp => sp.GetRequiredService<SessionLogManager>());

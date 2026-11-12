@@ -1587,7 +1587,7 @@ Cada fatia abaixo registra a própria regra em `requirements.md` §2.4.1 e `desi
 
 ---
 
-- [ ] TD-15a — Storage diário: virada à meia-noite
+- [x] TD-15a — Storage diário: virada à meia-noite
 
 **Tamanho:** M. **Depende de:** TD-07, TD-08, T-44.
 

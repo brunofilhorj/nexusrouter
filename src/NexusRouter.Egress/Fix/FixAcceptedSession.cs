@@ -208,7 +208,19 @@ internal sealed class FixAcceptedSession
     /// </summary>
     /// <param name="cancellationToken">Abandona a espera do loop de escrita e a gravação do sequence number.</param>
     /// <returns>Tarefa concluída quando a sessão parou.</returns>
-    internal async ValueTask StopAsync(CancellationToken cancellationToken)
+    internal ValueTask StopAsync(CancellationToken cancellationToken) =>
+        StopAsync(ReadOnlyMemory<byte>.Empty, cancellationToken);
+
+    /// <summary>
+    /// Sends a Logout with explanatory text and closes the accepted session.
+    /// </summary>
+    /// <param name="text">Logout Text field.</param>
+    /// <param name="cancellationToken">Abandons the wait for the writer and socket cleanup.</param>
+    /// <returns>A task that completes after the session stops.</returns>
+    internal ValueTask StopForDayRolloverAsync(ReadOnlyMemory<byte> text, CancellationToken cancellationToken) =>
+        StopAsync(text, cancellationToken);
+
+    private async ValueTask StopAsync(ReadOnlyMemory<byte> logoutText, CancellationToken cancellationToken)
     {
         if (Interlocked.Exchange(ref _stop, 1) != 0)
         {
@@ -241,7 +253,7 @@ internal sealed class FixAcceptedSession
 
         if (Volatile.Read(ref _logoutSent) == 0)
         {
-            await SendLogoutDirectAsync().ConfigureAwait(false);
+            await SendLogoutDirectAsync(logoutText).ConfigureAwait(false);
         }
 
         try
@@ -330,7 +342,7 @@ internal sealed class FixAcceptedSession
         }
     }
 
-    private async Task SendLogoutDirectAsync()
+    private async Task SendLogoutDirectAsync(ReadOnlyMemory<byte> text)
     {
         if (_pipe is null)
         {
@@ -341,7 +353,7 @@ internal sealed class FixAcceptedSession
         try
         {
             long sequence = NextSequence(admin: true);
-            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence).Length;
+            int written = FixMessageBuilder.BuildLogout(rented, _options, sequence, text.Span).Length;
             Volatile.Write(ref _logoutSent, 1);
             await WritePipeAsync(rented.AsMemory(0, written), CancellationToken.None).ConfigureAwait(false);
         }

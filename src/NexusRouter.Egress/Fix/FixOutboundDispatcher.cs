@@ -33,6 +33,7 @@ namespace NexusRouter.Egress.Fix;
 public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcherOptions>
 {
     private const int ReadBufferBytes = 64 * 1024;
+    private static readonly byte[] DayRolloverText = Encoding.ASCII.GetBytes("Trading day rollover");
 
     private readonly ExponentialBackoffReconnectPolicy _acceptRetry;
     private readonly ConcurrentSessionTable _sessions = new();
@@ -49,6 +50,8 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     private CancellationTokenSource? _acceptCts;
     private Task? _accept;
     private int _stopping;
+    private int _dayRollover;
+    private int _rolloverGateHeld;
     private int _acceptFailures;
 
     /// <summary>
@@ -139,6 +142,9 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         {
             await session.StopAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        _sessionLog.DayRolloverStarting -= OnDayRolloverStartingAsync;
+        _sessionLog.DayRolloverCompleted -= OnDayRolloverCompleted;
     }
 
     /// <inheritdoc />
@@ -148,6 +154,8 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         LoadKnownClients();
         _listener = new TcpListener(address, Options.ListenPort);
         _listener.Start();
+        _sessionLog.DayRolloverStarting += OnDayRolloverStartingAsync;
+        _sessionLog.DayRolloverCompleted += OnDayRolloverCompleted;
         _acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _accept = AcceptLoopAsync(_acceptCts.Token);
         var bound = (IPEndPoint)_listener.LocalEndpoint;
@@ -163,6 +171,11 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     protected override ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
     {
         _ = cancellationToken;
+        if (Volatile.Read(ref _dayRollover) != 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
         ClientBinding[] known = Volatile.Read(ref _known);
         if (known.Length == 0)
         {
@@ -372,6 +385,17 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
+            if (Volatile.Read(ref _dayRollover) != 0)
+            {
+                await WriteRejectLogoutAsync(
+                    stream,
+                    logon.Value.SenderCompId,
+                    "Trading day rollover",
+                    Options.Recovery.LogoutTimeoutSeconds,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             // O SenderCompID vem da rede e vira nome de pasta. Valida antes de tocar no disco.
             if (!ClientKey.TryCreateFix(logon.Value.SenderCompId, out _))
             {
@@ -540,6 +564,28 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     }
 
     private void OnSessionClosed(FixAcceptedSession session) => _sessions.RemoveIfSame(session);
+
+    private async ValueTask OnDayRolloverStartingAsync(CancellationToken cancellationToken)
+    {
+        await _adoptGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Volatile.Write(ref _rolloverGateHeld, 1);
+        Volatile.Write(ref _dayRollover, 1);
+
+        FixAcceptedSession[] sessions = _sessions.Drain();
+        foreach (FixAcceptedSession session in sessions)
+        {
+            await session.StopForDayRolloverAsync(DayRolloverText, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private void OnDayRolloverCompleted()
+    {
+        Volatile.Write(ref _dayRollover, 0);
+        if (Interlocked.Exchange(ref _rolloverGateHeld, 0) != 0)
+        {
+            _adoptGate.Release();
+        }
+    }
 
     private async Task<PendingLogon?> TryReadLogonAsync(Stream stream, CancellationToken cancellationToken)
     {

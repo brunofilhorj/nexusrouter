@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 using NexusRouter.Domain.Abstractions;
 
@@ -20,6 +21,7 @@ internal sealed class ConsumerStateStore : IConsumerState
     private long _nextOut = 1;
     private long _nextInExpected = 1;
     private long _epoch;
+    private int _tradingDay;
 
     /// <summary>
     /// Creates a store. <paramref name="readNextOut"/> supplies the live counter when an index owns it.
@@ -55,6 +57,19 @@ internal sealed class ConsumerStateStore : IConsumerState
         set
         {
             Volatile.Write(ref _epoch, value);
+            _changed?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// Trading day associated with a client state document. Zero means the document predates daily tracking.
+    /// </summary>
+    public int TradingDay
+    {
+        get => Volatile.Read(ref _tradingDay);
+        set
+        {
+            Volatile.Write(ref _tradingDay, value);
             _changed?.Invoke();
         }
     }
@@ -99,6 +114,7 @@ internal sealed class ConsumerStateStore : IConsumerState
         _nextOut = document.NextOut < 1 ? 1 : document.NextOut;
         _nextInExpected = document.NextInExpected < 1 ? 1 : document.NextInExpected;
         _epoch = document.Epoch;
+        _tradingDay = document.TradingDay;
         Copy(document.Expected, _expected);
         Copy(document.Cursors, _cursors);
         return document;
@@ -114,6 +130,7 @@ internal sealed class ConsumerStateStore : IConsumerState
             NextOut = NextOut,
             NextInExpected = NextInExpected,
             Epoch = Epoch,
+            TradingDay = TradingDay,
             UpdatedAt = DateTimeOffset.UtcNow,
             Expected = Dump(_expected),
             Cursors = Dump(_cursors),
@@ -174,6 +191,10 @@ internal sealed class ConsumerStateStore : IConsumerState
 
         /// <summary>Epoch.</summary>
         public long Epoch { get; set; }
+
+        /// <summary>Trading day associated with a client state, as <c>yyyyMMdd</c>.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int TradingDay { get; set; }
 
         /// <summary>When the flusher wrote the file.</summary>
         public DateTimeOffset UpdatedAt { get; set; }

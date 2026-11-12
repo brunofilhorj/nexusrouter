@@ -20,6 +20,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
     private readonly SessionLogOptions _options;
     private readonly ILogger<SessionLogManager> _logger;
+    private readonly TimeProvider _timeProvider;
     private readonly SessionLogMetrics _metrics = new();
     private readonly Dictionary<string, SessionLogStream> _streams = new(StringComparer.Ordinal);
     private readonly Dictionary<ushort, SessionLogStream> _byId = [];
@@ -39,6 +40,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     private Task? _flushTask;
     private Task? _maintainTask;
     private int _tradingDay;
+    private TimeZoneInfo _rolloverTimeZone = TimeZoneInfo.Utc;
     private bool _applyUnclean;
     private int _started;
     private int _stopped;
@@ -48,13 +50,23 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     /// </summary>
     /// <param name="options">Session-log section.</param>
     /// <param name="logger">Recovery, flush, and retention log.</param>
-    public SessionLogManager(SessionLogOptions options, ILogger<SessionLogManager> logger)
+    public SessionLogManager(
+        SessionLogOptions options,
+        ILogger<SessionLogManager> logger,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _options = options;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
+
+    /// <inheritdoc />
+    public event Func<CancellationToken, ValueTask>? DayRolloverStarting;
+
+    /// <inheritdoc />
+    public event Action? DayRolloverCompleted;
 
     /// <summary>
     /// When true, the background task does not pre-allocate the next segment.
@@ -82,8 +94,9 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
             throw new InvalidOperationException("SessionLog options are invalid: " + string.Join("; ", validation.Failures));
         }
 
+        _rolloverTimeZone = TimeZoneInfo.FindSystemTimeZoneById(_options.DayRolloverTimeZone);
         Directory.CreateDirectory(_options.Directory);
-        _tradingDay = TradingDay(DateTime.UtcNow);
+        _tradingDay = CurrentTradingDay();
         string clean = CleanPath();
         _applyUnclean = !File.Exists(clean);
         if (File.Exists(clean))
@@ -149,7 +162,15 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
             ushort id = AssignId(sessionId);
             long capacity = _options.SegmentSizeMB * 1024L * 1024L;
-            var stream = new SessionLogStream(_options.Directory, sessionId, id, capacity, _options.IndexSlotsPerSegment, _logger, _metrics);
+            var stream = new SessionLogStream(
+                _options.Directory,
+                sessionId,
+                id,
+                capacity,
+                _options.IndexSlotsPerSegment,
+                Volatile.Read(ref _tradingDay),
+                _logger,
+                _metrics);
             _streams[sessionId] = stream;
             _byId[id] = stream;
             SaveCatalog();
@@ -179,15 +200,18 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     /// <inheritdoc />
     public ClientBinding ResetClient(string dispatcherId, string clientKey)
     {
-        ClientBinding binding = OpenClient(dispatcherId, clientKey);
-        if (binding.Index is not ClientIndex index)
+        lock (_gate)
         {
-            throw new InvalidOperationException("The client index cannot start a new epoch.");
-        }
+            ClientBinding binding = OpenClient(dispatcherId, clientKey);
+            if (binding.Index is not ClientIndex index)
+            {
+                throw new InvalidOperationException("The client index cannot start a new epoch.");
+            }
 
-        int epoch = index.ResetEpoch();
-        binding.State.Epoch = epoch;
-        return binding;
+            int epoch = index.ResetEpoch();
+            binding.State.Epoch = epoch;
+            return binding;
+        }
     }
 
     /// <inheritdoc />
@@ -323,12 +347,30 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         var store = new ConsumerStateStore(statePath, () => index!.NextOut, Changed);
         ConsumerStateStore.StateDocument? document = store.Load();
         long nextOut = document is null || document.NextOut < 1 ? 1 : document.NextOut;
-        int epoch = document is null ? 0 : (int)document.Epoch;
+        bool hasIndex = ClientIndex.TryGetLatestIndex(directory, out DateOnly indexedDay, out int indexedEpoch);
+        int epoch = document is null ? indexedEpoch : Math.Max((int)document.Epoch, indexedEpoch);
+        bool newTradingDay = hasIndex
+            ? indexedDay != TradingDate(_tradingDay)
+            : document is not null && document.TradingDay != 0 && document.TradingDay != _tradingDay;
+        bool indexHasNewEpoch = hasIndex && document is not null && indexedEpoch > document.Epoch;
+        if (newTradingDay || indexHasNewEpoch)
+        {
+            if (newTradingDay)
+            {
+                epoch++;
+            }
+
+            nextOut = 1;
+            store.Epoch = epoch;
+            store.NextInExpected = 1;
+        }
+
+        store.TradingDay = _tradingDay;
 
         // A varredura abre cada .cidx; precisa vir antes do ClientIndex mapear o arquivo do dia.
         // No Windows, o mapeamento aberto impede outra abertura do mesmo arquivo.
         long uncleanFloor = 0;
-        if (unclean && document is not null)
+        if (unclean && document is not null && !newTradingDay && !indexHasNewEpoch)
         {
             long last = ClientIndex.ScanLastPublished(directory, _options.IndexSlotsPerSegment);
             uncleanFloor = Math.Max(nextOut, last + 1) + _options.UncleanRestartSeqMargin;
@@ -399,7 +441,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
     private void ApplyRetention()
     {
-        DateOnly cutoff = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-_options.RetentionTradingDays);
+        DateOnly cutoff = TradingDate(CurrentTradingDay()).AddDays(-_options.RetentionTradingDays);
         string streams = Path.Combine(_options.Directory, "streams");
         if (Directory.Exists(streams))
         {
@@ -475,17 +517,11 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                await CheckDayRolloverAsync(cancellationToken).ConfigureAwait(false);
                 SessionLogStream[] streams = SnapshotStreams();
                 foreach (SessionLogStream stream in streams)
                 {
-                    stream.Maintain();
-                }
-
-                int day = TradingDay(DateTime.UtcNow);
-                if (day != Volatile.Read(ref _tradingDay))
-                {
-                    Volatile.Write(ref _tradingDay, day);
-                    ApplyRetention();
+                    stream.Maintain(Volatile.Read(ref _tradingDay));
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(_options.CatchUpIdleMs, 50)), cancellationToken).ConfigureAwait(false);
@@ -497,6 +533,69 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         catch (Exception ex)
         {
             _logger.LogError(ex, "The session-log maintenance task stopped.");
+        }
+    }
+
+    private async ValueTask CheckDayRolloverAsync(CancellationToken cancellationToken)
+    {
+        int day = CurrentTradingDay();
+        if (day == Volatile.Read(ref _tradingDay))
+        {
+            return;
+        }
+
+        try
+        {
+            await NotifyDayRolloverStartingAsync(cancellationToken).ConfigureAwait(false);
+            lock (_gate)
+            {
+                Volatile.Write(ref _tradingDay, day);
+                foreach (SessionLogStream stream in _streams.Values)
+                {
+                    stream.Maintain(day);
+                }
+
+                foreach (ClientBinding binding in _clients.Values)
+                {
+                    if (binding.Index is not ClientIndex index)
+                    {
+                        throw new InvalidOperationException("The client index cannot start a new trading day.");
+                    }
+
+                    if (binding.State is not ConsumerStateStore store)
+                    {
+                        throw new InvalidOperationException("The client state cannot track its trading day.");
+                    }
+
+                    store.Epoch = index.ResetEpoch();
+                    store.NextInExpected = 1;
+                    store.TradingDay = day;
+                }
+            }
+
+            ApplyRetention();
+            _logger.LogInformation(
+                "Session-log storage advanced to trading day {TradingDay} in time zone {TimeZone}.",
+                day,
+                _options.DayRolloverTimeZone);
+        }
+        finally
+        {
+            DayRolloverCompleted?.Invoke();
+        }
+    }
+
+    private async ValueTask NotifyDayRolloverStartingAsync(CancellationToken cancellationToken)
+    {
+        Func<CancellationToken, ValueTask>? handlers = DayRolloverStarting;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            await ((Func<CancellationToken, ValueTask>)handler)(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -632,7 +731,19 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         }
     }
 
-    private static int TradingDay(DateTime utc) => utc.Year * 10000 + utc.Month * 100 + utc.Day;
+    private int CurrentTradingDay()
+    {
+        DateTime local = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), _rolloverTimeZone).DateTime;
+        return TradingDay(local);
+    }
+
+    private static DateOnly TradingDate(int tradingDay) =>
+        DateOnly.ParseExact(
+            tradingDay.ToString("D8", System.Globalization.CultureInfo.InvariantCulture),
+            "yyyyMMdd",
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    private static int TradingDay(DateTime local) => local.Year * 10000 + local.Month * 100 + local.Day;
 
     private sealed class Catalog
     {

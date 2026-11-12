@@ -268,6 +268,110 @@ public sealed class SessionLogTests
     }
 
     [Fact]
+    public async Task DailyRollover_UsesConfiguredTimeZoneAndStartsEmptyStorageEpoch()
+    {
+        string directory = NewDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 2, 59, 30, TimeSpan.Zero));
+        var manager = new SessionLogManager(
+            Options(directory, margin: 0),
+            NullLogger<SessionLogManager>.Instance,
+            clock);
+        await manager.StartAsync(CancellationToken.None);
+        try
+        {
+            SessionLogStream stream = (SessionLogStream)manager.OpenStream("EXCH_A");
+            ClientBinding client = manager.OpenClient("FIX_OUT", "OMS1");
+            Assert.True(stream.Append("previous-day"u8, 1, 1).IsOk);
+            long oldClientSequence = client.Index.ReserveSeq();
+            client.Index.PublishAdmin(oldClientSequence);
+
+            clock.Advance(TimeSpan.FromMinutes(2));
+            await WaitUntilAsync(() => client.State.Epoch == 1);
+
+            Assert.Equal(1, client.Index.NextOut);
+            Assert.Equal(1, client.State.NextInExpected);
+            string clientDirectory = Path.Combine(directory, "clients", "FIX_OUT", "OMS1");
+            Assert.True(
+                File.Exists(Path.Combine(clientDirectory, "20261112-e001.cidx")),
+                string.Join(", ", Directory.GetFiles(clientDirectory).Select(Path.GetFileName)));
+
+            AppendResult currentDay = stream.Append("current-day"u8, 1, 2);
+            Assert.True(currentDay.IsOk);
+            Assert.Equal(1, currentDay.Ref.Epoch);
+            Assert.Equal(1, stream.Committed);
+            Assert.True(Directory.Exists(Path.Combine(directory, "streams", "EXCH_A", "20261112-e001")));
+
+            var previous = new ArrayBufferWriter<byte>();
+            Assert.True(manager.Reader.TryRead(stream.StreamId, epoch: 0, inSeq: 1, previous));
+            Assert.Equal("previous-day", Encoding.ASCII.GetString(previous.WrittenSpan));
+        }
+        finally
+        {
+            await manager.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Restart_SameTradingDay_ReusesTheExistingStorageEpoch()
+    {
+        string directory = NewDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 12, 0, 0, TimeSpan.Zero));
+        var options = Options(directory, margin: 0);
+
+        var first = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await first.StartAsync(CancellationToken.None);
+        ISessionLogStream initialStream = first.OpenStream("EXCH_A");
+        ClientBinding initialClient = first.OpenClient("FIX_OUT", "OMS1");
+        Assert.True(initialStream.Append("first"u8, 1, 1).IsOk);
+        long firstClientSequence = initialClient.Index.ReserveSeq();
+        initialClient.Index.PublishAdmin(firstClientSequence);
+        await first.StopAsync(CancellationToken.None);
+
+        var reopened = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await reopened.StartAsync(CancellationToken.None);
+        try
+        {
+            ISessionLogStream stream = reopened.OpenStream("EXCH_A");
+            ClientBinding client = reopened.OpenClient("FIX_OUT", "OMS1");
+            AppendResult appended = stream.Append("second"u8, 2, 2);
+
+            Assert.True(appended.IsOk);
+            Assert.Equal(0, appended.Ref.Epoch);
+            Assert.Equal(2, client.Index.ReserveSeq());
+            Assert.Single(Directory.GetDirectories(Path.Combine(directory, "streams", "EXCH_A")));
+            Assert.True(ClientIndex.TryGetLatestIndex(
+                Path.Combine(directory, "clients", "FIX_OUT", "OMS1"),
+                out DateOnly day,
+                out int epoch));
+            Assert.Equal(new DateOnly(2026, 11, 12), day);
+            Assert.Equal(0, epoch);
+        }
+        finally
+        {
+            await reopened.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public void Validate_UnknownDayRolloverTimeZone_RejectsStartupOptions()
+    {
+        var options = new SessionLogOptions { DayRolloverTimeZone = "not-a-time-zone" };
+
+        Microsoft.Extensions.Options.ValidateOptionsResult result = options.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, failure => failure.Contains("DayRolloverTimeZone", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Append_WhenIoFails_ReturnsFailedAndDegrades()
     {
         await using SessionLogManager manager = CreateManager(out string directory);
@@ -360,7 +464,24 @@ public sealed class SessionLogTests
             FlushMode = margin == 0 ? SessionLogFlushMode.PerMessage : SessionLogFlushMode.Interval,
             FlushIntervalMs = 60_000,
             RetentionTradingDays = retentionDays,
+            CatchUpIdleMs = 20,
         };
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition(), "The expected session-log state was not reached.");
+    }
 
     private static string FindLog(string directory)
     {
@@ -388,5 +509,16 @@ public sealed class SessionLogTests
         catch (UnauthorizedAccessException)
         {
         }
+    }
+
+    private sealed class AdjustableTimeProvider : TimeProvider
+    {
+        private long _utcTicks;
+
+        public AdjustableTimeProvider(DateTimeOffset utcNow) => _utcTicks = utcNow.UtcDateTime.Ticks;
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
     }
 }
