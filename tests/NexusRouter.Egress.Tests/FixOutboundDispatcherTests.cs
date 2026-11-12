@@ -55,6 +55,41 @@ public sealed class FixOutboundDispatcherTests
     }
 
     [Fact]
+    public async Task DayRollover_LogsOutConnectedClientAndReconnectsAtSequenceOne()
+    {
+        string directory = TempDirectory();
+        int port = FreePort();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 2, 59, 30, TimeSpan.Zero));
+        await using var running = await StartAsync(directory, port, allowed: [], timeProvider: clock);
+        try
+        {
+            using TcpClient client = await ConnectAsync(port, "OMS1");
+            Stream clientStream = client.GetStream();
+            Assert.Equal("1", Field(await ReadFrameAsync(clientStream), 34));
+
+            var rollover = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            running.Log.DayRolloverCompleted += () => rollover.TrySetResult();
+            Task<byte[]> logoutTask = ReadFrameAsync(clientStream);
+            clock.Advance(TimeSpan.FromMinutes(2));
+            byte[] logout = await logoutTask;
+            await rollover.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Equal("5", Field(logout, 35));
+            Assert.Equal("Trading day rollover", Field(logout, 58));
+
+            using TcpClient reconnected = await ConnectAsync(port, "OMS1");
+            byte[] logon = await ReadFrameAsync(reconnected.GetStream());
+            Assert.Equal("A", Field(logon, 35));
+            Assert.Equal("1", Field(logon, 34));
+        }
+        finally
+        {
+            await running.DisposeAsync();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_AfterRestart_ContinuesSequenceForThatClient()
     {
         string directory = TempDirectory();
@@ -299,7 +334,8 @@ public sealed class FixOutboundDispatcherTests
         IReadOnlyList<string> allowed,
         AcceptorRecoveryOptions? recovery = null,
         int heartBtInt = 30,
-        int maxClients = 64)
+        int maxClients = 64,
+        TimeProvider? timeProvider = null)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -309,8 +345,10 @@ public sealed class FixOutboundDispatcherTests
                 IndexSlotsPerSegment = 100_000,
                 FlushIntervalMs = 60_000,
                 RetentionTradingDays = 5,
+                CatchUpIdleMs = 20,
             },
-            NullLogger<SessionLogManager>.Instance);
+            NullLogger<SessionLogManager>.Instance,
+            timeProvider);
         await log.StartAsync(CancellationToken.None);
         var dispatcher = new FixOutboundDispatcher(
             "fix-acceptor",
@@ -514,6 +552,17 @@ public sealed class FixOutboundDispatcherTests
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
+    }
+
+    private sealed class AdjustableTimeProvider : TimeProvider
+    {
+        private long _utcTicks;
+
+        public AdjustableTimeProvider(DateTimeOffset utcNow) => _utcTicks = utcNow.UtcDateTime.Ticks;
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
     }
 
     // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.

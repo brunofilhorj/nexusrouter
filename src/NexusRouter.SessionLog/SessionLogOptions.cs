@@ -20,6 +20,11 @@ public sealed class SessionLogOptions : IValidateOptions<SessionLogOptions>
     public int RetentionTradingDays { get; init; } = 5;
 
     /// <summary>
+    /// Time zone used to determine the trading-day boundary. Defaults to São Paulo.
+    /// </summary>
+    public string DayRolloverTimeZone { get; init; } = "America/Sao_Paulo";
+
+    /// <summary>
     /// When the flusher writes consumer state.
     /// </summary>
     public SessionLogFlushMode FlushMode { get; init; } = SessionLogFlushMode.Interval;
@@ -55,7 +60,7 @@ public sealed class SessionLogOptions : IValidateOptions<SessionLogOptions>
     public int SlotPublishTimeoutMs { get; init; } = 1000;
 
     /// <summary>
-    /// Checks the directory, sizes, flush mode, and the unclean-restart margin.
+    /// Checks the directory, trading-day time zone, sizes, flush mode, and the unclean-restart margin.
     /// </summary>
     /// <param name="name">Options name. May be null.</param>
     /// <param name="options">Bound section.</param>
@@ -67,6 +72,26 @@ public sealed class SessionLogOptions : IValidateOptions<SessionLogOptions>
         if (string.IsNullOrWhiteSpace(options.Directory))
         {
             failures.Add("Directory is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.DayRolloverTimeZone))
+        {
+            failures.Add("DayRolloverTimeZone is required.");
+        }
+        else
+        {
+            try
+            {
+                _ = TimeZoneInfo.FindSystemTimeZoneById(options.DayRolloverTimeZone);
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                failures.Add($"DayRolloverTimeZone '{options.DayRolloverTimeZone}' is not available on this system.");
+            }
+            catch (InvalidTimeZoneException)
+            {
+                failures.Add($"DayRolloverTimeZone '{options.DayRolloverTimeZone}' is invalid.");
+            }
         }
 
         if (options.RetentionTradingDays < 1)

@@ -5,6 +5,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using NexusRouter.Domain.Abstractions;
+using NexusRouter.Domain.Enums;
 using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.SessionLog;
@@ -16,6 +17,46 @@ namespace NexusRouter.Egress.Tests;
 /// </summary>
 public sealed class DispatcherCatchUpOverLogTests
 {
+    [Fact]
+    public async Task Broker_AfterDayRollover_DrainsPreviousEpochBeforeDeliveringNewDay()
+    {
+        string directory = FixWire.TempDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 2, 59, 30, TimeSpan.Zero));
+        await using SessionLogManager log = await StartLogAsync(directory, clock);
+        try
+        {
+            ISessionLogStream stream = log.OpenStream("B3");
+            IConsumerState state = log.OpenBroker("kafka-main");
+            var tracker = new BrokerCursorTracker(state, CursorAckMode.OnEnqueue);
+            var pool = new DispatchPayloadPool();
+            LogRef[] previousDay = Append(stream, 2);
+            var broker = new ProbeDispatcher(pool, new StreamCatchUp(log.Reader, tracker, pool, catchUpIdleMs: 40), capacity: 8);
+            await broker.StartAsync(CancellationToken.None);
+            broker.Enqueue(pool, previousDay[0], FixWire.ExecutionReport("M1", 1));
+            await broker.WaitForAsync(1);
+
+            var rollover = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            log.DayRolloverCompleted += () => rollover.TrySetResult();
+            clock.Advance(TimeSpan.FromMinutes(2));
+            await rollover.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+            LogRef currentDay = Append(stream, 1)[0];
+            Assert.Equal(1, currentDay.Epoch);
+            broker.Enqueue(pool, currentDay, FixWire.ExecutionReport("M1-NEXT-DAY", 1));
+            await broker.WaitForAsync(3);
+
+            Assert.Equal([previousDay[0], previousDay[1], currentDay], broker.SentRefs());
+            Assert.Equal(1, state.Epoch);
+            Assert.Equal(2, state.GetExpected(currentDay.Stream));
+            await broker.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await log.StopAsync(CancellationToken.None);
+            FixWire.DeleteDirectory(directory);
+        }
+    }
+
     [Fact]
     public async Task Dispatcher_WhenOfflineForPartOfTheDay_CatchesUpFromThePersistedCursorWithoutHole()
     {
@@ -109,7 +150,7 @@ public sealed class DispatcherCatchUpOverLogTests
         }
     }
 
-    private static async Task<SessionLogManager> StartLogAsync(string directory)
+    private static async Task<SessionLogManager> StartLogAsync(string directory, TimeProvider? timeProvider = null)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -119,8 +160,10 @@ public sealed class DispatcherCatchUpOverLogTests
                 IndexSlotsPerSegment = 100_000,
                 FlushIntervalMs = 60_000,
                 RetentionTradingDays = 5,
+                CatchUpIdleMs = 20,
             },
-            NullLogger<SessionLogManager>.Instance);
+            NullLogger<SessionLogManager>.Instance,
+            timeProvider);
         await log.StartAsync(CancellationToken.None);
         return log;
     }
@@ -143,7 +186,7 @@ public sealed class DispatcherCatchUpOverLogTests
         private readonly TaskCompletionSource _firstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly bool _blockFirstSend;
-        private readonly ConcurrentQueue<long> _sent = new();
+        private readonly ConcurrentQueue<LogRef> _sent = new();
         private int _calls;
 
         public ProbeDispatcher(DispatchPayloadPool pool, StreamCatchUp catchUp, int capacity, bool blockFirstSend = false)
@@ -156,7 +199,9 @@ public sealed class DispatcherCatchUpOverLogTests
 
         public void ReleaseFirstSend() => _release.TrySetResult();
 
-        public long[] SentSequences() => [.. _sent];
+        public long[] SentSequences() => _sent.Select(static logRef => logRef.InSeq).ToArray();
+
+        public LogRef[] SentRefs() => [.. _sent];
 
         public void Enqueue(DispatchPayloadPool pool, LogRef logRef, byte[] frame) =>
             Assert.True(TryEnqueueOrRelease(pool, logRef, frame));
@@ -199,7 +244,7 @@ public sealed class DispatcherCatchUpOverLogTests
 
         protected override async ValueTask SendAsync(DispatchPayload payload, CancellationToken cancellationToken)
         {
-            _sent.Enqueue(payload.LogRef.InSeq);
+            _sent.Enqueue(payload.LogRef);
             if (_blockFirstSend && Interlocked.Increment(ref _calls) == 1)
             {
                 _firstEntered.TrySetResult();
@@ -209,4 +254,15 @@ public sealed class DispatcherCatchUpOverLogTests
     }
 
     private sealed class ProbeOptions;
+
+    private sealed class AdjustableTimeProvider : TimeProvider
+    {
+        private long _utcTicks;
+
+        public AdjustableTimeProvider(DateTimeOffset utcNow) => _utcTicks = utcNow.UtcDateTime.Ticks;
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
+    }
 }

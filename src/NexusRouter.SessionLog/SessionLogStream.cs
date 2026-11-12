@@ -49,6 +49,7 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         ushort streamId,
         long capacity,
         int slots,
+        int tradingDay,
         ILogger logger,
         SessionLogMetrics metrics)
     {
@@ -59,7 +60,7 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         _logger = logger;
         _metrics = metrics;
         StreamId = streamId;
-        _tradingDay = TradingDay(DateTime.UtcNow);
+        _tradingDay = tradingDay;
         RecoverExisting();
         if (_current is null)
         {
@@ -136,6 +137,7 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         }
 
         Volatile.Write(ref _epoch, epoch);
+        Volatile.Write(ref _committed, 0);
         Volatile.Write(ref _forceNew, 1);
         _ = baseSeq;
     }
@@ -243,11 +245,12 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
     }
 
     /// <summary>
-    /// Updates the trading day and pre-allocates the next segment. Called off the writer thread.
+    /// Updates the requested trading day and pre-allocates the next segment off the writer thread.
     /// </summary>
-    public void Maintain()
+    /// <param name="tradingDay">Trading day as <c>yyyyMMdd</c>.</param>
+    public void Maintain(int tradingDay)
     {
-        Volatile.Write(ref _tradingDay, TradingDay(DateTime.UtcNow));
+        Volatile.Write(ref _tradingDay, tradingDay);
         PrepareNext();
     }
 
@@ -278,6 +281,14 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         int day = Volatile.Read(ref _tradingDay);
         bool newEpoch = Interlocked.Exchange(ref _forceNew, 0) == 1;
         bool dayChanged = _current is not null && day != _segmentDay;
+        if (dayChanged && !newEpoch)
+        {
+            int epoch = Volatile.Read(ref _epoch) + 1;
+            Volatile.Write(ref _epoch, epoch);
+            Volatile.Write(ref _committed, 0);
+            newEpoch = true;
+        }
+
         bool missing = _current is null;
         bool full = _current is not null && !_current.Fits(payloadLength);
         if (missing || newEpoch || dayChanged || full)
@@ -303,7 +314,8 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
             else
             {
                 prepared?.Dispose();
-                segment = CreateSegment(day, Volatile.Read(ref _epoch), NextNumber(day), touch: true);
+                int epoch = Volatile.Read(ref _epoch);
+                segment = CreateSegment(day, epoch, NextNumber(day, epoch), touch: true);
                 Volatile.Write(ref _syncRotations, Volatile.Read(ref _syncRotations) + 1);
                 _metrics.SyncRotation.Add(1);
             }
@@ -320,19 +332,38 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
     private void PrepareNext()
     {
         LogSegment? current = _current;
-        if (current is null || Volatile.Read(ref _prepared) is not null)
+        if (current is null)
         {
             return;
         }
 
-        int day = current.Day;
-        int epoch = current.Epoch;
-        int number = current.Number + 1;
+        int day = Volatile.Read(ref _tradingDay);
+        bool dayChanged = day != current.Day;
+        int epoch = dayChanged ? current.Epoch + 1 : Volatile.Read(ref _epoch);
+        int number = dayChanged ? NextNumber(day, epoch) : current.Number + 1;
         int currentNumber = current.Number;
+        int currentDay = current.Day;
+        int currentEpoch = current.Epoch;
+        LogSegment? existing = Volatile.Read(ref _prepared);
+        if (existing is not null)
+        {
+            if (existing.Day == day && existing.Epoch == epoch)
+            {
+                return;
+            }
+
+            existing = Interlocked.Exchange(ref _prepared, null);
+            existing?.Dispose();
+        }
+
         LogSegment segment = CreateSegment(day, epoch, number, touch: true);
         lock (_rotateGate)
         {
-            if (_prepared is null && _current is not null && _current.Number == currentNumber && _current.Day == day && _current.Epoch == epoch)
+            if (_prepared is null
+                && _current is not null
+                && _current.Number == currentNumber
+                && _current.Day == currentDay
+                && _current.Epoch == currentEpoch)
             {
                 Volatile.Write(ref _prepared, segment);
                 return;
@@ -342,9 +373,8 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         segment.Dispose();
     }
 
-    private int NextNumber(int day)
+    private int NextNumber(int day, int epoch)
     {
-        int epoch = Volatile.Read(ref _epoch);
         int max = -1;
         foreach (LogSegment segment in _segments)
         {
@@ -461,5 +491,4 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
             : 0;
     }
 
-    private static int TradingDay(DateTime utc) => utc.Year * 10000 + utc.Month * 100 + utc.Day;
 }

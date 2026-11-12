@@ -8,6 +8,16 @@ namespace NexusRouter.Domain.Abstractions;
 public interface ISessionLog
 {
     /// <summary>
+    /// Raised before the daily storage transition. Handlers should close connected FIX sessions before client indexes reset.
+    /// </summary>
+    event Func<CancellationToken, ValueTask>? DayRolloverStarting;
+
+    /// <summary>
+    /// Raised after the daily storage transition, including when it fails, so handlers can resume accepting clients.
+    /// </summary>
+    event Action? DayRolloverCompleted;
+
+    /// <summary>
     /// Reader used by catch-up and resend.
     /// </summary>
     ISessionLogReader Reader { get; }
