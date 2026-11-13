@@ -139,7 +139,13 @@ public sealed class FixAcceptorService : IHostedService
             Socket socket;
             try
             {
-                socket = await listener.AcceptSocketAsync(cancellationToken).ConfigureAwait(false);
+                Socket? accepted = await AcceptOrStopAsync(listener, cancellationToken).ConfigureAwait(false);
+                if (accepted is null)
+                {
+                    break;
+                }
+
+                socket = accepted;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -216,6 +222,55 @@ public sealed class FixAcceptorService : IHostedService
                 Interlocked.CompareExchange(ref _activeSession, null, session);
             }
         }
+    }
+
+    /// <summary>
+    /// Accepts the next socket, or returns null when <paramref name="cancellationToken"/> is canceled.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TcpListener.Stop"/> does not always complete a pending
+    /// <see cref="TcpListener.AcceptSocketAsync(CancellationToken)"/>. Waiting on the token as well
+    /// lets the accept loop leave on shutdown instead of blocking until the host deadline.
+    /// </remarks>
+    private static async Task<Socket?> AcceptOrStopAsync(TcpListener listener, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+
+        Task<Socket> acceptTask = listener.AcceptSocketAsync(cancellationToken).AsTask();
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using CancellationTokenRegistration registration = cancellationToken.UnsafeRegister(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            stopped);
+
+        Task finished = await Task.WhenAny(acceptTask, stopped.Task).ConfigureAwait(false);
+        if (!cancellationToken.IsCancellationRequested && finished == acceptTask)
+        {
+            return await acceptTask.ConfigureAwait(false);
+        }
+
+        AbandonAccept(acceptTask);
+        return null;
+    }
+
+    private static void AbandonAccept(Task<Socket> acceptTask)
+    {
+        _ = acceptTask.ContinueWith(
+            static task =>
+            {
+                if (task.IsCompletedSuccessfully)
+                {
+                    task.Result.Dispose();
+                    return;
+                }
+
+                _ = task.Exception;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private static async Task<IPAddress> ResolveListenAddressAsync(
