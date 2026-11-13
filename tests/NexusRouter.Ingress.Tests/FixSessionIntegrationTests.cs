@@ -229,6 +229,131 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
+    [Theory]
+    [InlineData("123=Y")]
+    [InlineData("123=N")]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenPeerSendsSequenceResetAhead_AdvancesExpectedInbound(string gapFill)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var router = new CountingRouter();
+        var log = new NullSessionLog();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30,
+            router: router,
+            sessionLog: log);
+        TcpClient? peer = null;
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            await ReadFixFrameAsync(stream);
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement(30));
+            await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
+
+            await SendFixFrameAsync(
+                stream,
+                CreateFixFrame(
+                    "35=4",
+                    "49=EXCHANGE",
+                    "56=CLIENT",
+                    "34=2",
+                    "52=20260101-12:00:02",
+                    "43=Y",
+                    gapFill,
+                    "36=8"));
+
+            await WaitForExpectedAsync(log.Ingress, 8);
+            Assert.Equal(0, router.Count);
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenSequenceResetLowersExpected_RepliesReject()
+    {
+        byte[] reply = await SendSequenceResetAfterLogonAsync("35=4", "49=EXCHANGE", "56=CLIENT", "34=2", "52=20260101-12:00:02", "123=N", "36=1");
+        Assert.Equal("3", GetFieldValue(reply, 35));
+        Assert.Equal("2", GetFieldValue(reply, 45));
+        Assert.Equal("36", GetFieldValue(reply, 371));
+        Assert.Equal("5", GetFieldValue(reply, 373));
+        FixMessageBuilderTests.AssertValidBodyLengthAndChecksum(reply);
+    }
+
+    [Theory]
+    [InlineData("36=abc", "6")]
+    [InlineData("123=Y", "1")]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_WhenNewSeqNoMissingOrInvalid_RepliesReject(string newSeqField, string reason)
+    {
+        byte[] reply = await SendSequenceResetAfterLogonAsync(
+            "35=4",
+            "49=EXCHANGE",
+            "56=CLIENT",
+            "34=2",
+            "52=20260101-12:00:02",
+            newSeqField);
+        Assert.Equal("3", GetFieldValue(reply, 35));
+        Assert.Equal("36", GetFieldValue(reply, 371));
+        Assert.Equal(reason, GetFieldValue(reply, 373));
+        FixMessageBuilderTests.AssertValidBodyLengthAndChecksum(reply);
+    }
+
+    private async Task<byte[]> SendSequenceResetAfterLogonAsync(params string[] fields)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Channel<AuditRecord> auditChannel = CreateAuditChannel();
+        var session = CreateSession(
+            port,
+            auditChannel.Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            heartBtInt: 30);
+        TcpClient? peer = null;
+        try
+        {
+            await session.StartAsync(CancellationToken.None);
+            peer = await listener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream stream = peer.GetStream();
+            await ReadFixFrameAsync(stream);
+            await SendFixFrameAsync(stream, CreateLogonAcknowledgement(30));
+            await WaitForLifecycleStateAsync(auditChannel.Reader, SessionState.Active);
+            await SendFixFrameAsync(stream, CreateFixFrame(fields));
+            return await ReadFixFrameAsync(stream);
+        }
+        finally
+        {
+            listener.Stop();
+            peer?.Dispose();
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static async Task WaitForExpectedAsync(MemoryConsumerState state, long expected)
+    {
+        DateTime deadline = DateTime.UtcNow + StepTimeout;
+        while (state.NextInExpected != expected && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Equal(expected, state.NextInExpected);
+    }
+
     [Fact]
     [Trait("Category", "Integration")]
     public async Task FixSession_WhenLogonEchoesHeartBtAndReset_BecomesActiveWithoutLoggingPassword()
@@ -330,7 +455,8 @@ public sealed class FixSessionIntegrationTests
         int? cancelOnDisconnectType = null,
         int? codTimeoutWindow = null,
         IMessageRouter? router = null,
-        TimeSpan? sendingTimeTolerance = null) =>
+        TimeSpan? sendingTimeTolerance = null,
+        ISessionLog? sessionLog = null) =>
         new(
             new SessionOptions
             {
@@ -357,7 +483,7 @@ public sealed class FixSessionIntegrationTests
             auditWriter,
             secretResolver ?? ThrowingSecretResolver.Instance,
             logger ?? NullLogger<FixSession>.Instance,
-            new NullSessionLog());
+            sessionLog ?? new NullSessionLog());
 
     // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
     private sealed class NullSessionLog : ISessionLog
@@ -376,7 +502,11 @@ public sealed class FixSessionIntegrationTests
             remove { }
         }
 
+        public MemoryConsumerState Ingress { get; } = new();
+
         public ISessionLogStream OpenStream(string sessionId) => new NullStream();
+
+        public IConsumerState OpenStreamState(string sessionId) => Ingress;
 
         public ClientBinding OpenClient(string dispatcherId, string clientKey) =>
             throw new NotSupportedException();
@@ -639,6 +769,33 @@ public sealed class FixSessionIntegrationTests
         }
 
         throw new InvalidDataException($"O campo FIX {tag} não foi encontrado.");
+    }
+
+    private sealed class MemoryConsumerState : IConsumerState
+    {
+        private long _nextInExpected = 1;
+
+        public long NextOut => 1;
+
+        public long NextInExpected
+        {
+            get => Volatile.Read(ref _nextInExpected);
+            set => Volatile.Write(ref _nextInExpected, value);
+        }
+
+        public long Epoch { get; set; }
+
+        public long GetExpected(ushort stream) => 0;
+
+        public void SetExpected(ushort stream, long inSeq)
+        {
+        }
+
+        public long Cursor(ushort stream) => 0;
+
+        public void SetCursor(ushort stream, long value)
+        {
+        }
     }
 
     private sealed class NullRouter : IMessageRouter

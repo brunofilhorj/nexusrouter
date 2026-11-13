@@ -26,6 +26,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     private readonly Dictionary<ushort, SessionLogStream> _byId = [];
     private readonly Dictionary<string, ClientBinding> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ConsumerStateStore> _brokers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ConsumerStateStore> _streamStates = new(StringComparer.Ordinal);
     private readonly List<ConsumerStateStore> _states = [];
     private readonly object _gate = new();
     private readonly Channel<byte> _flushSignal = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
@@ -195,6 +196,26 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
             _byId[id] = stream;
             SaveCatalog();
             return stream;
+        }
+    }
+
+    /// <inheritdoc />
+    public IConsumerState OpenStreamState(string sessionId)
+    {
+        SessionLogPaths.EnsureKey(sessionId, nameof(sessionId));
+        lock (_gate)
+        {
+            if (_streamStates.TryGetValue(sessionId, out ConsumerStateStore? existing))
+            {
+                return existing;
+            }
+
+            string path = SessionLogPaths.Under(_options.Directory, "streams", sessionId, "state.json");
+            var store = new ConsumerStateStore(path, readNextOut: null, Changed);
+            store.Load();
+            _streamStates[sessionId] = store;
+            _states.Add(store);
+            return store;
         }
     }
 
