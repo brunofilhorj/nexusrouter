@@ -406,6 +406,17 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             }
 
             AcceptorRecoveryOptions recovery = RecoveryFor(logon.Value.SenderCompId);
+            if (logon.Value.InvalidReplayMode)
+            {
+                await WriteRejectLogoutAsync(
+                    stream,
+                    logon.Value.SenderCompId,
+                    "Invalid ReplayMode",
+                    recovery.LogoutTimeoutSeconds,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             if (logon.Value.ResetSequence && !recovery.AllowResetSeqNumFlag)
             {
                 await WriteRejectLogoutAsync(stream, logon.Value.SenderCompId, "ResetSeqNumFlag not allowed", recovery.LogoutTimeoutSeconds, cancellationToken).ConfigureAwait(false);
@@ -436,10 +447,20 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            string? reject = DecideLogon(logon.Value, recovery, binding, out long skipFrom, out long resumeFrom, out bool gapFillLogon, out bool echoReset);
+            ReplayMode requestedReplayMode = logon.Value.ReplayMode ?? recovery.ReplayMode;
+            string? reject = DecideLogon(
+                logon.Value,
+                recovery,
+                binding,
+                out long skipFrom,
+                out long resumeFrom,
+                out bool gapFillLogon,
+                out bool echoReset,
+                out bool replayModeApplied);
             if (reject is null)
             {
                 Remember(binding);
+                RecordReplayMode(logon.Value.SenderCompId, requestedReplayMode, replayModeApplied);
             }
 
             int heartBtInt = logon.Value.HeartBtInt is >= 1 and <= 3600 ? logon.Value.HeartBtInt : Options.HeartBtInt;
@@ -702,7 +723,35 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         bool hasNext = FixWireFrame.TryReadTag(frame, 789, out ReadOnlySpan<byte> nextRaw)
             && FixWireFrame.TryParseNonNegative(nextRaw, out next)
             && next > 0;
-        logon = PendingLogon.Accepted(senderCompId, resetSequence, msgSeqNum, possDup, heartBtInt, hasNext, hasNext ? next : 0);
+        bool hasReplayMode = FixWireFrame.TryReadTag(frame, 19001, out ReadOnlySpan<byte> replayModeRaw);
+        ReplayMode? replayMode = null;
+        bool invalidReplayMode = false;
+        if (hasReplayMode)
+        {
+            if (replayModeRaw.Length == 1 && replayModeRaw[0] == (byte)'1')
+            {
+                replayMode = ReplayMode.FromLogon;
+            }
+            else if (replayModeRaw.Length == 1 && replayModeRaw[0] == (byte)'2')
+            {
+                replayMode = ReplayMode.StartOfDay;
+            }
+            else
+            {
+                invalidReplayMode = true;
+            }
+        }
+
+        logon = PendingLogon.Accepted(
+            senderCompId,
+            resetSequence,
+            msgSeqNum,
+            possDup,
+            heartBtInt,
+            hasNext,
+            hasNext ? next : 0,
+            replayMode,
+            invalidReplayMode);
         return true;
     }
 
@@ -713,12 +762,14 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         out long skipFrom,
         out long resumeFrom,
         out bool gapFillLogon,
-        out bool echoReset)
+        out bool echoReset,
+        out bool replayModeApplied)
     {
         skipFrom = 0;
         resumeFrom = 0;
         gapFillLogon = false;
         echoReset = false;
+        replayModeApplied = false;
         if (logon.ResetSequence)
         {
             if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum && logon.NextExpected > 1)
@@ -730,7 +781,22 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
             reset.State.NextInExpected = logon.MsgSeqNum + 1;
             echoReset = true;
+            replayModeApplied = true;
             return null;
+        }
+
+        bool opensEpoch = binding.State.NextInExpected == 1;
+        if (opensEpoch)
+        {
+            if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum && logon.NextExpected > 1)
+            {
+                NoteClientAhead(logon.SenderCompId, logon.NextExpected, 1);
+                return "MsgSeqNum too high";
+            }
+
+            ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
+            reset.State.NextInExpected = 1;
+            replayModeApplied = true;
         }
 
         long expected = binding.State.NextInExpected;
@@ -749,7 +815,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
 
         long nextOut = binding.Index.NextOut;
-        if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum)
+        if (!opensEpoch && logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum)
         {
             if (logon.NextExpected > nextOut)
             {
@@ -779,6 +845,30 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
 
         return null;
+    }
+
+    private void RecordReplayMode(string senderCompId, ReplayMode replayMode, bool applied)
+    {
+        string mode = replayMode.ToString();
+        string appliedValue = applied ? "true" : "false";
+        AcceptorSessionMetrics.ReplayMode.Add(
+            1,
+            new KeyValuePair<string, object?>("dispatcher_id", DispatcherId),
+            new KeyValuePair<string, object?>("mode", mode),
+            new KeyValuePair<string, object?>("applied", appliedValue));
+        Logger.LogInformation(
+            "Dispatcher {DispatcherId} aceitou Logon de {SenderCompId} com ReplayMode {ReplayMode}; aplicado: {Applied}.",
+            DispatcherId,
+            senderCompId,
+            mode,
+            applied);
+        if (applied && replayMode == ReplayMode.StartOfDay)
+        {
+            Logger.LogWarning(
+                "Dispatcher {DispatcherId} ainda trata ReplayMode StartOfDay como FromLogon para {SenderCompId}; o backfill será habilitado na TD-15c.",
+                DispatcherId,
+                senderCompId);
+        }
     }
 
     private void NoteClientAhead(string senderCompId, long requested, long nextOut)
@@ -954,6 +1044,8 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             int heartBtInt,
             bool hasNextExpected,
             long nextExpected,
+            ReplayMode? replayMode,
+            bool invalidReplayMode,
             byte[] prelude,
             int preludeLength)
         {
@@ -964,6 +1056,8 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             HeartBtInt = heartBtInt;
             HasNextExpected = hasNextExpected;
             NextExpected = nextExpected;
+            ReplayMode = replayMode;
+            InvalidReplayMode = invalidReplayMode;
             Prelude = prelude;
             PreludeLength = preludeLength;
         }
@@ -982,12 +1076,16 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
         internal long NextExpected { get; }
 
+        internal ReplayMode? ReplayMode { get; }
+
+        internal bool InvalidReplayMode { get; }
+
         internal byte[] Prelude { get; }
 
         internal int PreludeLength { get; }
 
         internal static PendingLogon Identity(string senderCompId) =>
-            new(senderCompId, false, 0, false, 0, false, 0, [], 0);
+            new(senderCompId, false, 0, false, 0, false, 0, null, false, [], 0);
 
         internal static PendingLogon Accepted(
             string senderCompId,
@@ -996,11 +1094,35 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             bool possDup,
             int heartBtInt,
             bool hasNextExpected,
-            long nextExpected) =>
-            new(senderCompId, resetSequence, msgSeqNum, possDup, heartBtInt, hasNextExpected, nextExpected, [], 0);
+            long nextExpected,
+            ReplayMode? replayMode,
+            bool invalidReplayMode) =>
+            new(
+                senderCompId,
+                resetSequence,
+                msgSeqNum,
+                possDup,
+                heartBtInt,
+                hasNextExpected,
+                nextExpected,
+                replayMode,
+                invalidReplayMode,
+                [],
+                0);
 
         internal PendingLogon WithPrelude(byte[] prelude, int preludeLength) =>
-            new(SenderCompId, ResetSequence, MsgSeqNum, PossDup, HeartBtInt, HasNextExpected, NextExpected, prelude, preludeLength);
+            new(
+                SenderCompId,
+                ResetSequence,
+                MsgSeqNum,
+                PossDup,
+                HeartBtInt,
+                HasNextExpected,
+                NextExpected,
+                ReplayMode,
+                InvalidReplayMode,
+                prelude,
+                preludeLength);
     }
 
     /// <summary>

@@ -31,6 +31,11 @@ public sealed class AcceptorClientOverride
     public bool? RequireNextExpectedMsgSeqNum { get; init; }
 
     /// <summary>
+    /// Substitui <see cref="AcceptorRecoveryOptions.ReplayMode"/> quando preenchido.
+    /// </summary>
+    public ReplayMode? ReplayMode { get; init; }
+
+    /// <summary>
     /// Substitui <see cref="AcceptorRecoveryOptions.LogoutTimeoutSeconds"/> quando preenchido.
     /// </summary>
     public int? LogoutTimeoutSeconds { get; init; }

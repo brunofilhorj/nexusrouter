@@ -26,6 +26,11 @@ public sealed class AcceptorRecoveryOptions
     public bool RequireNextExpectedMsgSeqNum { get; init; }
 
     /// <summary>
+    /// Modo de entrega aplicado quando um Logon abre uma época do cliente.
+    /// </summary>
+    public ReplayMode ReplayMode { get; init; } = ReplayMode.FromLogon;
+
+    /// <summary>
     /// Segundos de espera pelo Logout de confirmação antes de fechar o socket.
     /// </summary>
     public int LogoutTimeoutSeconds { get; init; } = 5;
@@ -44,6 +49,7 @@ public sealed class AcceptorRecoveryOptions
             AllowResetSeqNumFlag = client.AllowResetSeqNumFlag ?? AllowResetSeqNumFlag,
             AcceptNextExpectedMsgSeqNum = client.AcceptNextExpectedMsgSeqNum ?? AcceptNextExpectedMsgSeqNum,
             RequireNextExpectedMsgSeqNum = client.RequireNextExpectedMsgSeqNum ?? RequireNextExpectedMsgSeqNum,
+            ReplayMode = client.ReplayMode ?? ReplayMode,
             LogoutTimeoutSeconds = client.LogoutTimeoutSeconds ?? LogoutTimeoutSeconds,
         };
     }
@@ -52,12 +58,17 @@ public sealed class AcceptorRecoveryOptions
     /// Rejeita combinação inválida ou timeout não positivo.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="LogoutTimeoutSeconds"/> não é positivo.</exception>
-    /// <exception cref="InvalidOperationException"><see cref="RequireNextExpectedMsgSeqNum"/> está ligado e <see cref="AcceptNextExpectedMsgSeqNum"/> desligado, ou o modo não existe.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="RequireNextExpectedMsgSeqNum"/> está ligado e <see cref="AcceptNextExpectedMsgSeqNum"/> desligado, ou um modo não existe.</exception>
     public void EnsureValid()
     {
         if (!Enum.IsDefined(OnReconnectGap))
         {
             throw new InvalidOperationException("Recovery.OnReconnectGap não é um modo conhecido.");
+        }
+
+        if (!Enum.IsDefined(ReplayMode))
+        {
+            throw new InvalidOperationException("Recovery.ReplayMode não é um modo conhecido.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(LogoutTimeoutSeconds);

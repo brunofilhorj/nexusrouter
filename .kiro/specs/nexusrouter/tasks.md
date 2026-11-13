@@ -1607,7 +1607,7 @@ Cada fatia abaixo registra a própria regra em `requirements.md` §2.4.1 e `desi
 
 ---
 
-- [ ] TD-15b — `ReplayMode`: opção, tag 19001 e modo `FromLogon`
+- [x] TD-15b — `ReplayMode`: opção, tag 19001 e modo `FromLogon`
 
 **Tamanho:** P. **Depende de:** TD-15a.
 

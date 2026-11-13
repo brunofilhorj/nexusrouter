@@ -221,7 +221,7 @@ Os blocos ficam longe das faixas que a B3 já ocupa no `docs/FIX44Entrypoint.xml
 
 | Tag     | Nome         | Mensagem         | Bloco   | Status                 |
 |---------|--------------|------------------|---------|------------------------|
-| `19001` | `ReplayMode` | Logon (`35=A`)   | interno | planejada (TD-15b a TD-15d) |
+| `19001` | `ReplayMode` | Logon (`35=A`)   | interno | implementada no acceptor (TD-15b); seletor do ClientProbe na TD-15d |
 
 #### `ReplayMode` (19001): o que o cliente recebe ao conectar
 
@@ -236,8 +236,8 @@ Regras:
 
 - O dia vira à meia-noite (fuso `America/Sao_Paulo` por padrão), como no QuickFIX: o router abre um storage novo e o seq dos clientes volta a 1.
 - O modo vale quando o Logon abre uma época nova do cliente: com `ResetSeqNumFlag` (`141=Y`) ou no primeiro Logon do cliente no dia. `141=Y` sempre zera o seq dos dois lados; o modo só decide se a época começa com o histórico do dia ou vazia.
-- Reconexão sem `141=Y` continua de onde parou pela recuperação normal (`789` ou `ResendRequest`). A tag `19001` é ignorada nesse caso.
-- Sem a tag, vale o `Recovery.ReplayMode` configurado no dispatcher ou no `ClientOverrides` do `SenderCompID`. Com a tag, ela prevalece. Valor fora da tabela recebe `Logout` com `Text`.
+- Reconexão sem `141=Y` continua de onde parou pela recuperação normal (`789` ou `ResendRequest`); uma tag válida `19001` é ignorada nesse caso. Valor fora da tabela sempre recebe `Logout` com `Text`.
+- Sem a tag, vale o `Recovery.ReplayMode` configurado no dispatcher ou no `ClientOverrides` do `SenderCompID` (default `FromLogon`). Com a tag, ela prevalece quando uma época nova é aberta.
 
 Exemplo de Logon pedindo o dia inteiro:
 

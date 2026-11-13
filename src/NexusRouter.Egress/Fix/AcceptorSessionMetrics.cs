@@ -25,6 +25,14 @@ public static class AcceptorSessionMetrics
     internal static readonly Counter<long> ClientAhead = Meter.CreateCounter<long>("acceptor_client_ahead_total");
 
     /// <summary>
+    /// Modo de replay resolvido em cada Logon aceito; <c>applied</c> distingue época nova de reconexão.
+    /// </summary>
+    internal static readonly Counter<long> ReplayMode = Meter.CreateCounter<long>(
+        "acceptor_replay_mode_total",
+        unit: "{logons}",
+        description: "Accepted Logons by configured replay mode and whether the mode applied.");
+
+    /// <summary>
     /// Logon recusado antes de criar arquivos no log de sessão. A tag <c>reason</c> vale <c>max_clients</c> ou <c>invalid_key</c>.
     /// </summary>
     internal static readonly Counter<long> ClientsRejected = Meter.CreateCounter<long>(
