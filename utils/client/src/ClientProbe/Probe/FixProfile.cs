@@ -13,6 +13,9 @@ namespace ClientProbe.Probe;
 /// <param name="SendNextExpected">
 /// Sends NextExpectedMsgSeqNum 789 on Logon, so the acceptor resends what the probe missed.
 /// </param>
+/// <param name="ReplayMode">
+/// Tag 19001 on Logon. Null omits the tag and leaves the acceptor default in place.
+/// </param>
 public sealed record FixProfile(
     string Host,
     int Port,
@@ -20,7 +23,8 @@ public sealed record FixProfile(
     string TargetCompId,
     int HeartBtInt,
     bool ResetSeqNum = false,
-    bool SendNextExpected = true)
+    bool SendNextExpected = true,
+    ProbeReplayMode? ReplayMode = null)
     : ProbeProfile
 {
     /// <inheritdoc />

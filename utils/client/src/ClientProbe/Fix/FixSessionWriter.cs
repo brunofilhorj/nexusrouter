@@ -41,8 +41,9 @@ public sealed class FixSessionWriter
     /// <param name="heartBtInt">Heartbeat interval, in seconds.</param>
     /// <param name="resetSeqNum">Adds ResetSeqNumFlag 141=Y.</param>
     /// <param name="nextExpectedMsgSeqNum">Adds NextExpectedMsgSeqNum 789 when not null.</param>
+    /// <param name="replayMode">Adds ReplayMode 19001 when not null (<c>1</c> = FromLogon, <c>2</c> = StartOfDay).</param>
     /// <returns>The complete frame.</returns>
-    public byte[] Logon(int msgSeqNum, int heartBtInt, bool resetSeqNum, int? nextExpectedMsgSeqNum)
+    public byte[] Logon(int msgSeqNum, int heartBtInt, bool resetSeqNum, int? nextExpectedMsgSeqNum, int? replayMode = null)
     {
         var extra = $"98=0{Soh}108={heartBtInt.ToString(CultureInfo.InvariantCulture)}{Soh}";
         if (resetSeqNum)
@@ -53,6 +54,11 @@ public sealed class FixSessionWriter
         if (nextExpectedMsgSeqNum is int next)
         {
             extra += $"789={next.ToString(CultureInfo.InvariantCulture)}{Soh}";
+        }
+
+        if (replayMode is int mode)
+        {
+            extra += $"19001={mode.ToString(CultureInfo.InvariantCulture)}{Soh}";
         }
 
         return Build("A", msgSeqNum, extra);

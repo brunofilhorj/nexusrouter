@@ -13,13 +13,14 @@ export type ConfigTab = 'kafka' | 'rabbit' | 'fix' | 'ws';
 export interface PersistedConfig {
   kafka: { host: string; port: string; topic: string; groupId: string };
   rabbit: { host: string; port: string; exchange: string; routingKey: string; username: string };
-  /** `resetSeqNum` and `sendNextExpected` are checkboxes stored as 'true' / 'false'. */
+  /** `resetSeqNum` and `sendNextExpected` are checkboxes stored as 'true' / 'false'. `replayMode` is empty, `FromLogon` or `StartOfDay`. */
   fix: {
     host: string;
     port: string;
     senderCompId: string;
     targetCompId: string;
     resetSeqNum: string;
+    replayMode: string;
     sendNextExpected: string;
   };
   ws: { host: string; port: string; clientId: string };
@@ -43,6 +44,7 @@ export const DEFAULT_CONFIG: PersistedConfig = {
     senderCompId: 'PROBE',
     targetCompId: 'NEXUSROUTER',
     resetSeqNum: 'false',
+    replayMode: '',
     sendNextExpected: 'true',
   },
   ws: { host: '', port: '', clientId: '' },

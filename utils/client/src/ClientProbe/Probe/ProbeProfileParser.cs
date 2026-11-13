@@ -105,7 +105,47 @@ public sealed class ProbeProfileParser
             Text(source, "targetCompId", d.TargetCompId),
             heartBtInt,
             Flag(source, "resetSeqNum", d.ResetSeqNum),
-            Flag(source, "sendNextExpected", d.SendNextExpected));
+            Flag(source, "sendNextExpected", d.SendNextExpected),
+            ReplayMode(source, d.ReplayMode));
+    }
+
+    private static ProbeReplayMode? ReplayMode(JsonElement? source, string fallback)
+    {
+        if (source is not { } obj || !obj.TryGetProperty("replayMode", out var value))
+        {
+            return ParseReplayMode(fallback);
+        }
+
+        var text = value.ValueKind switch
+        {
+            JsonValueKind.Null or JsonValueKind.Undefined => "",
+            JsonValueKind.String => value.GetString() ?? "",
+            JsonValueKind.Number => value.GetRawText(),
+            _ => throw Invalid("replayMode must be FromLogon, StartOfDay, or empty."),
+        };
+
+        return ParseReplayMode(text);
+    }
+
+    private static ProbeReplayMode? ParseReplayMode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var text = value.Trim();
+        if (text.Equals(nameof(ProbeReplayMode.FromLogon), StringComparison.OrdinalIgnoreCase) || text == "1")
+        {
+            return ProbeReplayMode.FromLogon;
+        }
+
+        if (text.Equals(nameof(ProbeReplayMode.StartOfDay), StringComparison.OrdinalIgnoreCase) || text == "2")
+        {
+            return ProbeReplayMode.StartOfDay;
+        }
+
+        throw Invalid("replayMode must be FromLogon, StartOfDay, or empty.");
     }
 
     private static bool Flag(JsonElement? source, string name, bool fallback)

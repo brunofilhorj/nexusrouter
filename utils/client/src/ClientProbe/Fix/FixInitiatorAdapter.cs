@@ -16,6 +16,7 @@ namespace ClientProbe.Fix;
 /// reconnect continues where the previous connection stopped. <see cref="FixProfile.ResetSeqNum"/>
 /// sends 141=Y and restarts both sides at 1. <see cref="FixProfile.SendNextExpected"/> sends 789 with
 /// the next MsgSeqNum the probe expects, so the acceptor resends what was missed.
+/// <see cref="FixProfile.ReplayMode"/> sends tag 19001 when set.
 /// </para>
 /// <para>
 /// Incoming MsgSeqNum is checked: a gap without 789 triggers one ResendRequest (7=first missing, 16=0);
@@ -99,7 +100,8 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             _active = session;
             session.ReadLoop = Task.Run(() => ReadLoopAsync(session), CancellationToken.None);
             int? nextExpected = fix.SendNextExpected ? session.NextIn : null;
-            await SendAsync(session, seq => session.Writer.Logon(seq, fix.HeartBtInt, fix.ResetSeqNum, nextExpected), CancellationToken.None)
+            int? replayMode = fix.ReplayMode is { } mode ? (int)mode : null;
+            await SendAsync(session, seq => session.Writer.Logon(seq, fix.HeartBtInt, fix.ResetSeqNum, nextExpected, replayMode), CancellationToken.None)
                 .ConfigureAwait(false);
             session.HeartbeatLoop = Task.Run(() => HeartbeatLoopAsync(session), CancellationToken.None);
 

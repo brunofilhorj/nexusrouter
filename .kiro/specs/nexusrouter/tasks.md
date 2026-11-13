@@ -1648,7 +1648,7 @@ Cada fatia abaixo registra a própria regra em `requirements.md` §2.4.1 e `desi
 
 ---
 
-- [ ] TD-15d — ClientProbe: seletor do `ReplayMode`
+- [x] TD-15d — ClientProbe: seletor do `ReplayMode`
 
 **Tamanho:** P. **Depende de:** TD-15b.
 

@@ -112,6 +112,12 @@ public sealed class ClientProbeOptions
         public bool SendNextExpected { get; set; } = true;
 
         /// <summary>
+        /// Default ReplayMode sent as tag 19001 on Logon.
+        /// Empty omits the tag. <c>FromLogon</c> or <c>StartOfDay</c> otherwise.
+        /// </summary>
+        public string ReplayMode { get; set; } = "";
+
+        /// <summary>
         /// Folder for the per-session sequence files, relative to the app base directory when not rooted.
         /// Empty keeps sequence numbers in memory only (they still survive reconnects, not restarts).
         /// </summary>

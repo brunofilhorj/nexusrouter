@@ -38,6 +38,25 @@ public sealed class FixSessionTests
     }
 
     [Fact]
+    public void Logon_WithoutReplayMode_OmitsTag19001()
+    {
+        var text = Text(Writer().Logon(1, 30, resetSeqNum: true, nextExpectedMsgSeqNum: 1));
+        Assert.DoesNotContain("19001=", text);
+        Assert.Contains("|141=Y|789=1|", text);
+    }
+
+    [Fact]
+    public void Logon_WithReplayMode_WritesTag19001()
+    {
+        var fromLogon = Writer().Logon(1, 30, resetSeqNum: false, nextExpectedMsgSeqNum: null, replayMode: 1);
+        var startOfDay = Writer().Logon(1, 30, resetSeqNum: true, nextExpectedMsgSeqNum: null, replayMode: 2);
+        Assert.Contains("|98=0|108=30|19001=1|", Text(fromLogon));
+        Assert.Contains("|141=Y|19001=2|", Text(startOfDay));
+        AssertValid(fromLogon);
+        AssertValid(startOfDay);
+    }
+
+    [Fact]
     public void Heartbeat_HasSeqAndValidTrailer()
     {
         var f = Writer().Heartbeat(42);

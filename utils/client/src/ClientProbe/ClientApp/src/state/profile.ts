@@ -38,10 +38,11 @@ export function buildProfile(transport: ProbeTransport): ProbeProfile {
       return compact({ host, port, exchange, routingKey, username, password: getSecrets().rabbitPassword });
     }
     case 'fix': {
-      const { host, port, senderCompId, targetCompId, resetSeqNum, sendNextExpected } = config.fix;
+      const { host, port, senderCompId, targetCompId, resetSeqNum, replayMode, sendNextExpected } = config.fix;
       return {
         ...compact({ host, port, senderCompId, targetCompId }),
         resetSeqNum: resetSeqNum === 'true',
+        replayMode,
         sendNextExpected: sendNextExpected === 'true',
       };
     }
