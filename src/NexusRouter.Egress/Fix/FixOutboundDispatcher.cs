@@ -460,22 +460,31 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
             clientOpened = true;
             ReplayMode requestedReplayMode = logon.Value.ReplayMode ?? recovery.ReplayMode;
-            string? reject = DecideLogon(
+            LogonDecision decision = await DecideLogonAsync(
                 logon.Value,
                 recovery,
                 binding,
-                requestedReplayMode == ReplayMode.StartOfDay
-                    ? () =>
+                async token =>
+                {
+                    if (requestedReplayMode == ReplayMode.StartOfDay)
                     {
                         backfillState = new BackfillState();
                         _backfills[logon.Value.SenderCompId] = backfillState;
                     }
-                    : null,
-                out long skipFrom,
-                out long resumeFrom,
-                out bool gapFillLogon,
-                out bool echoReset,
-                out bool replayModeApplied);
+
+                    if (_sessions.TryGet(logon.Value.SenderCompId, out FixAcceptedSession? current)
+                        && current is not null)
+                    {
+                        await current.StopAsync(token).ConfigureAwait(false);
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+            string? reject = decision.Reject;
+            long skipFrom = decision.SkipFrom;
+            long resumeFrom = decision.ResumeFrom;
+            bool gapFillLogon = decision.GapFillLogon;
+            bool echoReset = decision.EchoReset;
+            bool replayModeApplied = decision.ReplayModeApplied;
             if (reject is null)
             {
                 Remember(binding);
@@ -790,36 +799,36 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         return true;
     }
 
-    private string? DecideLogon(
+    private async Task<LogonDecision> DecideLogonAsync(
         PendingLogon logon,
         AcceptorRecoveryOptions recovery,
         ClientBinding binding,
-        Action? onEpochOpening,
-        out long skipFrom,
-        out long resumeFrom,
-        out bool gapFillLogon,
-        out bool echoReset,
-        out bool replayModeApplied)
+        Func<CancellationToken, ValueTask>? onEpochOpening,
+        CancellationToken cancellationToken)
     {
-        skipFrom = 0;
-        resumeFrom = 0;
-        gapFillLogon = false;
-        echoReset = false;
-        replayModeApplied = false;
+        long skipFrom = 0;
+        long resumeFrom = 0;
+        bool gapFillLogon = false;
+        bool echoReset = false;
+        bool replayModeApplied = false;
         if (logon.ResetSequence)
         {
             if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum && logon.NextExpected > 1)
             {
                 NoteClientAhead(logon.SenderCompId, logon.NextExpected, 1);
-                return "MsgSeqNum too high";
+                return new LogonDecision("MsgSeqNum too high", 0, 0, false, false, false);
             }
 
-            onEpochOpening?.Invoke();
+            if (onEpochOpening is not null)
+            {
+                await onEpochOpening(cancellationToken).ConfigureAwait(false);
+            }
+
             ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
             reset.State.NextInExpected = logon.MsgSeqNum + 1;
             echoReset = true;
             replayModeApplied = true;
-            return null;
+            return new LogonDecision(null, 0, 0, false, echoReset, replayModeApplied);
         }
 
         bool opensEpoch = binding.State.NextInExpected == 1;
@@ -828,10 +837,14 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             if (logon.HasNextExpected && recovery.AcceptNextExpectedMsgSeqNum && logon.NextExpected > 1)
             {
                 NoteClientAhead(logon.SenderCompId, logon.NextExpected, 1);
-                return "MsgSeqNum too high";
+                return new LogonDecision("MsgSeqNum too high", 0, 0, false, false, false);
             }
 
-            onEpochOpening?.Invoke();
+            if (onEpochOpening is not null)
+            {
+                await onEpochOpening(cancellationToken).ConfigureAwait(false);
+            }
+
             ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
             reset.State.NextInExpected = 1;
             replayModeApplied = true;
@@ -849,7 +862,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
         else if (logon.MsgSeqNum < expected && !logon.PossDup)
         {
-            return "MsgSeqNum too low";
+            return new LogonDecision("MsgSeqNum too low", 0, 0, false, false, false);
         }
 
         long nextOut = binding.Index.NextOut;
@@ -858,7 +871,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             if (logon.NextExpected > nextOut)
             {
                 NoteClientAhead(logon.SenderCompId, logon.NextExpected, nextOut);
-                return "MsgSeqNum too high";
+                return new LogonDecision("MsgSeqNum too high", 0, 0, false, false, false);
             }
 
             if (logon.NextExpected < nextOut)
@@ -882,7 +895,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             binding.State.NextInExpected = logon.MsgSeqNum + 1;
         }
 
-        return null;
+        return new LogonDecision(null, skipFrom, resumeFrom, gapFillLogon, echoReset, replayModeApplied);
     }
 
     private void RecordReplayMode(string senderCompId, ReplayMode replayMode, bool applied)
@@ -1367,6 +1380,14 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     }
 
     private readonly record struct BackfillPayload(LogRef LogRef, DeliveryMode DeliveryMode, byte[]? Frame);
+
+    private readonly record struct LogonDecision(
+        string? Reject,
+        long SkipFrom,
+        long ResumeFrom,
+        bool GapFillLogon,
+        bool EchoReset,
+        bool ReplayModeApplied);
 
     private readonly struct PendingLogon
     {

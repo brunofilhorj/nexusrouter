@@ -44,6 +44,7 @@ internal sealed class FixAcceptedSession
     private readonly Channel<OutboundFrame> _outbound;
     private readonly SemaphoreSlim _enqueueGate = new(1, 1);
     private readonly TaskCompletionSource _logonReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _stopCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private Pipe? _pipe;
     private CancellationTokenSource? _connectionCts;
@@ -224,61 +225,75 @@ internal sealed class FixAcceptedSession
     {
         if (Interlocked.Exchange(ref _stop, 1) != 0)
         {
+            await _stopCompletion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return;
-        }
-
-        _onClosed(this);
-        _logonReady.TrySetCanceled(cancellationToken);
-        _heartbeatCts?.Cancel();
-        if (WriteLoopDepth.Value != 0)
-        {
-            _outbound.Writer.TryComplete();
-            _connectionCts?.Cancel();
-            await CleanupAsync(cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        _outbound.Writer.TryComplete();
-        if (_write is not null)
-        {
-            try
-            {
-                await _write.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
-            {
-                _connectionCts?.Cancel();
-            }
-        }
-
-        if (Volatile.Read(ref _logoutSent) == 0)
-        {
-            await SendLogoutDirectAsync(logoutText).ConfigureAwait(false);
         }
 
         try
         {
-            _pipe?.Writer.Complete();
-        }
-        catch (InvalidOperationException)
-        {
-            // O pump ou uma falha anterior já completou o pipe.
-        }
+            _logonReady.TrySetCanceled(cancellationToken);
+            _heartbeatCts?.Cancel();
+            if (WriteLoopDepth.Value != 0)
+            {
+                _outbound.Writer.TryComplete();
+                _connectionCts?.Cancel();
+                await CleanupAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
-        if (_pump is not null)
-        {
+            _outbound.Writer.TryComplete();
+            if (_write is not null)
+            {
+                try
+                {
+                    await _write.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    _connectionCts?.Cancel();
+                }
+            }
+
+            if (Volatile.Read(ref _logoutSent) == 0)
+            {
+                await SendLogoutDirectAsync(logoutText).ConfigureAwait(false);
+            }
+
             try
             {
-                await _pump.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                _pipe?.Writer.Complete();
             }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            catch (InvalidOperationException)
             {
-                _logger.LogDebug(ex, "Sessão FIX {SenderCompId} não drenou o socket.", SenderCompId);
+                // O pump ou uma falha anterior já completou o pipe.
             }
-        }
 
-        _connectionCts?.Cancel();
-        await CleanupAsync(cancellationToken).ConfigureAwait(false);
+            if (_pump is not null)
+            {
+                try
+                {
+                    await _pump.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    _logger.LogDebug(ex, "Sessão FIX {SenderCompId} não drenou o socket.", SenderCompId);
+                }
+            }
+
+            _connectionCts?.Cancel();
+            await CleanupAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _stopCompletion.TrySetException(ex);
+            _ = _stopCompletion.Task.Exception;
+            throw;
+        }
+        finally
+        {
+            _onClosed(this);
+            _stopCompletion.TrySetResult();
+        }
     }
 
     /// <summary>
