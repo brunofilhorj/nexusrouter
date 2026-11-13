@@ -313,6 +313,50 @@ public sealed class SessionLogTests
     }
 
     [Fact]
+    public async Task StreamLogon_AfterB3Rollover_OpensEpochAndResetsBothSequences()
+    {
+        string directory = NewDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 1, 59, 30, TimeSpan.Zero));
+        var manager = new SessionLogManager(
+            Options(directory, margin: 0),
+            NullLogger<SessionLogManager>.Instance,
+            clock);
+        await manager.StartAsync(CancellationToken.None);
+        try
+        {
+            SessionLogStream stream = (SessionLogStream)manager.OpenStream("EXCH_A");
+            IConsumerState state = manager.OpenStreamState("EXCH_A");
+            SessionLogLogonState initial = manager.PrepareStreamLogon("EXCH_A");
+            Assert.True(initial.ResetSeqNumFlag);
+            manager.SetStreamNextOut("EXCH_A", 5);
+            manager.CompleteStreamLogon("EXCH_A");
+            state.NextInExpected = 8;
+            Assert.True(stream.Append("previous-day"u8, 1, 1).IsOk);
+
+            clock.Advance(TimeSpan.FromMinutes(2));
+
+            SessionLogLogonState nextDay = manager.PrepareStreamLogon("EXCH_A");
+            Assert.True(nextDay.ResetSeqNumFlag);
+            Assert.Equal(1, nextDay.NextOut);
+            Assert.Equal(1, state.NextInExpected);
+            Assert.Equal(2, state.Epoch);
+            Assert.Equal(2, stream.Epoch);
+
+            manager.SetStreamNextOut("EXCH_A", 2);
+            manager.CompleteStreamLogon("EXCH_A");
+            Assert.True(stream.Append("current-day"u8, 1, 2).IsOk);
+            SessionLogLogonState restart = manager.PrepareStreamLogon("EXCH_A");
+            Assert.False(restart.ResetSeqNumFlag);
+            Assert.Equal(2, restart.NextOut);
+        }
+        finally
+        {
+            await manager.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
     public async Task Restart_SameTradingDay_ReusesTheExistingStorageEpoch()
     {
         string directory = NewDirectory();
@@ -356,6 +400,136 @@ public sealed class SessionLogTests
         finally
         {
             await reopened.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StreamLogon_RestartSameTradingDay_ContinuesSequenceWithoutAnotherReset()
+    {
+        string directory = NewDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 12, 0, 0, TimeSpan.Zero));
+        var options = Options(directory, margin: 0);
+
+        var first = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await first.StartAsync(CancellationToken.None);
+        SessionLogLogonState firstLogon = first.PrepareStreamLogon("EXCH_A");
+        Assert.True(firstLogon.ResetSeqNumFlag);
+        Assert.Equal(1, firstLogon.NextOut);
+        first.SetStreamNextOut("EXCH_A", 4);
+        first.OpenStreamState("EXCH_A").NextInExpected = 7;
+        first.CompleteStreamLogon("EXCH_A");
+        Assert.True(first.OpenStream("EXCH_A").Append("message"u8, 1, 1).IsOk);
+        first.FlushNow();
+        await first.StopAsync(CancellationToken.None);
+
+        var reopened = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await reopened.StartAsync(CancellationToken.None);
+        try
+        {
+            SessionLogLogonState nextLogon = reopened.PrepareStreamLogon("EXCH_A");
+
+            Assert.False(nextLogon.ResetSeqNumFlag);
+            Assert.Equal(4, nextLogon.NextOut);
+            Assert.Equal(7, reopened.OpenStreamState("EXCH_A").NextInExpected);
+            Assert.Equal(1, reopened.OpenStream("EXCH_A").Epoch);
+        }
+        finally
+        {
+            await reopened.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StreamLogon_UncleanSameDayRestart_AdvancesBeyondPersistedSequence()
+    {
+        string directory = NewDirectory();
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 12, 12, 0, 0, TimeSpan.Zero));
+        var options = Options(directory, margin: 10_000);
+        var first = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await first.StartAsync(CancellationToken.None);
+        SessionLogLogonState firstLogon = first.PrepareStreamLogon("EXCH_A");
+        Assert.True(firstLogon.ResetSeqNumFlag);
+        first.SetStreamNextOut("EXCH_A", 4);
+        first.CompleteStreamLogon("EXCH_A");
+        Assert.True(first.OpenStream("EXCH_A").Append("message"u8, 1, 1).IsOk);
+        first.FlushNow();
+        first.SimulateCrash();
+
+        var reopened = new SessionLogManager(options, NullLogger<SessionLogManager>.Instance, clock)
+        {
+            PauseMaintenance = true,
+        };
+        await reopened.StartAsync(CancellationToken.None);
+        try
+        {
+            SessionLogLogonState nextLogon = reopened.PrepareStreamLogon("EXCH_A");
+
+            Assert.False(nextLogon.ResetSeqNumFlag);
+            Assert.Equal(10_004, nextLogon.NextOut);
+        }
+        finally
+        {
+            await reopened.StopAsync(CancellationToken.None);
+            Delete(directory);
+        }
+    }
+
+    [Fact]
+    public async Task SundayToMonday_DoesNotResetSequencesAndRetentionUsesB3TradingDays()
+    {
+        string directory = NewDirectory();
+        string streamDirectory = Path.Combine(directory, "streams", "EXCH_A");
+        Directory.CreateDirectory(Path.Combine(streamDirectory, "20261111-e000"));
+        Directory.CreateDirectory(Path.Combine(streamDirectory, "20261112-e000"));
+        string clientDirectory = Path.Combine(directory, "clients", "FIX_OUT", "OMS1");
+        Directory.CreateDirectory(clientDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(clientDirectory, "20261111-e000.cidx"), new byte[128 * 16]);
+        await File.WriteAllBytesAsync(Path.Combine(clientDirectory, "20261112-e000.cidx"), new byte[128 * 16]);
+
+        var clock = new AdjustableTimeProvider(new DateTimeOffset(2026, 11, 16, 1, 59, 30, TimeSpan.Zero));
+        var manager = new SessionLogManager(
+            Options(directory, margin: 0, retentionDays: 1),
+            NullLogger<SessionLogManager>.Instance,
+            clock);
+        await manager.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.False(Directory.Exists(Path.Combine(streamDirectory, "20261111-e000")));
+            Assert.True(Directory.Exists(Path.Combine(streamDirectory, "20261112-e000")));
+            Assert.False(File.Exists(Path.Combine(clientDirectory, "20261111-e000.cidx")));
+            Assert.True(File.Exists(Path.Combine(clientDirectory, "20261112-e000.cidx")));
+
+            SessionLogLogonState firstLogon = manager.PrepareStreamLogon("EXCH_A");
+            Assert.True(firstLogon.ResetSeqNumFlag);
+            manager.CompleteStreamLogon("EXCH_A");
+            manager.SetStreamNextOut("EXCH_A", 9);
+            IConsumerState state = manager.OpenStreamState("EXCH_A");
+            state.NextInExpected = 3;
+            long epoch = state.Epoch;
+
+            clock.Advance(TimeSpan.FromMinutes(2));
+            await Task.Delay(150);
+            SessionLogLogonState mondayLogon = manager.PrepareStreamLogon("EXCH_A");
+
+            Assert.False(mondayLogon.ResetSeqNumFlag);
+            Assert.Equal(9, mondayLogon.NextOut);
+            Assert.Equal(3, state.NextInExpected);
+            Assert.Equal(epoch, state.Epoch);
+        }
+        finally
+        {
+            await manager.StopAsync(CancellationToken.None);
             Delete(directory);
         }
     }

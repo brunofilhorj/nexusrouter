@@ -649,6 +649,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                CheckSequenceTradingDay();
                 await CheckDayRolloverAsync(cancellationToken).ConfigureAwait(false);
                 SessionLogStream[] streams = SnapshotStreams();
                 foreach (SessionLogStream stream in streams)

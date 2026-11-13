@@ -15,12 +15,12 @@ public sealed class SessionLogOptions : IValidateOptions<SessionLogOptions>
     public string Directory { get; init; } = "data/sessionlog";
 
     /// <summary>
-    /// Trading-day folders older than this many days are deleted. Default is 5.
+    /// Trading-day folders older than this many B3 trading days are deleted. Default is 5.
     /// </summary>
     public int RetentionTradingDays { get; init; } = 5;
 
     /// <summary>
-    /// Time zone used to determine the trading-day boundary. Defaults to São Paulo.
+    /// Time zone for the midnight storage rollover and B3 initiator trading-day calculation. Defaults to BRT.
     /// </summary>
     public string DayRolloverTimeZone { get; init; } = "America/Sao_Paulo";
 
