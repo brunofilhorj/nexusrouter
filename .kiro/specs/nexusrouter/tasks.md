@@ -1478,7 +1478,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-12a — Registrar quem vira o dia de pregão
+- [x] TD-12a — Registrar quem vira o dia de pregão
 
 **Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-04, TD-05.
 
@@ -1488,16 +1488,16 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 **Fatos documentados (PDFs da B3):** ao fim da sessão o gateway derruba a conexão e o seqnum volta a 1. No Drop Copy, o reset ocorre de terça a quinta às 23:00 BRT, com todos os clientes desconectados. De domingo para segunda o número não é resetado.
 
-**Ponto em aberto (decidir com o usuário antes de registrar; a task fica bloqueada até lá):** quem define o dia de pregão: relógio UTC, calendário B3 ou o primeiro Logon com `141=Y`. Esta edição não escolhe a regra.
+**Decisão registrada com o usuário:** o calendário operacional do Drop Copy da B3 define o dia de pregão: reset de terça a quinta às 23:00 BRT (`America/Sao_Paulo`); de domingo para segunda não há reset. O fuso é `America/Sao_Paulo`.
 
 **Passos:**
-1. Com a decisão do usuário, registrar em `design.md` §3.4.3 a regra de virada de dia e o fuso.
+1. Registrar em `design.md` §3.4.3 a regra de virada de dia e o fuso aprovados pelo usuário.
 
 **Saída:** `design.md` §3.4.3 diz quem vira o dia e em qual fuso. Nenhum seqnum é zerado por esta fatia.
 
 ---
 
-- [ ] TD-12b — `BeginEpoch` no primeiro Logon do dia
+- [x] TD-12b — `BeginEpoch` no primeiro Logon do dia
 
 **Origem:** `notes/seqnum-rethink.md` §4 e §7.1 item 5; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-12a.
 
@@ -1514,7 +1514,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-12c — Domingo para segunda e retenção
+- [x] TD-12c — Domingo para segunda e retenção
 
 **Origem:** `notes/seqnum-rethink.md` §4; `notes/session-log-rethink.md` §3.2. **Tamanho:** P. **Depende de:** TD-12b.
 
@@ -1841,5 +1841,5 @@ TD-04 + T-33 + T-34 ── TD-17 (alerta de disco 80% / 90%)
 TD-04 inclui o portão de latência do append (FR-RPL-09); TD-04a só começa com ele aprovado.
 
 Ordem de execução: TD-01 a TD-08 estão concluídos. T-44, T-47 e T-48 também.
-Pendentes: Fase 10 (T-49a a T-53) e, independentes entre si, TD-10a a TD-10d, TD-11, TD-12a a TD-12c, TD-15a a TD-15d, TD-16a a TD-16b e TD-17.
+Pendentes: Fase 10 (T-49a a T-53) e, independentes entre si, TD-10a a TD-10d, TD-11, TD-15a a TD-15d, TD-16a a TD-16b e TD-17.
 ```
