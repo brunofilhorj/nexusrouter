@@ -68,6 +68,7 @@ internal sealed class AcceptorRig : IAsyncDisposable
         TimeSpan? slotTimeout = null,
         int uncleanMargin = 5,
         string dispatcherId = DefaultDispatcherId,
+        int channelCapacity = 8192,
         bool blockBackfillReader = false)
     {
         var log = new SessionLogManager(
@@ -107,6 +108,7 @@ internal sealed class AcceptorRig : IAsyncDisposable
                 HeartBtInt = 30,
                 LogonTimeout = TimeSpan.FromSeconds(2),
                 SlotPublishTimeout = slotTimeout ?? TimeSpan.FromMilliseconds(30),
+                ChannelCapacity = channelCapacity,
                 Recovery = recovery ?? new AcceptorRecoveryOptions(),
             },
             NullLogger<FixOutboundDispatcher>.Instance,
@@ -145,6 +147,29 @@ internal sealed class AcceptorRig : IAsyncDisposable
             LogRef = appended.Ref,
         };
         Assert.True(_dispatcher.TryEnqueue(payload));
+    }
+
+    internal async Task DispatchAsync(Appended appended, DeliveryMode mode = DeliveryMode.PassThrough)
+    {
+        while (true)
+        {
+            byte[] rented = ArrayPool<byte>.Shared.Rent(appended.Frame.Length);
+            appended.Frame.CopyTo(rented.AsSpan(0, appended.Frame.Length));
+            var owner = new ArrayPoolMemoryOwner<byte>(rented, appended.Frame.Length);
+            var payload = new DispatchPayload
+            {
+                DeliveryMode = mode,
+                RawBuffer = owner,
+                LogRef = appended.Ref,
+            };
+            if (_dispatcher.TryEnqueue(payload))
+            {
+                return;
+            }
+
+            owner.Dispose();
+            await Task.Delay(1);
+        }
     }
 
     /// <summary>
@@ -351,9 +376,15 @@ internal sealed class FixPeer : IDisposable
         long msgSeqNum = 1,
         bool reset = false,
         long? nextExpected = null,
-        string? replayMode = null)
+        string? replayMode = null,
+        int? receiveBufferSize = null)
     {
         var client = new TcpClient();
+        if (receiveBufferSize is int size)
+        {
+            client.ReceiveBufferSize = size;
+        }
+
         await client.ConnectAsync(IPAddress.Loopback, rig.Port);
         var peer = new FixPeer(client);
         await peer.SendAsync(FixWire.Logon(senderCompId, msgSeqNum, reset, nextExpected, replayMode));
