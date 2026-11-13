@@ -20,12 +20,19 @@ export interface ConfigModalProps {
   onClose: () => void;
 }
 
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
 interface FieldDef {
   key: string;
   label: string;
   secret?: boolean;
   /** Checkbox stored as 'true' / 'false'. */
   checkbox?: boolean;
+  /** Select stored as the option value. Empty means the tag is omitted. */
+  select?: readonly SelectOption[];
 }
 
 const TABS: readonly { id: ConfigTab; label: string }[] = [
@@ -56,6 +63,15 @@ const FIELDS: Record<ConfigTab, readonly FieldDef[]> = {
     { key: 'senderCompId', label: 'SenderCompID' },
     { key: 'targetCompId', label: 'TargetCompID' },
     { key: 'resetSeqNum', label: 'Zerar sequência no próximo Logon (141=Y)', checkbox: true },
+    {
+      key: 'replayMode',
+      label: 'ReplayMode (19001)',
+      select: [
+        { value: '', label: 'Não enviar' },
+        { value: 'FromLogon', label: 'FromLogon (do Logon em diante)' },
+        { value: 'StartOfDay', label: 'StartOfDay (dia inteiro)' },
+      ],
+    },
     { key: 'sendNextExpected', label: 'Enviar NextExpectedMsgSeqNum (789)', checkbox: true },
   ],
   ws: [
@@ -80,8 +96,8 @@ export function ConfigModal({ onClose }: ConfigModalProps): JSX.Element {
     return (config[tab] as Record<string, string>)[def.key] ?? '';
   };
 
-  const onChange = (def: FieldDef) => (event: ChangeEvent<HTMLInputElement>) => {
-    const value = def.checkbox ? String(event.target.checked) : event.target.value;
+  const onChange = (def: FieldDef) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const value = def.checkbox ? String((event.target as HTMLInputElement).checked) : event.target.value;
     if (def.secret) {
       const next = tab === 'rabbit' ? { rabbitPassword: value } : { wsToken: value };
       setSecrets(next);
@@ -141,6 +157,17 @@ export function ConfigModal({ onClose }: ConfigModalProps): JSX.Element {
             <label key={def.key} className={styles.check}>
               <input type="checkbox" checked={valueOf(def) === 'true'} onChange={onChange(def)} />
               <span>{def.label}</span>
+            </label>
+          ) : def.select ? (
+            <label key={def.key} className={styles.field}>
+              <span>{def.label}</span>
+              <select value={valueOf(def)} onChange={onChange(def)}>
+                {def.select.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </label>
           ) : (
             <label key={def.key} className={styles.field}>

@@ -221,7 +221,7 @@ Os blocos ficam longe das faixas que a B3 já ocupa no `docs/FIX44Entrypoint.xml
 
 | Tag     | Nome         | Mensagem         | Bloco   | Status                 |
 |---------|--------------|------------------|---------|------------------------|
-| `19001` | `ReplayMode` | Logon (`35=A`)   | interno | implementada no acceptor (TD-15b); seletor do ClientProbe na TD-15d |
+| `19001` | `ReplayMode` | Logon (`35=A`)   | interno | disponível |
 
 #### `ReplayMode` (19001): o que o cliente recebe ao conectar
 
