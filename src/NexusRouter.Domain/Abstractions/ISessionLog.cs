@@ -30,6 +30,13 @@ public interface ISessionLog
     ISessionLogStream OpenStream(string sessionId);
 
     /// <summary>
+    /// Opens the initiator sequence file <c>streams/{sessionId}/state.json</c>.
+    /// </summary>
+    /// <param name="sessionId">Ingress <c>SessionId</c>. Letters, digits, underscore, and hyphen only.</param>
+    /// <returns>The persisted next outbound sequence, expected inbound sequence, and epoch.</returns>
+    IConsumerState OpenStreamState(string sessionId);
+
+    /// <summary>
     /// Opens the index and state of a known client.
     /// </summary>
     /// <param name="dispatcherId">Dispatcher that owns the client.</param>

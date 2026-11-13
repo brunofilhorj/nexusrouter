@@ -39,6 +39,7 @@ public sealed class FixSession : IHostedService
     private readonly ISecretResolver _secretResolver;
     private readonly ILogger<FixSession> _logger;
     private readonly ISessionLogStream _sessionLog;
+    private readonly IConsumerState _ingressState;
     private readonly FixSessionStateMachine _stateMachine = new();
     private readonly SessionId _sessionId;
     private readonly SemaphoreSlim _outboundGate = new(1, 1);
@@ -172,6 +173,7 @@ public sealed class FixSession : IHostedService
         _logger = logger;
         _sessionId = new SessionId(options.SessionId);
         _sessionLog = sessionLog.OpenStream(options.SessionId);
+        _ingressState = sessionLog.OpenStreamState(options.SessionId);
         _metrics = metrics;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -661,6 +663,9 @@ public sealed class FixSession : IHostedService
             case (byte)'2':
                 HandleResendRequest(raw);
                 return;
+            case (byte)'4':
+                HandleSequenceReset(raw);
+                return;
             case (byte)'5':
                 _stateMachine.HandleLogout();
                 Volatile.Write(ref _peerLogout, 1);
@@ -696,7 +701,7 @@ public sealed class FixSession : IHostedService
             return false;
         }
 
-        return msgType[0] is (byte)'0' or (byte)'1' or (byte)'2' or (byte)'5' or (byte)'A';
+        return msgType[0] is (byte)'0' or (byte)'1' or (byte)'2' or (byte)'4' or (byte)'5' or (byte)'A';
     }
 
     private static bool TryReadMsgType(ReadOnlySequence<byte> buffer, Span<byte> destination, out int length)
@@ -743,6 +748,179 @@ public sealed class FixSession : IHostedService
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Aplica um SequenceReset (35=4) ao seqnum de entrada esperado.
+    /// </summary>
+    /// <remarks>
+    /// QuickFIX: <c>NewSeqNo</c> (36) maior que o esperado avança o alvo; menor gera Reject com
+    /// <c>SessionRejectReason</c> 5 (value incorrect) na tag 36. Gap-fill (<c>123=Y</c>) obedece o 34:
+    /// maior pede <c>ResendRequest</c> (7=esperado, 16=0) e não aplica o salto; menor sem <c>PossDupFlag=Y</c>
+    /// gera Logout; menor com <c>43=Y</c>, ou igual ao esperado, aplica o <c>NewSeqNo</c>.
+    /// Reset (<c>123</c> ausente ou <c>N</c>) com 34 acima do esperado é aplicado sem resend, como no QuickFIX.
+    /// B3 (Message Specs / design §3.4.7): <c>123=Y</c> substitui o que não será reenviado; <c>123=N</c> é
+    /// recuperação de desastre e só pode aumentar o seq. O novo valor fica em <see cref="IConsumerState.NextInExpected"/>.
+    /// </remarks>
+    private void HandleSequenceReset(ReadOnlySequence<byte> raw)
+    {
+        _stateMachine.RecordInboundMessage();
+        if (!TryReadMsgSeq(raw, out long msgSeq))
+        {
+            RejectInbound(msgSeq, 34, FixFrameValidation.RequiredTagMissing, "MsgSeqNum (34) ausente ou invalido");
+            return;
+        }
+
+        if (!TryReadGapFill(raw, out bool gapFill))
+        {
+            RejectInbound(msgSeq, 123, FixFrameValidation.ValueIncorrect, "GapFillFlag (123) invalido");
+            return;
+        }
+
+        long expected = _ingressState.NextInExpected;
+        if (msgSeq > expected)
+        {
+            if (gapFill)
+            {
+                _logger.LogWarning(
+                    "Sessão {SessionId} recebeu SequenceReset-GapFill com MsgSeqNum {MsgSeqNum} acima do esperado {Expected}",
+                    _sessionId.Value,
+                    msgSeq,
+                    expected);
+                SendResendRequest(expected);
+                return;
+            }
+        }
+        else if (msgSeq < expected && !IsFlagSet(raw, "43="u8))
+        {
+            _logger.LogWarning(
+                "Sessão {SessionId} recebeu SequenceReset com MsgSeqNum {MsgSeqNum} abaixo do esperado {Expected}",
+                _sessionId.Value,
+                msgSeq,
+                expected);
+            TryEnterLogoutSent();
+            SendAdmin(OutboundAdmin.Logout, ReadOnlySpan<byte>.Empty);
+            Volatile.Write(ref _shutdownAfterAdminReply, 1);
+            return;
+        }
+
+        Span<byte> digits = stackalloc byte[20];
+        if (!TryCopyField(raw, "36="u8, digits, out int newSeqLength))
+        {
+            RejectInbound(msgSeq, 36, FixFrameValidation.RequiredTagMissing, "NewSeqNo (36) ausente");
+            return;
+        }
+
+        if (!Utf8Parser.TryParse(digits[..newSeqLength], out long newSeqNo, out int consumed)
+            || consumed != newSeqLength
+            || digits[0] == (byte)'+'
+            || digits[0] == (byte)'-')
+        {
+            RejectInbound(msgSeq, 36, FixFrameValidation.IncorrectDataFormat, "NewSeqNo (36) nao numerico");
+            return;
+        }
+
+        if (newSeqNo <= 0 || newSeqNo < expected)
+        {
+            RejectInbound(msgSeq, 36, FixFrameValidation.ValueIncorrect, "NewSeqNo (36) menor que o esperado");
+            return;
+        }
+
+        if (newSeqNo > expected)
+        {
+            _ingressState.NextInExpected = newSeqNo;
+        }
+    }
+
+    private void RejectInbound(long refSeqNum, int refTagId, int reason, string text)
+    {
+        var validation = FixFrameValidation.Reject(reason, refTagId, refSeqNum, text);
+        _metrics?.RecordReject(_sessionId.Value, validation.SessionRejectReason, validation.RefTagId);
+        _logger.LogWarning(
+            "Sessão {SessionId} rejeitou frame de entrada: {Text} (RefSeqNum {RefSeqNum}, RefTagID {RefTagId})",
+            _sessionId.Value,
+            validation.Text,
+            validation.RefSeqNum,
+            validation.RefTagId);
+        SendReject(in validation);
+    }
+
+    private void SendResendRequest(long beginSeqNo)
+    {
+        if (beginSeqNo <= 0)
+        {
+            return;
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent(AdminMessageBytes);
+        try
+        {
+            _outboundGate.Wait();
+            try
+            {
+                long sequence = Interlocked.Increment(ref _nextOutboundSequence);
+                Span<byte> message = FixMessageBuilder.BuildResendRequest(rented, _options, sequence, beginSeqNo, endSeqNo: 0);
+                WriteSocket(message);
+            }
+            finally
+            {
+                _outboundGate.Release();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "Sessão {SessionId} não enviou o ResendRequest", _sessionId.Value);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static bool TryReadMsgSeq(ReadOnlySequence<byte> raw, out long msgSeq)
+    {
+        Span<byte> digits = stackalloc byte[20];
+        if (!TryCopyField(raw, "34="u8, digits, out int length))
+        {
+            msgSeq = 0;
+            return false;
+        }
+
+        if (!Utf8Parser.TryParse(digits[..length], out msgSeq, out int consumed)
+            || consumed != length
+            || digits[0] == (byte)'+'
+            || digits[0] == (byte)'-'
+            || msgSeq <= 0)
+        {
+            msgSeq = 0;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryReadGapFill(ReadOnlySequence<byte> raw, out bool gapFill)
+    {
+        gapFill = false;
+        Span<byte> flag = stackalloc byte[4];
+        if (!TryCopyField(raw, "123="u8, flag, out int length))
+        {
+            return true;
+        }
+
+        if (length == 1 && flag[0] == (byte)'Y')
+        {
+            gapFill = true;
+            return true;
+        }
+
+        return length == 1 && flag[0] == (byte)'N';
+    }
+
+    private static bool IsFlagSet(ReadOnlySequence<byte> raw, ReadOnlySpan<byte> tag)
+    {
+        Span<byte> flag = stackalloc byte[4];
+        return TryCopyField(raw, tag, flag, out int length) && length == 1 && flag[0] == (byte)'Y';
     }
 
     /// <summary>
@@ -898,6 +1076,12 @@ public sealed class FixSession : IHostedService
         {
             RejectPeerLogon("ResetSeqNumFlag não foi ecoado");
             return false;
+        }
+
+        // O Logon aceito consome o 34. O dicionário FIX não gera ResendRequest a partir do seq do Logon.
+        if (TryReadSequenceField(raw, "34="u8, out long inSeq) && inSeq > 0 && inSeq == _ingressState.NextInExpected)
+        {
+            _ingressState.NextInExpected = inSeq + 1;
         }
 
         return true;

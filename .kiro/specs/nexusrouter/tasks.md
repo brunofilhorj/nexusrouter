@@ -1460,7 +1460,7 @@ Backlog de correções e lacunas achadas depois das fases 1–10. A fase fica no
 
 ---
 
-- [ ] TD-11 — `SequenceReset` (35=4) recebido no initiator
+- [x] TD-11 — `SequenceReset` (35=4) recebido no initiator
 
 **Origem:** `notes/seqnum-rethink.md` §7.2 item 7. **Tamanho:** P. **Depende de:** TD-06.
 

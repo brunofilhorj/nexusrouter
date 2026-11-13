@@ -334,6 +334,52 @@ public static class FixMessageBuilder
     }
 
     /// <summary>
+    /// Escreve um ResendRequest (MsgType=2) em <paramref name="buffer"/>.
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString e comp IDs.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34) desta mensagem, a partir de 1.</param>
+    /// <param name="beginSeqNo">BeginSeqNo (tag 7). Primeiro número pedido.</param>
+    /// <param name="endSeqNo">EndSeqNo (tag 16). Zero pede até o fim, como no FIX 4.4.</param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="msgSeqNum"/> ou <paramref name="beginSeqNo"/> não é positivo, ou <paramref name="endSeqNo"/> é negativo.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>Zero allocation. O retorno é um slice de <paramref name="buffer"/>.</remarks>
+    public static Span<byte> BuildResendRequest(
+        Span<byte> buffer,
+        SessionOptions options,
+        long msgSeqNum,
+        long beginSeqNo,
+        long endSeqNo)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(beginSeqNo);
+        ArgumentOutOfRangeException.ThrowIfNegative(endSeqNo);
+
+        Span<byte> extra = stackalloc byte[48];
+        int length = AppendLiteral(extra, 0, "7="u8);
+        if (!Utf8Formatter.TryFormat(beginSeqNo, extra[length..], out int beginWidth))
+        {
+            throw new InvalidOperationException("BeginSeqNo não coube no ResendRequest.");
+        }
+
+        length += beginWidth;
+        length = AppendSoh(extra, length);
+        length = AppendLiteral(extra, length, "16="u8);
+        if (!Utf8Formatter.TryFormat(endSeqNo, extra[length..], out int endWidth))
+        {
+            throw new InvalidOperationException("EndSeqNo não coube no ResendRequest.");
+        }
+
+        length += endWidth;
+        length = AppendSoh(extra, length);
+        int written = WriteMessage(buffer, options, msgSeqNum, "2"u8, extra[..length]);
+        return buffer[..written];
+    }
+
+    /// <summary>
     /// Escreve um Reject (MsgType=3) em <paramref name="buffer"/>.
     /// </summary>
     /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
