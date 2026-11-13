@@ -264,6 +264,13 @@ internal sealed class AcceptorRig : IAsyncDisposable
 
         public IConsumerState OpenStreamState(string sessionId) => _inner.OpenStreamState(sessionId);
 
+        public SessionLogLogonState PrepareStreamLogon(string sessionId) => _inner.PrepareStreamLogon(sessionId);
+
+        public void SetStreamNextOut(string sessionId, long nextOut) =>
+            _inner.SetStreamNextOut(sessionId, nextOut);
+
+        public void CompleteStreamLogon(string sessionId) => _inner.CompleteStreamLogon(sessionId);
+
         public ClientBinding OpenClient(string dispatcherId, string clientKey) =>
             _inner.OpenClient(dispatcherId, clientKey);
 

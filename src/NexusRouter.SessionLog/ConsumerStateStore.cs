@@ -22,6 +22,7 @@ internal sealed class ConsumerStateStore : IConsumerState
     private long _nextInExpected = 1;
     private long _epoch;
     private int _tradingDay;
+    private int _resetSeqNumPending;
 
     /// <summary>
     /// Creates a store. <paramref name="readNextOut"/> supplies the live counter when an index owns it.
@@ -74,6 +75,19 @@ internal sealed class ConsumerStateStore : IConsumerState
         }
     }
 
+    /// <summary>
+    /// Whether the first Logon of the current trading day still needs to carry tag 141.
+    /// </summary>
+    public bool ResetSeqNumPending
+    {
+        get => Volatile.Read(ref _resetSeqNumPending) != 0;
+        set
+        {
+            Volatile.Write(ref _resetSeqNumPending, value ? 1 : 0);
+            _changed?.Invoke();
+        }
+    }
+
     /// <inheritdoc />
     public long GetExpected(ushort stream) => Volatile.Read(ref _expected[stream]);
 
@@ -115,9 +129,21 @@ internal sealed class ConsumerStateStore : IConsumerState
         _nextInExpected = document.NextInExpected < 1 ? 1 : document.NextInExpected;
         _epoch = document.Epoch;
         _tradingDay = document.TradingDay;
+        _resetSeqNumPending = document.ResetSeqNumPending ? 1 : 0;
         Copy(document.Expected, _expected);
         Copy(document.Cursors, _cursors);
         return document;
+    }
+
+    /// <summary>
+    /// Publishes the next outbound sequence for a stream without a client index.
+    /// </summary>
+    /// <param name="nextOut">Next sequence to send.</param>
+    public void SetNextOut(long nextOut)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(nextOut, 1);
+        Volatile.Write(ref _nextOut, nextOut);
+        _changed?.Invoke();
     }
 
     /// <summary>
@@ -131,6 +157,7 @@ internal sealed class ConsumerStateStore : IConsumerState
             NextInExpected = NextInExpected,
             Epoch = Epoch,
             TradingDay = TradingDay,
+            ResetSeqNumPending = ResetSeqNumPending,
             UpdatedAt = DateTimeOffset.UtcNow,
             Expected = Dump(_expected),
             Cursors = Dump(_cursors),
@@ -195,6 +222,10 @@ internal sealed class ConsumerStateStore : IConsumerState
         /// <summary>Trading day associated with a client state, as <c>yyyyMMdd</c>.</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public int TradingDay { get; set; }
+
+        /// <summary>Whether the first Logon of the trading day still needs tag 141.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool ResetSeqNumPending { get; set; }
 
         /// <summary>When the flusher wrote the file.</summary>
         public DateTimeOffset UpdatedAt { get; set; }

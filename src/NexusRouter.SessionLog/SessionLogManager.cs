@@ -41,6 +41,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     private Task? _flushTask;
     private Task? _maintainTask;
     private int _tradingDay;
+    private int _sequenceTradingDay;
     private TimeZoneInfo _rolloverTimeZone = TimeZoneInfo.Utc;
     private bool _applyUnclean;
     private int _started;
@@ -117,7 +118,8 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
         _rolloverTimeZone = TimeZoneInfo.FindSystemTimeZoneById(_options.DayRolloverTimeZone);
         Directory.CreateDirectory(_options.Directory);
-        _tradingDay = CurrentTradingDay();
+        _tradingDay = CurrentStorageTradingDay();
+        _sequenceTradingDay = CurrentSequenceTradingDay();
         string clean = CleanPath();
         _applyUnclean = !File.Exists(clean);
         if (File.Exists(clean))
@@ -129,6 +131,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         foreach (string sessionId in _catalog.Sessions.Keys.ToArray())
         {
             OpenStream(sessionId);
+            OpenStreamState(sessionId);
         }
 
         RecoverClients();
@@ -212,10 +215,78 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
             string path = SessionLogPaths.Under(_options.Directory, "streams", sessionId, "state.json");
             var store = new ConsumerStateStore(path, readNextOut: null, Changed);
-            store.Load();
+            ConsumerStateStore.StateDocument? document = store.Load();
+            if (_applyUnclean
+                && document is not null
+                && store.TradingDay == Volatile.Read(ref _sequenceTradingDay)
+                && _options.UncleanRestartSeqMargin > 0)
+            {
+                store.SetNextOut(checked(store.NextOut + _options.UncleanRestartSeqMargin));
+            }
+
             _streamStates[sessionId] = store;
             _states.Add(store);
             return store;
+        }
+    }
+
+    /// <inheritdoc />
+    public SessionLogLogonState PrepareStreamLogon(string sessionId)
+    {
+        SessionLogPaths.EnsureKey(sessionId, nameof(sessionId));
+        lock (_gate)
+        {
+            ISessionLogStream stream = OpenStream(sessionId);
+            ConsumerStateStore state = (ConsumerStateStore)OpenStreamState(sessionId);
+            int tradingDay = CurrentSequenceTradingDay();
+            Volatile.Write(ref _sequenceTradingDay, tradingDay);
+            if (state.TradingDay != tradingDay)
+            {
+                if (stream.Epoch <= state.Epoch)
+                {
+                    int epoch = checked((int)state.Epoch + 1);
+                    stream.BeginEpoch(epoch, baseSeq: 0);
+                }
+
+                state.Epoch = stream.Epoch;
+                state.SetNextOut(1);
+                state.NextInExpected = 1;
+                state.TradingDay = tradingDay;
+                state.ResetSeqNumPending = true;
+            }
+
+            return new SessionLogLogonState(state.NextOut, state.ResetSeqNumPending);
+        }
+    }
+
+    /// <inheritdoc />
+    public void SetStreamNextOut(string sessionId, long nextOut)
+    {
+        SessionLogPaths.EnsureKey(sessionId, nameof(sessionId));
+        ArgumentOutOfRangeException.ThrowIfLessThan(nextOut, 1);
+        lock (_gate)
+        {
+            if (!_streamStates.TryGetValue(sessionId, out ConsumerStateStore? state))
+            {
+                throw new InvalidOperationException($"Session-log state for '{sessionId}' is not open.");
+            }
+
+            state.SetNextOut(nextOut);
+        }
+    }
+
+    /// <inheritdoc />
+    public void CompleteStreamLogon(string sessionId)
+    {
+        SessionLogPaths.EnsureKey(sessionId, nameof(sessionId));
+        lock (_gate)
+        {
+            if (!_streamStates.TryGetValue(sessionId, out ConsumerStateStore? state))
+            {
+                throw new InvalidOperationException($"Session-log state for '{sessionId}' is not open.");
+            }
+
+            state.ResetSeqNumPending = false;
         }
     }
 
@@ -500,7 +571,9 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
     private void ApplyRetention()
     {
-        DateOnly cutoff = TradingDate(CurrentTradingDay()).AddDays(-_options.RetentionTradingDays);
+        DateOnly cutoff = B3TradingCalendar.RetentionCutoff(
+            Volatile.Read(ref _sequenceTradingDay),
+            _options.RetentionTradingDays);
         string streams = Path.Combine(_options.Directory, "streams");
         if (Directory.Exists(streams))
         {
@@ -597,7 +670,7 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
 
     private async ValueTask CheckDayRolloverAsync(CancellationToken cancellationToken)
     {
-        int day = CurrentTradingDay();
+        int day = CurrentStorageTradingDay();
         if (day == Volatile.Read(ref _tradingDay))
         {
             return;
@@ -790,10 +863,28 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
         }
     }
 
-    private int CurrentTradingDay()
+    private void CheckSequenceTradingDay()
+    {
+        int day = CurrentSequenceTradingDay();
+        if (day == Volatile.Read(ref _sequenceTradingDay))
+        {
+            return;
+        }
+
+        Volatile.Write(ref _sequenceTradingDay, day);
+        ApplyRetention();
+    }
+
+    private int CurrentStorageTradingDay()
     {
         DateTime local = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), _rolloverTimeZone).DateTime;
         return TradingDay(local);
+    }
+
+    private int CurrentSequenceTradingDay()
+    {
+        DateTime local = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), _rolloverTimeZone).DateTime;
+        return B3TradingCalendar.TradingDay(local);
     }
 
     private static DateOnly TradingDate(int tradingDay) =>
