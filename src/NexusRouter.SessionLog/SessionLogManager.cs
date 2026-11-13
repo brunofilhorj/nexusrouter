@@ -63,6 +63,26 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     }
 
     /// <inheritdoc />
+    public TradingDayStreamSnapshot[] GetTradingDayStreams()
+    {
+        lock (_gate)
+        {
+            var snapshots = new List<TradingDayStreamSnapshot>();
+            foreach (SessionLogStream stream in _streams.Values)
+            {
+                snapshots.AddRange(stream.GetTradingDaySnapshots(Volatile.Read(ref _tradingDay)));
+            }
+
+            snapshots.Sort(static (left, right) =>
+            {
+                int byStream = left.Stream.CompareTo(right.Stream);
+                return byStream != 0 ? byStream : left.Epoch.CompareTo(right.Epoch);
+            });
+            return [.. snapshots];
+        }
+    }
+
+    /// <inheritdoc />
     public event Func<CancellationToken, ValueTask>? DayRolloverStarting;
 
     /// <inheritdoc />
@@ -266,6 +286,24 @@ public sealed class SessionLogManager : IHostedService, ISessionLog, ISessionLog
     {
         SessionLogStream? found = Find(stream);
         return found is not null && found.TryRead(epoch, inSeq, destination);
+    }
+
+    /// <inheritdoc />
+    public bool TryRead(
+        ushort stream,
+        int epoch,
+        long inSeq,
+        IBufferWriter<byte> destination,
+        out long ingressTimestampTicks)
+    {
+        SessionLogStream? found = Find(stream);
+        if (found is not null)
+        {
+            return found.TryRead(epoch, inSeq, destination, out ingressTimestampTicks);
+        }
+
+        ingressTimestampTicks = 0;
+        return false;
     }
 
     /// <inheritdoc />

@@ -44,6 +44,7 @@ internal sealed class FixAcceptedSession
     private readonly Channel<OutboundFrame> _outbound;
     private readonly SemaphoreSlim _enqueueGate = new(1, 1);
     private readonly TaskCompletionSource _logonReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _stopCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private Pipe? _pipe;
     private CancellationTokenSource? _connectionCts;
@@ -224,61 +225,75 @@ internal sealed class FixAcceptedSession
     {
         if (Interlocked.Exchange(ref _stop, 1) != 0)
         {
+            await _stopCompletion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return;
-        }
-
-        _onClosed(this);
-        _logonReady.TrySetCanceled(cancellationToken);
-        _heartbeatCts?.Cancel();
-        if (WriteLoopDepth.Value != 0)
-        {
-            _outbound.Writer.TryComplete();
-            _connectionCts?.Cancel();
-            await CleanupAsync(cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        _outbound.Writer.TryComplete();
-        if (_write is not null)
-        {
-            try
-            {
-                await _write.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
-            {
-                _connectionCts?.Cancel();
-            }
-        }
-
-        if (Volatile.Read(ref _logoutSent) == 0)
-        {
-            await SendLogoutDirectAsync(logoutText).ConfigureAwait(false);
         }
 
         try
         {
-            _pipe?.Writer.Complete();
-        }
-        catch (InvalidOperationException)
-        {
-            // O pump ou uma falha anterior já completou o pipe.
-        }
+            _logonReady.TrySetCanceled(cancellationToken);
+            _heartbeatCts?.Cancel();
+            if (WriteLoopDepth.Value != 0)
+            {
+                _outbound.Writer.TryComplete();
+                _connectionCts?.Cancel();
+                await CleanupAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
-        if (_pump is not null)
-        {
+            _outbound.Writer.TryComplete();
+            if (_write is not null)
+            {
+                try
+                {
+                    await _write.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    _connectionCts?.Cancel();
+                }
+            }
+
+            if (Volatile.Read(ref _logoutSent) == 0)
+            {
+                await SendLogoutDirectAsync(logoutText).ConfigureAwait(false);
+            }
+
             try
             {
-                await _pump.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                _pipe?.Writer.Complete();
             }
-            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            catch (InvalidOperationException)
             {
-                _logger.LogDebug(ex, "Sessão FIX {SenderCompId} não drenou o socket.", SenderCompId);
+                // O pump ou uma falha anterior já completou o pipe.
             }
-        }
 
-        _connectionCts?.Cancel();
-        await CleanupAsync(cancellationToken).ConfigureAwait(false);
+            if (_pump is not null)
+            {
+                try
+                {
+                    await _pump.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+                {
+                    _logger.LogDebug(ex, "Sessão FIX {SenderCompId} não drenou o socket.", SenderCompId);
+                }
+            }
+
+            _connectionCts?.Cancel();
+            await CleanupAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _stopCompletion.TrySetException(ex);
+            _ = _stopCompletion.Task.Exception;
+            throw;
+        }
+        finally
+        {
+            _onClosed(this);
+            _stopCompletion.TrySetResult();
+        }
     }
 
     /// <summary>
@@ -330,6 +345,114 @@ internal sealed class FixAcceptedSession
 
             rented = null;
             return true;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+            }
+
+            _enqueueGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites and enqueues a buffered live frame after a StartOfDay backfill.
+    /// </summary>
+    /// <param name="frame">Original FIX frame.</param>
+    /// <param name="mode">Delivery mode of the ingress stream.</param>
+    /// <param name="logRef">Ingress record to publish in the client index.</param>
+    /// <returns>False when the session is stopping or its outbound queue is full.</returns>
+    internal bool TryEnqueueBuffered(ReadOnlyMemory<byte> frame, DeliveryMode mode, LogRef logRef)
+    {
+        if (Volatile.Read(ref _stop) != 0)
+        {
+            return false;
+        }
+
+        if (!WaitForLogon() || !TryEnterGate())
+        {
+            return false;
+        }
+
+        byte[]? rented = null;
+        try
+        {
+            if (Volatile.Read(ref _stop) != 0)
+            {
+                return false;
+            }
+
+            long sequence = _index.ReserveSeq();
+            _index.PublishApp(sequence, logRef);
+            int capacity = mode == DeliveryMode.Parse
+                ? Math.Max(frame.Length + 128, AdminMessageBytes)
+                : frame.Length + PassThroughRewriter.MaxGrowthBytes;
+            rented = ArrayPool<byte>.Shared.Rent(capacity);
+            int written = PrepareBuffered(frame, mode, sequence, rented);
+            if (!_outbound.Writer.TryWrite(new OutboundFrame(rented, written)))
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+                rented = null;
+                return false;
+            }
+
+            rented = null;
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
+            }
+
+            _enqueueGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Enqueues one backfill frame using the session's resend rewriting path.
+    /// </summary>
+    /// <param name="frame">Original frame read from the ingress log.</param>
+    /// <param name="mode">Delivery mode of the ingress stream.</param>
+    /// <param name="logRef">Ingress record to publish in the client index.</param>
+    /// <param name="cancellationToken">Cancels waiting for capacity in the session queue.</param>
+    /// <returns>A task completed after the rewritten frame enters the session queue.</returns>
+    internal ValueTask EnqueueReplayAsync(
+        ReadOnlyMemory<byte> frame,
+        DeliveryMode mode,
+        LogRef logRef,
+        CancellationToken cancellationToken) =>
+        EnqueueBackfillAsync(frame, mode, logRef, cancellationToken);
+
+    private async ValueTask EnqueueBackfillAsync(
+        ReadOnlyMemory<byte> frame,
+        DeliveryMode mode,
+        LogRef logRef,
+        CancellationToken cancellationToken)
+    {
+        if (!WaitForLogon())
+        {
+            throw new ChannelClosedException();
+        }
+
+        await _enqueueGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        byte[]? rented = null;
+        try
+        {
+            if (Volatile.Read(ref _stop) != 0)
+            {
+                throw new ChannelClosedException();
+            }
+
+            long sequence = _index.ReserveSeq();
+            _index.PublishApp(sequence, logRef);
+            rented = ArrayPool<byte>.Shared.Rent(frame.Length + ResendGrowthBytes);
+            int written = PrepareResend(frame, mode, sequence, rented);
+            await WriteOutboundAsync(rented, written, cancellationToken).ConfigureAwait(false);
+            rented = null;
         }
         finally
         {
@@ -931,7 +1054,11 @@ internal sealed class FixAcceptedSession
                         await FlushGapAsync(gapFrom, gapTo, possMissing: false, cancellationToken).ConfigureAwait(false);
                         gapFrom = 0;
                         gapTo = 0;
-                        await EnqueueResendAsync(scratch.WrittenMemory, action.Entry.Stream, action.FromSeq, cancellationToken).ConfigureAwait(false);
+                        await EnqueueResendAsync(
+                            scratch.WrittenMemory,
+                            _deliveryModeOf(action.Entry.Stream),
+                            action.FromSeq,
+                            cancellationToken).ConfigureAwait(false);
                         applications++;
                         break;
                 }
@@ -991,12 +1118,16 @@ internal sealed class FixAcceptedSession
         }
     }
 
-    private async ValueTask EnqueueResendAsync(ReadOnlyMemory<byte> frame, ushort stream, long sequence, CancellationToken cancellationToken)
+    private async ValueTask EnqueueResendAsync(
+        ReadOnlyMemory<byte> frame,
+        DeliveryMode mode,
+        long sequence,
+        CancellationToken cancellationToken)
     {
         byte[]? rented = ArrayPool<byte>.Shared.Rent(frame.Length + ResendGrowthBytes);
         try
         {
-            int written = PrepareResend(frame, _deliveryModeOf(stream), sequence, rented);
+            int written = PrepareResend(frame, mode, sequence, rented);
             await WriteOutboundAsync(rented, written, cancellationToken).ConfigureAwait(false);
             rented = null;
         }
@@ -1006,6 +1137,48 @@ internal sealed class FixAcceptedSession
             {
                 ArrayPool<byte>.Shared.Return(rented, clearArray: true);
             }
+        }
+    }
+
+    private int PrepareBuffered(ReadOnlyMemory<byte> frame, DeliveryMode mode, long sequence, byte[] destination)
+    {
+        switch (mode)
+        {
+            case DeliveryMode.PassThrough:
+                if (!PassThroughRewriter.TryRewriteTo(frame.Span, destination, sequence, out int written))
+                {
+                    throw new InvalidOperationException(
+                        "O frame PassThrough armazenado não pôde ser reescrito com o MsgSeqNum outbound.");
+                }
+
+                return written;
+
+            case DeliveryMode.Parse:
+            {
+                FixField[] fields = ArrayPool<FixField>.Shared.Rent(MaxResendFields);
+                try
+                {
+                    FixMessage message = FixTokenizer.Tokenize(frame, fields, out bool truncated);
+                    if (truncated)
+                    {
+                        throw new InvalidOperationException("O frame armazenado tem mais campos do que o limite configurado.");
+                    }
+
+                    return FixMessageSerializer.Serialize(
+                        in message,
+                        destination,
+                        sequence,
+                        _options.SenderCompId,
+                        _options.TargetCompId);
+                }
+                finally
+                {
+                    ArrayPool<FixField>.Shared.Return(fields, clearArray: true);
+                }
+            }
+
+            default:
+                throw new InvalidOperationException("Modo de entrega desconhecido.");
         }
     }
 

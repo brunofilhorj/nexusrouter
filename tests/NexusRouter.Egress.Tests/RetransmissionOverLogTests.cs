@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 
+using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
 using NexusRouter.Egress.Fix;
 
@@ -34,6 +35,159 @@ public sealed class RetransmissionOverLogTests
             byte[] live = await oms.ReadFrameAsync();
             Assert.Equal("2", Field(live, 34));
             Assert.Equal("AFTER", Field(live, 11));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StartOfDay_NewClientReceivesTodaysHistoryThenLiveMessages()
+    {
+        const string dispatcherId = "start-of-day-metric";
+        string directory = TempDirectory();
+        var measured = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Name == "acceptor_start_of_day_backfill_messages_total")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+                if (tag.Key == "dispatcher_id" && string.Equals(tag.Value?.ToString(), dispatcherId, StringComparison.Ordinal))
+                {
+                    measured.TrySetResult(measurement);
+                    break;
+                }
+            }
+        });
+        listener.Start();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, dispatcherId: dispatcherId);
+            await rig.AppendAndDispatchAsync("BEFORE1", "BEFORE2");
+
+            using FixPeer peer = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "2");
+            Assert.Equal("1", Field(await peer.ReadFrameAsync(), 34));
+
+            foreach ((string clOrdId, string sequence) in new[] { ("BEFORE1", "2"), ("BEFORE2", "3") })
+            {
+                byte[] replay = await peer.ReadFrameAsync();
+                Assert.Equal(clOrdId, Field(replay, 11));
+                Assert.Equal(sequence, Field(replay, 34));
+                Assert.Equal("Y", Field(replay, 43));
+            }
+
+            Assert.Equal(4, rig.Client("OMS1").Index.NextOut);
+            Assert.Equal(2, await measured.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+            rig.Dispatch(rig.Append("LIVE"));
+            byte[] live = await peer.ReadFrameAsync();
+            Assert.Equal("LIVE", Field(live, 11));
+            Assert.Equal("4", Field(live, 34));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StartOfDay_MergesIngressStreamsByTheirMonotonicIngressTimestamp()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory);
+            ISessionLogStream secondStream = rig.Log.OpenStream("EXCHANGE2");
+            AppendResult late = rig.Stream.Append(ExecutionReport("LATE", 1), 1, ingressTs: 30);
+            AppendResult early = secondStream.Append(ExecutionReport("EARLY", 1), 1, ingressTs: 20);
+            Assert.True(late.IsOk);
+            Assert.True(early.IsOk);
+
+            using FixPeer peer = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "2");
+            Assert.Equal("1", Field(await peer.ReadFrameAsync(), 34));
+
+            byte[] first = await peer.ReadFrameAsync();
+            byte[] second = await peer.ReadFrameAsync();
+            Assert.Equal("EARLY", Field(first, 11));
+            Assert.Equal("2", Field(first, 34));
+            Assert.Equal("LATE", Field(second, 11));
+            Assert.Equal("3", Field(second, 34));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StartOfDay_WithResetSequenceFlag_ReplaysTheTradingDayFromTheFirstApplication()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory);
+            using (FixPeer initial = await FixPeer.ConnectAsync(rig, "OMS1"))
+            {
+                Assert.Equal("1", Field(await initial.ReadFrameAsync(), 34));
+                rig.Dispatch(rig.Append("FIRST"));
+                Assert.Equal("FIRST", Field(await initial.ReadFrameAsync(), 11));
+            }
+
+            rig.Dispatch(rig.Append("SECOND"));
+            rig.Dispatch(rig.Append("THIRD"));
+
+            using FixPeer reset = await FixPeer.ConnectAsync(rig, "OMS1", reset: true, replayMode: "2");
+            Assert.Equal("1", Field(await reset.ReadFrameAsync(), 34));
+            foreach ((string clOrdId, string sequence) in new[] { ("FIRST", "2"), ("SECOND", "3"), ("THIRD", "4") })
+            {
+                byte[] replay = await reset.ReadFrameAsync();
+                Assert.Equal(clOrdId, Field(replay, 11));
+                Assert.Equal(sequence, Field(replay, 34));
+                Assert.Equal("Y", Field(replay, 43));
+            }
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task StartOfDay_MessageArrivingDuringBackfillIsDeliveredOnceAfterHistory()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, blockBackfillReader: true);
+            await rig.AppendAndDispatchAsync("HISTORY1", "HISTORY2");
+
+            using FixPeer peer = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "2");
+            Assert.Equal("1", Field(await peer.ReadFrameAsync(), 34));
+            await rig.BlockingLog!.BackfillReadStarted.WaitAsync(TimeSpan.FromSeconds(3));
+
+            rig.Dispatch(rig.Append("DURING"));
+            rig.BlockingLog.ReleaseBackfill();
+
+            foreach ((string clOrdId, string sequence) in new[]
+            {
+                ("HISTORY1", "2"),
+                ("HISTORY2", "3"),
+                ("DURING", "4"),
+            })
+            {
+                byte[] frame = await peer.ReadFrameAsync();
+                Assert.Equal(clOrdId, Field(frame, 11));
+                Assert.Equal(sequence, Field(frame, 34));
+            }
+
+            await peer.ExpectSilenceAsync(Quiet);
         }
         finally
         {

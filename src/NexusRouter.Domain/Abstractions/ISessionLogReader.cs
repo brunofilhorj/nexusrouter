@@ -18,6 +18,22 @@ public interface ISessionLogReader
     bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination);
 
     /// <summary>
+    /// Copies one committed record and returns its monotonic ingress timestamp.
+    /// </summary>
+    /// <param name="stream">Ingress stream id.</param>
+    /// <param name="epoch">Epoch of the record.</param>
+    /// <param name="inSeq">Ingress sequence.</param>
+    /// <param name="destination">Receives the original frame.</param>
+    /// <param name="ingressTimestampTicks">The timestamp captured when the frame entered the router.</param>
+    /// <returns>False when the sequence is past <c>committed</c>, missing, or still torn.</returns>
+    bool TryRead(
+        ushort stream,
+        int epoch,
+        long inSeq,
+        IBufferWriter<byte> destination,
+        out long ingressTimestampTicks);
+
+    /// <summary>
     /// Copies the record a client-index slot points at.
     /// </summary>
     /// <param name="stream">Ingress stream id of the slot.</param>
