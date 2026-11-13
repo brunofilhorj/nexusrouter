@@ -22,7 +22,8 @@ namespace ClientProbe.Fix;
 /// Incoming MsgSeqNum is checked: a gap without 789 triggers one ResendRequest (7=first missing, 16=0);
 /// SequenceReset (35=4) moves the expected number forward; a ResendRequest from the acceptor is answered
 /// with one SequenceReset-GapFill, because the probe sends only session messages. Application frames,
-/// including PossDup resends, go to telemetry; Heartbeat, TestRequest, Logon and SequenceReset do not.
+/// including PossDup resends, Reject and Logout, go to telemetry. Logon, ResendRequest and SequenceReset
+/// do too, in both directions. Heartbeat and TestRequest stay off the table.
 /// </para>
 /// </remarks>
 public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
@@ -192,6 +193,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
 
         if (msgType == "4")
         {
+            OnFrame(frame);
             // SequenceReset: GapFill or Reset both move the expected number forward. Never backwards.
             if (TryGetInt(frame, "\u000136="u8, out var newSeqNo) && newSeqNo > session.NextIn)
             {
@@ -217,6 +219,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
                 await SendAsync(session, n => session.Writer.Heartbeat(n, testReqId), session.Cts.Token).ConfigureAwait(false);
                 return true;
             case "2":
+                OnFrame(frame);
                 // The probe sends only session messages, so one gap fill covers any resend range.
                 if (TryGetInt(frame, "\u00017="u8, out var beginSeqNo) && beginSeqNo > 0)
                 {
@@ -225,6 +228,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
 
                 return true;
             case "A":
+                OnFrame(frame);
                 if (State == ProbeState.Connecting)
                 {
                     SetState(ProbeState.Live);
@@ -342,6 +346,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             session.LastSendTimestamp = _time.GetTimestamp();
             session.Dirty = true;
             Persist(session);
+            PublishSentSession(frame);
         }
         finally
         {
@@ -359,6 +364,7 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
             var frame = session.Writer.GapFill(Math.Min(beginSeqNo, next), next);
             await session.Stream!.WriteAsync(frame, ct).ConfigureAwait(false);
             session.LastSendTimestamp = _time.GetTimestamp();
+            PublishSentSession(frame);
         }
         finally
         {
@@ -449,6 +455,15 @@ public sealed class FixInitiatorAdapter : ProbeAdapterBase, IFixSessionSource
         }
 
         return Path.IsPathRooted(directory) ? directory : Path.Combine(AppContext.BaseDirectory, directory);
+    }
+
+    /// <summary>Publishes Logon, ResendRequest, SequenceReset and Logout. Heartbeat stays off the table.</summary>
+    private void PublishSentSession(byte[] frame)
+    {
+        if (GetMsgType(frame) is "A" or "2" or "4" or "5")
+        {
+            PublishSent(frame);
+        }
     }
 
     private static string? GetMsgType(ReadOnlySpan<byte> frame) => GetTag(frame, "\u000135="u8);

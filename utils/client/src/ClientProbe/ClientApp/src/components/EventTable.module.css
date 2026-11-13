@@ -56,6 +56,24 @@
   background: var(--color-surface-raised);
 }
 
+.row.session td,
+.row.session:nth-child(even) td {
+  background: var(--state-warn-bg);
+}
+
+.row.session td:first-child {
+  box-shadow: inset 3px 0 0 var(--state-warn);
+}
+
+.row.reject td,
+.row.reject:nth-child(even) td {
+  background: var(--state-danger-bg);
+}
+
+.row.reject td:first-child {
+  box-shadow: inset 3px 0 0 var(--state-danger);
+}
+
 .mono {
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
 }

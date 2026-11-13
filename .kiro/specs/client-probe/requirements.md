@@ -84,9 +84,9 @@ O fluxo de laboratório é: `docker compose` sobe Kafka e Rabbit; o simulador ge
 
 | ID | Requisito |
 |----|-----------|
-| FR-RAB-01 | O adapter Rabbit DEVE usar `RabbitMQ.Client` no mesmo processo. O NexusRouter faz `BasicPublish` em `fix.orders` / `fix.raw` (`127.0.0.1:5672`) e não declara exchange nem fila. |
+| FR-RAB-01 | O adapter Rabbit DEVE usar `RabbitMQ.Client` no mesmo processo. O NexusRouter declara a exchange `fix.orders` (topic, durável) e faz `BasicPublish` em `fix.orders` / `fix.raw` (`127.0.0.1:5672`). O probe não é dono dessa exchange. |
 | FR-RAB-02 | No connect, o probe DEVE declarar uma fila exclusiva auto-delete e fazer bind na exchange e routing key do perfil. |
-| FR-RAB-03 | No primeiro connect, o probe DEVE declarar a exchange se ela não existir: tipo `topic`, durável. O README DEVE deixar explícito que o probe cria a topologia que o router assume. Sem essa exchange, a publicação do NexusRouter falha no broker. |
+| FR-RAB-03 | O probe PODE repetir o declare da exchange com os mesmos argumentos do router (topic, durável, sem auto-delete). A fila exclusiva e o bind continuam sendo do probe (FR-RAB-02). |
 | FR-RAB-04 | O body publicado é o frame FIX cru. O tratamento de decode é o mesmo de FR-KAF-03. |
 | FR-RAB-05 | A credencial default DEVE ser lida de `RABBITMQ_DEFAULT_USER` e `RABBITMQ_DEFAULT_PASS`, o mesmo par do compose. O perfil guarda o **nome** da variável, não o segredo. |
 

@@ -10,6 +10,7 @@ using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
 using NexusRouter.Egress;
+using NexusRouter.Egress.Fix;
 
 namespace NexusRouter.Egress.RabbitMQ;
 
@@ -20,7 +21,11 @@ namespace NexusRouter.Egress.RabbitMQ;
 /// <see cref="CursorAckMode.OnBrokerAck"/> liga publisher confirms e só então avança o cursor.
 /// <see cref="CursorAckMode.OnEnqueue"/> publica sem esperar o broker.
 /// Cada frame com <see cref="LogRef"/> leva o header <see cref="BrokerIdentity.HeaderName"/>.
+/// Tag 35 administrativa não é publicada, em <see cref="BrokerPayloadEncoding.Json"/> e em
+/// <see cref="BrokerPayloadEncoding.Raw"/>. O cursor avança mesmo assim: o filtro fica neste envio,
+/// depois que o <see cref="StreamCatchUp"/> já chamou.
 /// Se o model já fechou, o envio abre a conexão de novo uma vez e tenta publicar outra vez.
+/// Cada abertura declara a exchange configurada (topic, durável). A fila e o bind ficam com o consumidor.
 /// </remarks>
 public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatcherOptions>
 {
@@ -140,6 +145,12 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
             throw new InvalidOperationException("O payload RabbitMQ não tem buffer.");
         }
 
+        if (IsSessionAdmin(payload.RawBuffer.Memory.Span))
+        {
+            AcknowledgeSkipped(payload);
+            return;
+        }
+
         ReadOnlyMemory<byte> body = payload.RawBuffer.Memory;
         if (Options.PayloadEncoding == BrokerPayloadEncoding.Json)
         {
@@ -180,6 +191,21 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
             _tracker?.Confirm(payload.LogRef);
         }
     }
+
+    private void AcknowledgeSkipped(DispatchPayload payload)
+    {
+        if (Options.CursorAckMode != CursorAckMode.OnBrokerAck)
+        {
+            return;
+        }
+
+        _tracker?.Track(payload.LogRef);
+        _tracker?.Confirm(payload.LogRef);
+    }
+
+    private static bool IsSessionAdmin(ReadOnlySpan<byte> frame) =>
+        FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType)
+        && FixAdminMessageTypes.IsAdmin(msgType);
 
     private void Publish(
         ReadOnlyMemory<byte> body,
@@ -313,6 +339,7 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
 
             _connection = factory.CreateConnection(DispatcherId);
             _model = _connection.CreateModel();
+            _model.ExchangeDeclare(Options.Exchange, ExchangeType.Topic, durable: true, autoDelete: false);
             if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
             {
                 _model.ConfirmSelect();

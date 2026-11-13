@@ -9,9 +9,11 @@ namespace NexusRouter.Egress;
 /// </summary>
 /// <remarks>
 /// Roda no consume loop do dispatcher, nunca no hot path. Formato:
-/// <c>{"type":"exec","msgType":"8","ts":638...,"fields":{"11":"ORD1","55":"PETR4"}}</c>.
-/// Valores continuam a string ASCII do FIX. As tags 8, 9, 10 e 35 não entram em <c>fields</c>
-/// (a 35 vira <c>msgType</c>). Tag repetida (grupo repetitivo) vira array de strings, na ordem do wire.
+/// <c>{"type":"exec","msg_type":"8","ts":638...,"fields":{"cl_ord_id":"ORD1","symbol":"PETR4"}}</c>.
+/// A chave do campo é o nome FIX em snake_case, lido uma vez de <c>docs/FIX44Entrypoint.xml</c>. Tag ausente no
+/// dicionário vira <c>tag_&lt;número&gt;</c>. Valores continuam a string ASCII do FIX. As tags 8, 9, 10
+/// e 35 não entram em <c>fields</c> (a 35 vira <c>msg_type</c>). Tag repetida (grupo repetitivo) vira
+/// array de strings, na ordem do wire.
 /// </remarks>
 public static class FixJsonProjector
 {
@@ -67,19 +69,20 @@ public static class FixJsonProjector
         using var writer = new Utf8JsonWriter(output);
         writer.WriteStartObject();
         writer.WriteString("type", "exec");
-        writer.WriteString("msgType", msgType);
+        writer.WriteString("msg_type", msgType);
         writer.WriteNumber("ts", timestampTicks);
         writer.WriteStartObject("fields");
         foreach (int tag in order)
         {
             List<string> list = values[tag];
+            string key = FixFieldNames.Name(tag);
             if (list.Count == 1)
             {
-                writer.WriteString(tag.ToString(System.Globalization.CultureInfo.InvariantCulture), list[0]);
+                writer.WriteString(key, list[0]);
                 continue;
             }
 
-            writer.WriteStartArray(tag.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            writer.WriteStartArray(key);
             foreach (string item in list)
             {
                 writer.WriteStringValue(item);

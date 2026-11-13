@@ -268,7 +268,7 @@ O move `sim/` → `utils/sim/` mantém a barreira dentro de `utils/sim/backend/`
 2. `dotnet run --project utils/client/src/ClientProbe` abre `http://localhost:8100`.
 3. Development: a mesma URL, Vite atrás do Kestrel.
 4. Fluxo: simulador em `utils/sim/`, NexusRouter com rota para o dispatcher sob prova, probe conectado na aba correspondente.
-5. Rabbit: o primeiro connect declara a exchange `fix.orders` (topic, durável).
+5. Rabbit: a exchange `fix.orders` (topic, durável) é declarada pelo NexusRouter. O primeiro connect do probe declara a fila exclusiva e o bind.
 6. WebSocket: até T-49 a tela explica a ausência do acceptor. Depois, `AllowedOrigins` inclui `http://localhost:8100` e o `clientId` aponta para o `DispatcherId`.
 
 ---
@@ -331,7 +331,7 @@ O WebSocket de egress não passa pelo `TelemetryHub`. A página traduz o frame p
 | Um csproj com `ClientApp` dentro | Kafka, Rabbit e FIX não rodam no Chrome. Uma origem elimina CORS e URL base. |
 | Simulador segue com dois projetos | A spec do DropCopy já fechou essa divisão. O move para `utils/sim/` não a reabre. |
 | Cópia enxuta do tema, sem pacote compartilhado | Os dois utilitários continuam excluíveis sozinhos. |
-| Probe declara a exchange Rabbit | O dispatcher só publica. Sem a exchange, o broker rejeita a publicação. A fila do probe é exclusiva e não é a topologia do router. |
+| O router declara a exchange Rabbit | Ele é quem publica. O declare é topic e durável. A fila do probe é exclusiva e não é a topologia do router. |
 | Sem proxy do WebSocket de egress | O valor da prova é o contrato da §3.3.1: subprotocolo, Origin, Logon JSON. |
 | Testes num projeto irmão, não na aplicação | A aplicação permanece um csproj. O scanner e o writer precisam de teste sem subir o router. |
 | Tela WebSocket entregue antes de T-49 | O menu fica completo. A conexão real espera o acceptor; o cliente da página não. |

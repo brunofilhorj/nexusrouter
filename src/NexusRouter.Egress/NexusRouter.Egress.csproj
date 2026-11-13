@@ -16,6 +16,12 @@
     <InternalsVisibleTo Include="NexusRouter.Egress.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\docs\FIX44Entrypoint.xml">
+      <LogicalName>NexusRouter.Egress.FIX44Entrypoint.xml</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

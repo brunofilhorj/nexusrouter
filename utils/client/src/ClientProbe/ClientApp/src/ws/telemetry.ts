@@ -15,6 +15,7 @@ interface WireEvent {
   msgType?: unknown;
   fields?: unknown;
   rawPreview?: unknown;
+  direction?: unknown;
 }
 
 let rowSeq = 0;
@@ -50,6 +51,7 @@ function toRow(data: unknown): { transport: TransportId; row: ProbeEventRow } | 
       time: typeof event.receivedAt === 'string' ? event.receivedAt : '',
       transport: event.transport,
       msgType: typeof event.msgType === 'string' ? event.msgType : '',
+      direction: event.direction === 'out' ? 'out' : 'in',
       clOrdId: field(event.fields, '11'),
       symbol: field(event.fields, '55'),
       ordStatus: field(event.fields, '39'),

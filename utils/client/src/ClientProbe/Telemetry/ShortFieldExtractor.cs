@@ -13,6 +13,18 @@ public static class ShortFieldExtractor
     private const byte Soh = 0x01;
     private static readonly string[] FieldTags = ["11", "55", "54", "38", "39"];
 
+    /// <summary>
+    /// Broker JSON names for the short fields. The probe event still keys them by tag number.
+    /// </summary>
+    private static readonly (string Name, string Tag)[] JsonFields =
+    [
+        ("cl_ord_id", "11"),
+        ("symbol", "55"),
+        ("side", "54"),
+        ("order_qty", "38"),
+        ("ord_status", "39"),
+    ];
+
     /// <summary>Extracts the short fields from one frame.</summary>
     /// <param name="transport">Transport that received the frame.</param>
     /// <param name="frame">ASCII bytes of one FIX frame.</param>
@@ -69,7 +81,7 @@ public static class ShortFieldExtractor
 
     /// <summary>
     /// Reads the router JSON envelope (<c>PayloadEncoding=Json</c>):
-    /// <c>{"type":"exec","msgType":"8","ts":...,"fields":{"11":"..."}}</c>.
+    /// <c>{"type":"exec","msg_type":"8","ts":...,"fields":{"cl_ord_id":"..."}}</c>.
     /// Invalid JSON yields an event with a null <see cref="ProbeEvent.MsgType"/> (parse failure).
     /// </summary>
     private static ProbeEvent ExtractJson(ProbeTransport transport, ReadOnlySpan<byte> frame, DateTimeOffset receivedAt, int previewLength)
@@ -83,18 +95,18 @@ public static class ShortFieldExtractor
             var root = doc.RootElement;
             if (root.ValueKind == JsonValueKind.Object)
             {
-                if (root.TryGetProperty("msgType", out var type) && type.ValueKind == JsonValueKind.String)
+                if (root.TryGetProperty("msg_type", out var type) && type.ValueKind == JsonValueKind.String)
                 {
                     msgType = type.GetString();
                 }
 
                 if (root.TryGetProperty("fields", out var values) && values.ValueKind == JsonValueKind.Object)
                 {
-                    foreach (var wanted in FieldTags)
+                    foreach (var (name, tag) in JsonFields)
                     {
-                        if (values.TryGetProperty(wanted, out var value) && value.ValueKind == JsonValueKind.String)
+                        if (values.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
                         {
-                            (fields ??= [])[wanted] = value.GetString() ?? "";
+                            (fields ??= [])[tag] = value.GetString() ?? "";
                         }
                     }
                 }

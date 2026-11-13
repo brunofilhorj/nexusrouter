@@ -378,15 +378,8 @@ public sealed class AcceptorSession : IAsyncDisposable
             return;
         }
 
-        try
-        {
-            await _writer.CompleteAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Outbound writer completion failed.");
-        }
-
+        // Close the socket before completing the writer. CompleteAsync flushes, and a flush
+        // against a peer that is already gone blocks until the TCP send gives up.
         try
         {
             _socket.Shutdown(SocketShutdown.Both);
@@ -398,6 +391,16 @@ public sealed class AcceptorSession : IAsyncDisposable
 
         _stream.Dispose();
         _socket.Dispose();
+
+        try
+        {
+            await _writer.CompleteAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Outbound writer completion failed.");
+        }
+
         _sendLock.Dispose();
     }
 
@@ -821,6 +824,14 @@ public sealed class AcceptorSession : IAsyncDisposable
                     PublishState();
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // PeriodicTimer reports shutdown cancellation with a stack rooted at Cancel().
+            // That is a normal stop, not a transport failure.
+            _logger.LogDebug(
+                "Acceptor heartbeat loop stopped. SenderCompId {SenderCompId}",
+                Options.SenderCompId);
         }
         catch (Exception ex) when (IsTransportClosed(ex))
         {

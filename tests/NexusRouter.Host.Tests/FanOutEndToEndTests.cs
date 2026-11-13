@@ -232,7 +232,7 @@ public sealed class FanOutEndToEndTests
         };
         using IConnection connection = factory.CreateConnection();
         using IModel channel = connection.CreateModel();
-        channel.ExchangeDeclare(RabbitExchange, ExchangeType.Direct, durable: false, autoDelete: false);
+        channel.ExchangeDeclare(RabbitExchange, ExchangeType.Topic, durable: true, autoDelete: false);
         channel.QueueDeclare(RabbitQueue, durable: false, exclusive: false, autoDelete: false);
         channel.QueueBind(RabbitQueue, RabbitExchange, RabbitRoutingKey);
         await Task.CompletedTask;
@@ -312,9 +312,9 @@ public sealed class FanOutEndToEndTests
         string message = Encoding.ASCII.GetString(frame);
         if (message.StartsWith('{'))
         {
-            // PayloadEncoding=Json: envelope com msgType.
+            // PayloadEncoding=Json: envelope com msg_type.
             using var doc = System.Text.Json.JsonDocument.Parse(message);
-            return doc.RootElement.TryGetProperty("msgType", out var msgType) && msgType.GetString() == "8";
+            return doc.RootElement.TryGetProperty("msg_type", out var msgType) && msgType.GetString() == "8";
         }
 
         foreach (string field in message.Split('\x01', StringSplitOptions.RemoveEmptyEntries))
@@ -335,7 +335,7 @@ public sealed class FanOutEndToEndTests
         foreach (byte[] payload in payloads)
         {
             string clOrdId = json
-                ? System.Text.Json.JsonDocument.Parse(payload).RootElement.GetProperty("fields").GetProperty("11").GetString()!
+                ? System.Text.Json.JsonDocument.Parse(payload).RootElement.GetProperty("fields").GetProperty("cl_ord_id").GetString()!
                 : GetFieldValue(payload, 11);
             Assert.StartsWith("E2E", clOrdId, StringComparison.Ordinal);
             ids.Add(clOrdId);

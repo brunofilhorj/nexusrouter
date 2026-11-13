@@ -165,7 +165,9 @@ O producer é **agnóstico ao provedor**. `ConnectAsync` monta um `ProducerConfi
 
 **`RabbitMQMessageDispatcher`:** Encapsula um `IModel` (cliente clássico) ou `IChannel` (futuro cliente async v7+). Cada instância de dispatcher mantém um channel dedicado para evitar contenção. O flag mandatory e as confirmações de publisher são configuráveis — desabilitados por padrão para latência mínima.
 
-**Segregação por tag (TD-10a, 2026-11-11).** O router não escolhe o consumidor. `HeaderFields` lista as tags FIX que o consume loop carimba. Lista vazia, o default, não acrescenta header: a routing key do RabbitMQ continua `RoutingKey` e o único header segue sendo o de idempotência do TD-04b. No RabbitMQ, `RoutingKeyTemplate` (por exemplo `fix.<1>.<55>`) só entra quando preenchido; cada `<tag>` tem de estar em `HeaderFields`. A exchange e os bindings ficam com o operador. No Kafka não há tópico por critério: as mesmas tags viram record headers e a partição continua a de `PartitionStrategy`. O dicionário B3 (`docs/FIX44Entrypoint.xml` 1.0.61) não tem a tag 440 (`ClearingAccount`); a conta é a tag 1 (`Account`). Dimensões presentes e usadas como exemplo: 1 (`Account`), 11 (`ClOrdID`), 49 (`SenderCompID`) e 55 (`Symbol`).
+**Formato do corpo (Kafka e RabbitMQ).** `PayloadEncoding` define o que é publicado: `Json` (default) ou `Raw`. `Json` publica o envelope `{"type":"exec","msg_type":"8","ts":<ticks UTC>,"fields":{"cl_ord_id":"...","symbol":"...",...}}`. A chave do campo é o nome FIX em snake_case, lido uma vez de `docs/FIX44Entrypoint.xml`: sigla fica junta e `ID` no fim vira `_id` (`ClOrdID` → `cl_ord_id`, `OrdStatus` → `ord_status`); tag fora do dicionário vira `tag_<número>`. Valores continuam a string ASCII do FIX, na ordem do wire, sem as tags 8, 9 e 10 em `fields` (a 35 vira `msg_type`); tag repetida (grupo) vira array. `Raw` publica o frame FIX bruto. No RabbitMQ, `Json` marca `content_type=application/json`. A projeção acontece no `SendAsync`, sobre o frame bruto do log. Nos dois encodings, esse envio não publica quando a tag 35 é administrativa (`FixAdminMessageTypes`: Heartbeat `0`, TestRequest `1`, ResendRequest `2`, Reject `3`, SequenceReset `4`, Logout `5`, Logon `A`, NetworkStatusResponse `BD`). O cursor avança do mesmo jeito: o filtro roda depois que o `StreamCatchUp` já chamou o envio, então um Heartbeat não volta no catch-up. O `FanOutEngine` não filtra. O acceptor FIX continua recebendo o frame de todos os eventos, inclusive sessão.
+
+**Segregação por tag (TD-10a, 2026-11-11).** O router não escolhe o consumidor. `HeaderFields` lista as tags FIX que o consume loop carimba. Lista vazia, o default, não acrescenta header: a routing key do RabbitMQ continua `RoutingKey` e o único header segue sendo o de idempotência do TD-04b. No RabbitMQ, `RoutingKeyTemplate` (por exemplo `fix.<1>.<55>`) só entra quando preenchido; cada `<tag>` tem de estar em `HeaderFields`. O dispatcher declara a exchange configurada (topic, durável) ao abrir o canal. Os bindings ficam com o operador. No Kafka não há tópico por critério: as mesmas tags viram record headers e a partição continua a de `PartitionStrategy`. O dicionário B3 (`docs/FIX44Entrypoint.xml` 1.0.61) não tem a tag 440 (`ClearingAccount`); a conta é a tag 1 (`Account`). Dimensões presentes e usadas como exemplo: 1 (`Account`), 11 (`ClOrdID`), 49 (`SenderCompID`) e 55 (`Symbol`).
 
 #### 3.3.1 `WebSocketMessageDispatcher`
 
@@ -181,7 +183,7 @@ O que este acceptor aproveita do `FixOutboundDispatcher`, e o que deixa de lado:
 | Logon é o primeiro frame | Igual. Não congela retenção: o log grava tudo, não há escolha diária. |
 | Seq próprio, retomado no próximo Logon | Igual. O estado por consumidor do log de sessão (§3.4.3) guarda o `seq` por `ClientId`. O número vai no envelope, não na tag 34. |
 | ResendRequest lê do índice do cliente | Pedido `replay` lê do índice daquele `ClientId` no log. `seq` sem registro no intervalo vira frame `gap`. |
-| Heartbeat e queda por silêncio | Ping de protocolo no intervalo configurado. Pong ausente pelo limite configurado encerra a sessão. `{ "type": "heartbeat" }` recebe eco. |
+| Heartbeat e queda por silêncio | Liveness só com ping/pong de protocolo, no `HeartbeatIntervalSeconds`. Pong ausente por `MissedHeartbeatLimit` encerra a sessão. Não há frame de aplicação de heartbeat. |
 | TLS opcional no socket aceito | TLS de servidor opcional, reusando o wrap de servidor já usado no acceptor FIX. Autenticação do cliente é o token do Logon. mTLS não é o caminho do browser. |
 | Cópia do frame FIX com tag 34 e checksum reescritos | Não se aplica. O cliente não consome wire FIX. |
 | Uma forma única de payload para todo mundo | Cada Logon escolhe encoding e campos. Duas sessões no mesmo dispatcher podem receber projeções diferentes da mesma ordem. |
@@ -197,11 +199,11 @@ O que este acceptor aproveita do `FixOutboundDispatcher`, e o que deixa de lado:
   "token": "<valor da variável de ambiente>",
   "replay": false,
   "encoding": "json",
-  "fields": [11, 55, 54, 38, 44, 39]
+  "fields": ["cl_ord_id", "symbol", "side", "order_qty", "price", "ord_status"]
 }
 ```
 
-`clientId` tem de estar no cadastro apontando para este `DispatcherId`. `token` é comparado em tempo constante com o valor de `TokenEnvVar`; o valor não entra em log nem na URL. `encoding` é `json` ou `binary`. `fields` omitido ou vazio pede todas as propriedades de aplicação. Lista presente pede só essas tags, na ordem dada, com no máximo `MaxFields` (64). Duplicata sai. As tags de sessão 8, 9, 10, 34, 35, 49, 52 e 56 saem da lista: não são propriedade da ordem. Tag desconhecida no filtro é ignorada. `replay` já não liga retenção (o log de sessão grava tudo, §3.4.3); quando `true`, pede que o servidor reemita automaticamente, ao reconectar, o intervalo entre o último `seq` entregue e o fim do log. `replay` ausente vale `false` (o cliente recupera sob demanda com o pedido `replay`).
+`clientId` tem de estar no cadastro apontando para este `DispatcherId`. `token` é comparado em tempo constante com o valor de `TokenEnvVar`; o valor não entra em log nem na URL. `encoding` é `json` ou `binary`. `fields` cita nome FIX em snake_case (`cl_ord_id`, `symbol`), não o número da tag. Omitido ou vazio pede todas as propriedades de aplicação. Lista presente pede só esses nomes, na ordem dada, com no máximo `MaxFields` (64). Duplicata sai. Nomes de sessão (`begin_string`, `body_length`, `check_sum`, `msg_seq_num`, `msg_type`, `sender_comp_id`, `sending_time`, `target_comp_id`) saem da lista: não são propriedade da ordem. Nome desconhecido no filtro é ignorado. `replay` já não liga retenção (o log de sessão grava tudo, §3.4.3); quando `true`, pede que o servidor reemita automaticamente, ao reconectar, o intervalo entre o último `seq` entregue e o fim do log. `replay` ausente vale `false` (o cliente recupera sob demanda com o pedido `replay`).
 
 Sucesso devolve texto:
 
@@ -210,16 +212,18 @@ Sucesso devolve texto:
   "type": "logonAck",
   "replay": false,
   "encoding": "json",
-  "fields": [11, 55, 54, 38, 44, 39],
+  "fields": ["cl_ord_id", "symbol", "side", "order_qty", "price", "ord_status"],
   "nextSeq": 1
 }
 ```
 
 `fields` ausente no ack significa projeção completa. `replay` no ack ecoa se o reenvio automático ao reconectar está ligado para esta conexão. Falha devolve `{ "type": "reject", "reason": "unauthorized|origin|protocol|logon" }` e fecha. Um segundo Logon do mesmo `ClientId` derruba o socket anterior e continua o `seq`. Até o ack, a sessão não recebe execução.
 
-**Projeção.** Com ao menos uma sessão logada, o consume loop tokeniza o body uma vez: usa o `FixMessage` quando o ingresso veio em `Parse`; no `PassThrough`, tokeniza o frame cru aqui. Para cada sessão, monta o envelope e os campos selecionados e faz `TryWrite` na fila daquela sessão. A escrita no socket é outra task. O loop do dispatcher não espera o browser.
+**Projeção.** Com ao menos uma sessão logada, o consume loop tokeniza o body uma vez: usa o `FixMessage` quando o ingresso veio em `Parse`; no `PassThrough`, tokeniza o frame cru aqui. A projeção de dados leva só mensagem de aplicação FIX. Evento de sessão (tag 35 `0`, `1`, `2`, `3`, `4`, `5`, `A`, `BD`) não vira frame `exec`. Logon, reject de logon, gap e replay continuam frames de controle da sessão WebSocket (`logon`, `logonAck`, `reject`, `replay`, `gap`). Para cada sessão, monta o envelope e os campos selecionados e faz `TryWrite` na fila daquela sessão. A escrita no socket é outra task. O loop do dispatcher não espera o browser.
 
-Envelope, sempre presente, fora do filtro: `type=exec`, `seq` da sessão, `msgType` (tag 35) e `ts` (timestamp de ingresso). Valores de campo continuam a string ASCII do FIX, sem conversão numérica, nos dois encodings. Sem filtro, a ordem dos campos é a ordem do wire. Frame maior que `MaxOutboundFrameBytes` é descartado só naquela sessão.
+Envelope, sempre presente, fora do filtro: `type=exec`, `seq` da sessão, `msg_type` (tag 35) e `ts` (timestamp de ingresso). Valores de campo continuam a string ASCII do FIX, sem conversão numérica, nos dois encodings. Sem filtro, a ordem dos campos é a ordem do wire. Frame maior que `MaxOutboundFrameBytes` é descartado só naquela sessão.
+
+Com `encoding=json`, o payload de execução segue o JSON dos brokers. A chave em `fields` é o nome FIX em snake_case, lido uma vez de `docs/FIX44Entrypoint.xml`: sigla fica junta e `ID` no fim vira `_id` (`ClOrdID` → `cl_ord_id`, `Symbol` → `symbol`, `OrdStatus` → `ord_status`). Tag fora do dicionário vira `tag_<número>`. Tag repetida (grupo) vira array. As tags 8, 9 e 10 não entram em `fields`; a 35 fica em `msg_type`.
 
 JSON, frame de texto:
 
@@ -227,16 +231,16 @@ JSON, frame de texto:
 {
   "type": "exec",
   "seq": 42,
-  "msgType": "8",
+  "msg_type": "8",
   "ts": 638000000000000000,
-  "fields": { "11": "ORD1", "55": "PETR4", "54": "1", "38": "100" }
+  "fields": { "cl_ord_id": "ORD1", "symbol": "PETR4", "side": "1", "order_qty": "100" }
 }
 ```
 
-Binário, frame binário, little-endian, os mesmos campos:
+Binário, frame binário, little-endian. Os campos selecionados são os mesmos; no fio a tag continua numérica:
 
 ```
-u8  type            1 = exec, 2 = gap, 3 = heartbeat
+u8  type            1 = exec, 2 = gap
 u64 seq
 u64 ts
 u8  msgTypeLen
@@ -245,9 +249,9 @@ u16 fieldCount
     repetido: u16 tag, u16 valueLen, value bytes
 ```
 
-`json` é o formato que a página consome direto. `binary` é o mesmo conteúdo em menos bytes, para cliente que lê `ArrayBuffer`. O filtro encolhe os dois: uma tela que só mostra símbolo, lado, quantidade e status não recebe o body inteiro.
+`json` é o formato que a página consome direto, com nome snake_case em `fields`. `binary` leva os mesmos campos selecionados em menos bytes, com a tag numérica no fio, para cliente que lê `ArrayBuffer`. O filtro encolhe os dois: uma tela que só mostra símbolo, lado, quantidade e status não recebe o body inteiro.
 
-**Liveness e entrada.** O servidor manda ping no `HeartbeatIntervalSeconds` e encerra após `MissedHeartbeatLimit` pongs ausentes. O cliente só pode enviar `logon` (uma vez), `heartbeat` e `replay`. Outro frame encerra a sessão. v1 é drop copy: o WebSocket não aceita ordem nova.
+**Liveness e entrada.** Liveness é só ping/pong de protocolo: o servidor manda ping no `HeartbeatIntervalSeconds` e encerra após `MissedHeartbeatLimit` pongs ausentes. Não há heartbeat de aplicação no JSON nem no binário. O cliente só pode enviar `logon` (uma vez) e `replay`. Outro frame encerra a sessão. v1 é drop copy: o WebSocket não aceita ordem nova.
 
 **Replay.** Mesmo log de sessão do FIX (§3.4.3). Não há opt-in: o log grava tudo. O índice daquele `ClientId` mapeia o `seq` do envelope para o registro no log de entrada. O pedido `replay` lê desse índice e projeta no consume loop com o encoding e o filtro de campos da conexão atual. Um reconnect com outro `encoding` ou outro `fields` muda a projeção do tráfego recuperado, porque o que fica guardado é o frame de entrada, não o já projetado.
 
@@ -1024,8 +1028,8 @@ NexusRouter/
         ├─► Clientes conhecidos (FIX, WebSocket): ReserveSeq + PublishApp no índice do cliente,
         │       mesmo sem sessão logada; só envia se a sessão existe
         │
-        ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message)
-        ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body)
+        ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message) — só aplicação; tag 35 admin avança o cursor e não publica
+        ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body) — mesma regra de aplicação
         ├─► FixOutboundDispatcher: enfileira uma cópia por sessão aceita, cada uma com o próprio MsgSeqNum
         └─► WebSocketMessageDispatcher: projeta por sessão (json ou binary, campos do Logon) e enfileira
 
