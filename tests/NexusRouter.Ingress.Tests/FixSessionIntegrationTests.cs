@@ -13,6 +13,7 @@ using NexusRouter.Domain.Models;
 using NexusRouter.Domain.Secrets;
 using NexusRouter.Ingress.Decoders;
 using NexusRouter.Ingress.Sessions;
+using NexusRouter.SessionLog;
 
 namespace NexusRouter.Ingress.Tests;
 
@@ -405,6 +406,139 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task FixSession_FirstLogonOfB3DayResetsAndSameDayRestartContinuesSequence()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "nexusrouter-logon-" + Guid.NewGuid().ToString("N"));
+        var clock = new TestTimeProvider(new DateTimeOffset(2026, 11, 12, 12, 0, 0, TimeSpan.Zero));
+        var sessionLog = new SessionLogManager(
+            new SessionLogOptions
+            {
+                Directory = directory,
+                SegmentSizeMB = 1,
+                IndexSlotsPerSegment = 128,
+                FlushMode = SessionLogFlushMode.PerMessage,
+                UncleanRestartSeqMargin = 0,
+                CatchUpIdleMs = 20,
+            },
+            NullLogger<SessionLogManager>.Instance,
+            clock);
+        await sessionLog.StartAsync(CancellationToken.None);
+        var firstListener = new TcpListener(IPAddress.Loopback, 0);
+        firstListener.Start();
+        int firstPort = ((IPEndPoint)firstListener.LocalEndpoint).Port;
+        var first = CreateSession(
+            firstPort,
+            CreateAuditChannel().Writer,
+            new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+            sessionLog: sessionLog,
+            timeProvider: clock);
+        TcpClient? firstPeer = null;
+        TcpClient? secondPeer = null;
+        TcpClient? thirdPeer = null;
+        TcpListener? secondListener = null;
+        TcpListener? thirdListener = null;
+        FixSession? second = null;
+        FixSession? third = null;
+
+        try
+        {
+            await first.StartAsync(CancellationToken.None);
+            firstPeer = await firstListener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream firstStream = firstPeer.GetStream();
+            byte[] firstLogon = await ReadFixFrameAsync(firstStream);
+            Assert.Equal("1", GetFieldValue(firstLogon, 34));
+            Assert.Equal("Y", GetFieldValue(firstLogon, 141));
+
+            await SendFixFrameAsync(firstStream, CreateLogonAcknowledgement(resetSeqNum: true));
+            await first.StopAsync(CancellationToken.None);
+            byte[] logout = await ReadFixFrameAsync(firstStream);
+            Assert.Equal("5", GetFieldValue(logout, 35));
+            Assert.Equal("2", GetFieldValue(logout, 34));
+
+            secondListener = new TcpListener(IPAddress.Loopback, 0);
+            secondListener.Start();
+            int secondPort = ((IPEndPoint)secondListener.LocalEndpoint).Port;
+            second = CreateSession(
+                secondPort,
+                CreateAuditChannel().Writer,
+                new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+                sessionLog: sessionLog,
+                timeProvider: clock);
+            await second.StartAsync(CancellationToken.None);
+            secondPeer = await secondListener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream secondStream = secondPeer.GetStream();
+            byte[] secondLogon = await ReadFixFrameAsync(secondStream);
+
+            Assert.Equal("3", GetFieldValue(secondLogon, 34));
+            Assert.DoesNotContain("141=Y", Encoding.ASCII.GetString(secondLogon));
+            await SendFixFrameAsync(secondStream, CreateLogonAcknowledgement(
+                heartBtInt: 1,
+                resetSeqNum: false,
+                sequenceNumber: 2));
+            await second.StopAsync(CancellationToken.None);
+
+            clock.Advance(TimeSpan.FromHours(14));
+
+            thirdListener = new TcpListener(IPAddress.Loopback, 0);
+            thirdListener.Start();
+            int thirdPort = ((IPEndPoint)thirdListener.LocalEndpoint).Port;
+            third = CreateSession(
+                thirdPort,
+                CreateAuditChannel().Writer,
+                new FixedReconnectPolicy(TimeSpan.FromHours(1)),
+                sessionLog: sessionLog,
+                timeProvider: clock);
+            await third.StartAsync(CancellationToken.None);
+            thirdPeer = await thirdListener.AcceptTcpClientAsync().WaitAsync(StepTimeout);
+            NetworkStream thirdStream = thirdPeer.GetStream();
+            byte[] thirdLogon = await ReadFixFrameAsync(thirdStream);
+
+            Assert.Equal("1", GetFieldValue(thirdLogon, 34));
+            Assert.Equal("Y", GetFieldValue(thirdLogon, 141));
+            await SendFixFrameAsync(thirdStream, CreateLogonAcknowledgement(
+                heartBtInt: 1,
+                resetSeqNum: true,
+                sequenceNumber: 1));
+            await third.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            firstListener.Stop();
+            secondListener?.Stop();
+            thirdListener?.Stop();
+            firstPeer?.Dispose();
+            secondPeer?.Dispose();
+            thirdPeer?.Dispose();
+            await first.StopAsync(CancellationToken.None);
+            if (second is not null)
+            {
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            if (third is not null)
+            {
+                await third.StopAsync(CancellationToken.None);
+            }
+
+            await sessionLog.StopAsync(CancellationToken.None);
+            try
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
     [Theory]
     [InlineData(false, 99, false)]
     [InlineData(true, 30, false)]
@@ -456,7 +590,8 @@ public sealed class FixSessionIntegrationTests
         int? codTimeoutWindow = null,
         IMessageRouter? router = null,
         TimeSpan? sendingTimeTolerance = null,
-        ISessionLog? sessionLog = null) =>
+        ISessionLog? sessionLog = null,
+        TimeProvider? timeProvider = null) =>
         new(
             new SessionOptions
             {
@@ -483,7 +618,8 @@ public sealed class FixSessionIntegrationTests
             auditWriter,
             secretResolver ?? ThrowingSecretResolver.Instance,
             logger ?? NullLogger<FixSession>.Instance,
-            sessionLog ?? new NullSessionLog());
+            sessionLog ?? new NullSessionLog(),
+            timeProvider: timeProvider);
 
     // TLS está desligado nestes testes, então o resolvedor nunca deve ser invocado.
     private sealed class NullSessionLog : ISessionLog
@@ -507,6 +643,16 @@ public sealed class FixSessionIntegrationTests
         public ISessionLogStream OpenStream(string sessionId) => new NullStream();
 
         public IConsumerState OpenStreamState(string sessionId) => Ingress;
+
+        public SessionLogLogonState PrepareStreamLogon(string sessionId) => new(1, false);
+
+        public void SetStreamNextOut(string sessionId, long nextOut)
+        {
+        }
+
+        public void CompleteStreamLogon(string sessionId)
+        {
+        }
 
         public ClientBinding OpenClient(string dispatcherId, string clientKey) =>
             throw new NotSupportedException();
@@ -569,6 +715,17 @@ public sealed class FixSessionIntegrationTests
         public string ResolveRequired(string key) =>
             throw new InvalidOperationException(
                 $"O resolvedor de segredos não deveria ser chamado neste teste (chave '{key}').");
+    }
+
+    private sealed class TestTimeProvider : TimeProvider
+    {
+        private long _utcTicks;
+
+        public TestTimeProvider(DateTimeOffset utcNow) => _utcTicks = utcNow.UtcDateTime.Ticks;
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
     }
 
     private static Channel<AuditRecord> CreateAuditChannel() =>
@@ -706,14 +863,17 @@ public sealed class FixSessionIntegrationTests
         }
     }
 
-    private static byte[] CreateLogonAcknowledgement(int heartBtInt = 1, bool resetSeqNum = false)
+    private static byte[] CreateLogonAcknowledgement(
+        int heartBtInt = 1,
+        bool resetSeqNum = false,
+        int sequenceNumber = 1)
     {
         var fields = new List<string>
         {
             "35=A",
             "49=EXCHANGE",
             "56=CLIENT",
-            "34=1",
+            $"34={sequenceNumber}",
             "52=20260101-12:00:00",
             "98=0",
             $"108={heartBtInt}",

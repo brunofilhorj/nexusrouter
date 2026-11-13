@@ -37,6 +37,26 @@ public interface ISessionLog
     IConsumerState OpenStreamState(string sessionId);
 
     /// <summary>
+    /// Prepares the initiator's next Logon, starting a new stream epoch when the B3 trading day has changed.
+    /// </summary>
+    /// <param name="sessionId">Ingress <c>SessionId</c>.</param>
+    /// <returns>The next outbound sequence and whether this Logon must carry <c>141=Y</c>.</returns>
+    SessionLogLogonState PrepareStreamLogon(string sessionId);
+
+    /// <summary>
+    /// Persists the next outbound sequence for an initiator stream.
+    /// </summary>
+    /// <param name="sessionId">Ingress <c>SessionId</c>.</param>
+    /// <param name="nextOut">Next sequence to send.</param>
+    void SetStreamNextOut(string sessionId, long nextOut);
+
+    /// <summary>
+    /// Marks the first Logon of the current trading day as sent.
+    /// </summary>
+    /// <param name="sessionId">Ingress <c>SessionId</c>.</param>
+    void CompleteStreamLogon(string sessionId);
+
+    /// <summary>
     /// Opens the index and state of a known client.
     /// </summary>
     /// <param name="dispatcherId">Dispatcher that owns the client.</param>

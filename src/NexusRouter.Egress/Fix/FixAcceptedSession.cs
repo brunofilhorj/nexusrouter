@@ -363,25 +363,26 @@ internal sealed class FixAcceptedSession
     /// <param name="frame">Original FIX frame.</param>
     /// <param name="mode">Delivery mode of the ingress stream.</param>
     /// <param name="logRef">Ingress record to publish in the client index.</param>
-    /// <returns>False when the session is stopping or its outbound queue is full.</returns>
-    internal bool TryEnqueueBuffered(ReadOnlyMemory<byte> frame, DeliveryMode mode, LogRef logRef)
+    /// <param name="cancellationToken">Cancels waiting for capacity in the session queue.</param>
+    /// <returns>A task completed after the frame enters the session queue.</returns>
+    internal async ValueTask EnqueueBufferedAsync(
+        ReadOnlyMemory<byte> frame,
+        DeliveryMode mode,
+        LogRef logRef,
+        CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _stop) != 0)
+        if (!WaitForLogon())
         {
-            return false;
+            throw new ChannelClosedException();
         }
 
-        if (!WaitForLogon() || !TryEnterGate())
-        {
-            return false;
-        }
-
+        await _enqueueGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         byte[]? rented = null;
         try
         {
             if (Volatile.Read(ref _stop) != 0)
             {
-                return false;
+                throw new ChannelClosedException();
             }
 
             long sequence = _index.ReserveSeq();
@@ -391,15 +392,8 @@ internal sealed class FixAcceptedSession
                 : frame.Length + PassThroughRewriter.MaxGrowthBytes;
             rented = ArrayPool<byte>.Shared.Rent(capacity);
             int written = PrepareBuffered(frame, mode, sequence, rented);
-            if (!_outbound.Writer.TryWrite(new OutboundFrame(rented, written)))
-            {
-                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
-                rented = null;
-                return false;
-            }
-
+            await WriteOutboundAsync(rented, written, cancellationToken).ConfigureAwait(false);
             rented = null;
-            return true;
         }
         finally
         {
@@ -1189,7 +1183,7 @@ internal sealed class FixAcceptedSession
             throw new ChannelClosedException();
         }
 
-        // Espera quando a fila está cheia: perder uma mensagem do reenvio deixaria o buraco que o cliente pediu.
+        // Espera quando a fila está cheia: perder uma mensagem de aplicação criaria um buraco de sequência.
         await _outbound.Writer.WriteAsync(new OutboundFrame(buffer, length), cancellationToken).ConfigureAwait(false);
     }
 

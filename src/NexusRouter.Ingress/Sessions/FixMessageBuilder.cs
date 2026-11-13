@@ -62,6 +62,34 @@ public static class FixMessageBuilder
         ReadOnlySpan<byte> password)
     {
         ArgumentNullException.ThrowIfNull(options);
+        return BuildLogon(buffer, options, msgSeqNum, password, options.ResetSeqNumFlag);
+    }
+
+    /// <summary>
+    /// Escreve um Logon (MsgType=A), selecionando explicitamente se a tag 141 está presente.
+    /// </summary>
+    /// <param name="buffer">Destino. O slice retornado aponta para o início deste buffer.</param>
+    /// <param name="options">BeginString, comp IDs, HeartBtInt e campos opcionais do Logon.</param>
+    /// <param name="msgSeqNum">MsgSeqNum (tag 34), a partir de 1.</param>
+    /// <param name="password">Senha ASCII da sessão. Vazia omite RawDataLength (95) e RawData (96).</param>
+    /// <param name="resetSeqNumFlag">Quando true, escreve <c>141=Y</c>.</param>
+    /// <returns>Slice preenchido, incluindo o checksum.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> é nulo.</exception>
+    /// <exception cref="ArgumentException">BeginString, comp ID, Text (58) ou senha inválidos.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="msgSeqNum"/> ou <see cref="SessionOptions.HeartBtInt"/> não é positivo,
+    /// a senha passa de 256 bytes, ou COD está fora da faixa da B3.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A mensagem não cabe no buffer.</exception>
+    /// <remarks>Zero allocation. A senha não é registrada em log.</remarks>
+    public static Span<byte> BuildLogon(
+        Span<byte> buffer,
+        SessionOptions options,
+        long msgSeqNum,
+        ReadOnlySpan<byte> password,
+        bool resetSeqNumFlag)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.HeartBtInt);
         if (options.CancelOnDisconnectType is < 0 or > 3)
         {
@@ -95,7 +123,7 @@ public static class FixMessageBuilder
         length = AppendLiteral(extra, length, "108="u8);
         length = AppendInt(extra, length, options.HeartBtInt);
         length = AppendSoh(extra, length);
-        if (options.ResetSeqNumFlag)
+        if (resetSeqNumFlag)
         {
             length = AppendLiteral(extra, length, "141=Y\x01"u8);
         }

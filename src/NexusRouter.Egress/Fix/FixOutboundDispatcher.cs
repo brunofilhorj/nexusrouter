@@ -979,17 +979,12 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                         continue;
                     }
 
-                    if (!session.TryEnqueueBuffered(frame, queued.DeliveryMode, queued.LogRef))
-                    {
-                        Logger.LogWarning(
-                            "Sessão {SenderCompId} do dispatcher {DispatcherId} não enfileirou mensagem adiada.",
-                            session.SenderCompId,
-                            DispatcherId);
-                    }
-                    else
-                    {
-                        replayed++;
-                    }
+                    await session.EnqueueBufferedAsync(
+                        frame,
+                        queued.DeliveryMode,
+                        queued.LogRef,
+                        cancellationToken).ConfigureAwait(false);
+                    replayed++;
 
                     continue;
                 }

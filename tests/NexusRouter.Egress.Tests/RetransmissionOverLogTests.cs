@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text;
 
 using NexusRouter.Domain.Abstractions;
 using NexusRouter.Domain.Models;
@@ -152,6 +153,11 @@ public sealed class RetransmissionOverLogTests
                 Assert.Equal(sequence, Field(replay, 34));
                 Assert.Equal("Y", Field(replay, 43));
             }
+
+            rig.Dispatch(rig.Append("LIVE-AFTER-RESET"));
+            byte[] live = await reset.ReadFrameAsync();
+            Assert.Equal("LIVE-AFTER-RESET", Field(live, 11));
+            Assert.Equal("5", Field(live, 34));
         }
         finally
         {
@@ -160,31 +166,90 @@ public sealed class RetransmissionOverLogTests
     }
 
     [Fact]
-    public async Task StartOfDay_MessageArrivingDuringBackfillIsDeliveredOnceAfterHistory()
+    public async Task StartOfDay_WithReset_DeliversQueuedLiveMessagesAfterHistoryWhenOutboundQueueIsSmall()
     {
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, blockBackfillReader: true);
-            await rig.AppendAndDispatchAsync("HISTORY1", "HISTORY2");
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                channelCapacity: 1,
+                blockBackfillReader: true);
 
-            using FixPeer peer = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "2");
-            Assert.Equal("1", Field(await peer.ReadFrameAsync(), 34));
+            using (FixPeer initial = await FixPeer.ConnectAsync(rig, "OMS1"))
+            {
+                Assert.Equal("1", Field(await initial.ReadFrameAsync(), 34));
+                rig.Dispatch(rig.Append("FIRST"));
+                Assert.Equal("FIRST", Field(await initial.ReadFrameAsync(), 11));
+            }
+
+            IClientIndex clientIndex = rig.Client("OMS1").Index;
+            long firstHistorySequence = clientIndex.NextOut;
+            await rig.DispatchAsync(rig.Append("HISTORY1"));
+            await AcceptorRig.WaitPublishedAsync(clientIndex, firstHistorySequence);
+            long secondHistorySequence = clientIndex.NextOut;
+            await rig.DispatchAsync(rig.Append("HISTORY2"));
+            await AcceptorRig.WaitPublishedAsync(clientIndex, secondHistorySequence);
+
+            using FixPeer monitor = await FixPeer.ConnectAsync(rig, "OMS2");
+            Assert.Equal("1", Field(await monitor.ReadFrameAsync(), 34));
+            IClientIndex monitorIndex = rig.Client("OMS2").Index;
+
+            using FixPeer peer = await FixPeer.ConnectAsync(
+                rig,
+                "OMS1",
+                reset: true,
+                replayMode: "2",
+                receiveBufferSize: 1024);
+            byte[] logon = await peer.ReadFrameAsync();
+            Assert.Equal("1", Field(logon, 34));
+            Assert.Equal("Y", Field(logon, 141));
             await rig.BlockingLog!.BackfillReadStarted.WaitAsync(TimeSpan.FromSeconds(3));
 
-            rig.Dispatch(rig.Append("DURING"));
+            const int liveCount = 4096;
+            string[] liveIds = Enumerable.Range(0, liveCount)
+                .Select(index => $"DURING-{index:D3}")
+                .ToArray();
+            const int batchSize = 64;
+            for (int batchStart = 0; batchStart < liveIds.Length; batchStart += batchSize)
+            {
+                int batchEnd = Math.Min(batchStart + batchSize, liveIds.Length);
+                long monitorSequence = monitorIndex.NextOut + batchEnd - batchStart - 1;
+                for (int i = batchStart; i < batchEnd; i++)
+                {
+                    await rig.DispatchAsync(rig.Append(liveIds[i]));
+                }
+
+                await AcceptorRig.WaitPublishedAsync(monitorIndex, monitorSequence);
+            }
+
             rig.BlockingLog.ReleaseBackfill();
+            await Task.Delay(100);
 
             foreach ((string clOrdId, string sequence) in new[]
             {
-                ("HISTORY1", "2"),
-                ("HISTORY2", "3"),
-                ("DURING", "4"),
+                ("FIRST", "2"),
+                ("HISTORY1", "3"),
+                ("HISTORY2", "4"),
             })
             {
                 byte[] frame = await peer.ReadFrameAsync();
                 Assert.Equal(clOrdId, Field(frame, 11));
                 Assert.Equal(sequence, Field(frame, 34));
+                Assert.Equal("Y", Field(frame, 43));
+            }
+
+            for (int i = 0; i < liveIds.Length; i++)
+            {
+                byte[] frame = await peer.ReadFrameAsync();
+                while (Field(frame, 35) == "0")
+                {
+                    frame = await peer.ReadFrameAsync();
+                }
+
+                Assert.Equal(liveIds[i], Field(frame, 11));
+                Assert.Equal((i + 5).ToString(), Field(frame, 34));
+                Assert.DoesNotContain("\u000143=", Encoding.ASCII.GetString(frame));
             }
 
             await peer.ExpectSilenceAsync(Quiet);

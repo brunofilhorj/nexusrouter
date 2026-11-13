@@ -38,6 +38,7 @@ public sealed class FixSession : IHostedService
     private readonly ChannelWriter<AuditRecord> _auditChannel;
     private readonly ISecretResolver _secretResolver;
     private readonly ILogger<FixSession> _logger;
+    private readonly ISessionLog _sessionLogManager;
     private readonly ISessionLogStream _sessionLog;
     private readonly IConsumerState _ingressState;
     private readonly FixSessionStateMachine _stateMachine = new();
@@ -51,6 +52,7 @@ public sealed class FixSession : IHostedService
     private Socket? _activeSocket;
     private Stream? _activeSecureStream;
     private long _nextOutboundSequence;
+    private int _resetSeqNumFlagForLogon;
     private long _testRequestSentTicks;
     private int _failedAttempts;
     private int _started;
@@ -171,6 +173,7 @@ public sealed class FixSession : IHostedService
         _auditChannel = auditChannel;
         _secretResolver = secretResolver;
         _logger = logger;
+        _sessionLogManager = sessionLog;
         _sessionId = new SessionId(options.SessionId);
         _sessionLog = sessionLog.OpenStream(options.SessionId);
         _ingressState = sessionLog.OpenStreamState(options.SessionId);
@@ -345,6 +348,9 @@ public sealed class FixSession : IHostedService
                 _options.Host,
                 _options.Port);
 
+            SessionLogLogonState logonState = _sessionLogManager.PrepareStreamLogon(_options.SessionId);
+            Interlocked.Exchange(ref _nextOutboundSequence, logonState.NextOut - 1);
+            Volatile.Write(ref _resetSeqNumFlagForLogon, logonState.ResetSeqNumFlag ? 1 : 0);
             _stateMachine.TransitionToLogonSent();
             PublishLifecycle(SessionState.LogonSent, "Connected");
             SendAdmin(OutboundAdmin.Logon, ReadOnlySpan<byte>.Empty);
@@ -543,6 +549,7 @@ public sealed class FixSession : IHostedService
             try
             {
                 long sequence = Interlocked.Increment(ref _nextOutboundSequence);
+                _sessionLogManager.SetStreamNextOut(_options.SessionId, sequence + 1);
                 Span<byte> message = FixMessageBuilder.BuildReject(
                     rented,
                     _options,
@@ -859,6 +866,7 @@ public sealed class FixSession : IHostedService
             try
             {
                 long sequence = Interlocked.Increment(ref _nextOutboundSequence);
+                _sessionLogManager.SetStreamNextOut(_options.SessionId, sequence + 1);
                 Span<byte> message = FixMessageBuilder.BuildResendRequest(rented, _options, sequence, beginSeqNo, endSeqNo: 0);
                 WriteSocket(message);
             }
@@ -996,10 +1004,15 @@ public sealed class FixSession : IHostedService
             try
             {
                 long sequence = Interlocked.Increment(ref _nextOutboundSequence);
+                _sessionLogManager.SetStreamNextOut(_options.SessionId, sequence + 1);
                 int written = kind == OutboundAdmin.Logon
                     ? WriteLogon(rented, sequence)
                     : WriteAdmin(rented, kind, sequence, testReqId);
                 WriteSocket(rented.AsSpan(0, written));
+                if (kind == OutboundAdmin.Logon)
+                {
+                    _sessionLogManager.CompleteStreamLogon(_options.SessionId);
+                }
             }
             finally
             {
@@ -1028,7 +1041,13 @@ public sealed class FixSession : IHostedService
     {
         Span<byte> password = stackalloc byte[MaxLogonPasswordBytes];
         int passwordLength = ResolveLogonPassword(password);
-        int written = FixMessageBuilder.BuildLogon(buffer, _options, sequence, password[..passwordLength]).Length;
+        bool resetSeqNumFlag = _options.ResetSeqNumFlag || Volatile.Read(ref _resetSeqNumFlagForLogon) != 0;
+        int written = FixMessageBuilder.BuildLogon(
+            buffer,
+            _options,
+            sequence,
+            password[..passwordLength],
+            resetSeqNumFlag).Length;
         password[..passwordLength].Clear();
         return written;
     }
@@ -1072,7 +1091,8 @@ public sealed class FixSession : IHostedService
         bool echoed = TryCopyField(raw, "141="u8, resetFlag, out int resetLength)
             && resetLength == 1
             && resetFlag[0] == (byte)'Y';
-        if (echoed != _options.ResetSeqNumFlag)
+        bool expectedReset = _options.ResetSeqNumFlag || Volatile.Read(ref _resetSeqNumFlagForLogon) != 0;
+        if (echoed != expectedReset)
         {
             RejectPeerLogon("ResetSeqNumFlag não foi ecoado");
             return false;
@@ -1084,6 +1104,7 @@ public sealed class FixSession : IHostedService
             _ingressState.NextInExpected = inSeq + 1;
         }
 
+        Volatile.Write(ref _resetSeqNumFlagForLogon, 0);
         return true;
     }
 
