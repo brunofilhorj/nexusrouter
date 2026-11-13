@@ -9,7 +9,7 @@ namespace NexusRouter.Egress;
 public enum BrokerPayloadEncoding
 {
     /// <summary>
-    /// Envelope JSON com <c>type</c>, <c>msgType</c>, <c>ts</c> e <c>fields</c> (tag para valor). É o default.
+    /// Envelope JSON com <c>type</c>, <c>msg_type</c>, <c>ts</c> e <c>fields</c> (nome FIX em snake_case para valor). É o default.
     /// </summary>
     Json = 0,
 

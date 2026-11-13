@@ -94,9 +94,9 @@ public sealed class BrokerApplicationFilterTests
         string text = Encoding.ASCII.GetString(body);
         if (encoding == BrokerPayloadEncoding.Json)
         {
-            Assert.Contains("\"msgType\":\"8\"", text, StringComparison.Ordinal);
-            Assert.Contains($"\"11\":\"{clOrdId}\"", text, StringComparison.Ordinal);
-            Assert.DoesNotContain("\"msgType\":\"0\"", text, StringComparison.Ordinal);
+            Assert.Contains("\"msg_type\":\"8\"", text, StringComparison.Ordinal);
+            Assert.Contains($"\"cl_ord_id\":\"{clOrdId}\"", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"msg_type\":\"0\"", text, StringComparison.Ordinal);
             return;
         }
 

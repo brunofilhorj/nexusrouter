@@ -26,7 +26,7 @@ public sealed class ShortFieldExtractorTests
     [Fact]
     public void Extract_JsonEnvelope_FillsShortFields()
     {
-        var e = Run("""{"type":"exec","msgType":"8","ts":1,"fields":{"11":"ORD1","55":"PETR4","39":"2"}}""");
+        var e = Run("""{"type":"exec","msg_type":"8","ts":1,"fields":{"cl_ord_id":"ORD1","symbol":"PETR4","ord_status":"2"}}""");
         Assert.Equal("8", e.MsgType);
         Assert.Equal("ORD1", e.Fields["11"]);
         Assert.Equal("PETR4", e.Fields["55"]);
