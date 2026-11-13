@@ -1628,7 +1628,7 @@ Cada fatia abaixo registra a própria regra em `requirements.md` §2.4.1 e `desi
 
 ---
 
-- [ ] TD-15c — Modo `StartOfDay`: backfill do dia no índice do cliente
+- [x] TD-15c — Modo `StartOfDay`: backfill do dia no índice do cliente
 
 **Tamanho:** P. **Depende de:** TD-15b.
 

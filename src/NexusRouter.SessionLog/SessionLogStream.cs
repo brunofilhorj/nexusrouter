@@ -150,7 +150,19 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
     /// <param name="destination">Receives the frame.</param>
     /// <returns>False when the sequence is not committed in that epoch.</returns>
     public bool TryRead(int epoch, long inSeq, IBufferWriter<byte> destination)
+        => TryRead(epoch, inSeq, destination, out _);
+
+    /// <summary>
+    /// Copies one committed record and returns its ingress timestamp.
+    /// </summary>
+    /// <param name="epoch">Epoch to read.</param>
+    /// <param name="inSeq">Ingress sequence.</param>
+    /// <param name="destination">Receives the frame.</param>
+    /// <param name="ingressTimestampTicks">The timestamp captured when the frame was appended.</param>
+    /// <returns>False when the sequence is not committed in that epoch.</returns>
+    public bool TryRead(int epoch, long inSeq, IBufferWriter<byte> destination, out long ingressTimestampTicks)
     {
+        ingressTimestampTicks = 0;
         if (inSeq <= 0 || inSeq > GetCommitted(epoch))
         {
             return false;
@@ -160,13 +172,57 @@ public sealed class SessionLogStream : ISessionLogStream, IDisposable
         for (int i = segments.Length - 1; i >= 0; i--)
         {
             LogSegment segment = segments[i];
-            if (segment.Epoch == epoch && segment.TryRead(inSeq, destination))
+            if (segment.Epoch == epoch && segment.TryRead(inSeq, destination, out ingressTimestampTicks))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    internal TradingDayStreamSnapshot[] GetTradingDaySnapshots(int tradingDay)
+    {
+        LogSegment[] segments = Volatile.Read(ref _visible);
+        var snapshots = new List<TradingDayStreamSnapshot>();
+        for (int i = 0; i < segments.Length; i++)
+        {
+            LogSegment segment = segments[i];
+            if (segment.Day != tradingDay || segment.BaseSeq <= 0)
+            {
+                continue;
+            }
+
+            int existing = snapshots.FindIndex(snapshot => snapshot.Epoch == segment.Epoch);
+            if (existing < 0)
+            {
+                long committed = GetCommitted(segment.Epoch);
+                if (committed >= segment.BaseSeq)
+                {
+                    snapshots.Add(new TradingDayStreamSnapshot(
+                        StreamId,
+                        segment.Epoch,
+                        segment.BaseSeq,
+                        committed));
+                }
+
+                continue;
+            }
+
+            TradingDayStreamSnapshot current = snapshots[existing];
+            long firstSequence = Math.Min(current.FirstSequence, segment.BaseSeq);
+            long committedSequence = GetCommitted(segment.Epoch);
+            if (committedSequence >= firstSequence)
+            {
+                snapshots[existing] = current with
+                {
+                    FirstSequence = firstSequence,
+                    Committed = committedSequence,
+                };
+            }
+        }
+
+        return [.. snapshots];
     }
 
     /// <summary>

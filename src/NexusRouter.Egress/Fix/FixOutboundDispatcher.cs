@@ -37,6 +37,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
     private readonly ExponentialBackoffReconnectPolicy _acceptRetry;
     private readonly ConcurrentSessionTable _sessions = new();
+    private readonly ConcurrentDictionary<string, BackfillState> _backfills = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<Task, byte> _handlers = new();
     private readonly SemaphoreSlim _adoptGate = new(1, 1);
     private readonly ISecretResolver _secretResolver;
@@ -188,9 +189,15 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         for (int i = 0; i < known.Length; i++)
         {
             IClientIndex index = known[i].Index;
+            string sender = SenderOf(index);
+            if (_backfills.TryGetValue(sender, out BackfillState? backfill)
+                && backfill.TryQueue(payload))
+            {
+                continue;
+            }
+
             long sequence = index.ReserveSeq();
             index.PublishApp(sequence, payload.LogRef);
-            string sender = SenderOf(index);
             if (!_sessions.TryGet(sender, out FixAcceptedSession? found) || found is null)
             {
                 continue;
@@ -367,6 +374,10 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
     {
         Stream? stream = null;
         FixAcceptedSession? session = null;
+        ClientBinding binding = default;
+        BackfillState? backfillState = null;
+        bool backfillStarted = false;
+        bool clientOpened = false;
         bool ownsSocket = true;
         try
         {
@@ -435,7 +446,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
-            if (!TryOpenClient(logon.Value.SenderCompId, out ClientBinding binding))
+            if (!TryOpenClient(logon.Value.SenderCompId, out binding))
             {
                 AcceptorSessionMetrics.ClientsRejected.Add(1, new KeyValuePair<string, object?>("reason", "max_clients"));
                 Logger.LogWarning(
@@ -447,11 +458,19 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return;
             }
 
+            clientOpened = true;
             ReplayMode requestedReplayMode = logon.Value.ReplayMode ?? recovery.ReplayMode;
             string? reject = DecideLogon(
                 logon.Value,
                 recovery,
                 binding,
+                requestedReplayMode == ReplayMode.StartOfDay
+                    ? () =>
+                    {
+                        backfillState = new BackfillState();
+                        _backfills[logon.Value.SenderCompId] = backfillState;
+                    }
+                    : null,
                 out long skipFrom,
                 out long resumeFrom,
                 out bool gapFillLogon,
@@ -516,7 +535,18 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
 
             try
             {
-                await session.StartAsync(cancellationToken).ConfigureAwait(false);
+                FixAcceptedSession acceptedSession = session;
+                await acceptedSession.StartAsync(cancellationToken).ConfigureAwait(false);
+                if (backfillState is not null)
+                {
+                    backfillStarted = true;
+                    await CompleteStartOfDayBackfillAsync(
+                        binding,
+                        acceptedSession,
+                        backfillState,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 session = null;
             }
             finally
@@ -537,6 +567,11 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         }
         finally
         {
+            if (backfillState is not null && !backfillStarted && clientOpened)
+            {
+                PublishAbandonedBackfill(binding, backfillState);
+            }
+
             if (session is not null)
             {
                 await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
@@ -759,6 +794,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         PendingLogon logon,
         AcceptorRecoveryOptions recovery,
         ClientBinding binding,
+        Action? onEpochOpening,
         out long skipFrom,
         out long resumeFrom,
         out bool gapFillLogon,
@@ -778,6 +814,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return "MsgSeqNum too high";
             }
 
+            onEpochOpening?.Invoke();
             ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
             reset.State.NextInExpected = logon.MsgSeqNum + 1;
             echoReset = true;
@@ -794,6 +831,7 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
                 return "MsgSeqNum too high";
             }
 
+            onEpochOpening?.Invoke();
             ClientBinding reset = _sessionLog.ResetClient(DispatcherId, logon.SenderCompId);
             reset.State.NextInExpected = 1;
             replayModeApplied = true;
@@ -862,14 +900,202 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
             senderCompId,
             mode,
             applied);
-        if (applied && replayMode == ReplayMode.StartOfDay)
+    }
+
+    private async Task CompleteStartOfDayBackfillAsync(
+        ClientBinding binding,
+        FixAcceptedSession session,
+        BackfillState backfill,
+        CancellationToken cancellationToken)
+    {
+        int replayed = 0;
+        bool completed = false;
+        try
         {
-            Logger.LogWarning(
-                "Dispatcher {DispatcherId} ainda trata ReplayMode StartOfDay como FromLogon para {SenderCompId}; o backfill será habilitado na TD-15c.",
+            TradingDayStreamSnapshot[] snapshots = _sessionLog.GetTradingDayStreams();
+            var pending = new PriorityQueue<BackfillCursor, (long Timestamp, ushort Stream, int Epoch, long Sequence)>();
+            foreach (TradingDayStreamSnapshot snapshot in snapshots)
+            {
+                var cursor = new BackfillCursor(snapshot);
+                if (TryAdvanceBackfillCursor(cursor))
+                {
+                    pending.Enqueue(
+                        cursor,
+                        (cursor.Timestamp, snapshot.Stream, snapshot.Epoch, cursor.CurrentSequence));
+                }
+            }
+
+            while (pending.TryDequeue(out BackfillCursor? cursor, out _))
+            {
+                ReadOnlyMemory<byte> frame = cursor.Buffer.WrittenMemory;
+                await session.EnqueueReplayAsync(
+                    frame,
+                    _resendDeliveryMode(cursor.CurrentRef.Stream),
+                    cursor.CurrentRef,
+                    cancellationToken).ConfigureAwait(false);
+                backfill.MarkReplayed(cursor.CurrentRef);
+                replayed++;
+
+                if (TryAdvanceBackfillCursor(cursor))
+                {
+                    pending.Enqueue(
+                        cursor,
+                        (cursor.Timestamp, cursor.Snapshot.Stream, cursor.Snapshot.Epoch, cursor.CurrentSequence));
+                }
+            }
+
+            var liveFrame = new ArrayBufferWriter<byte>(2048);
+            while (true)
+            {
+                if (backfill.TryDequeue(out BackfillPayload queued))
+                {
+                    if (!TryReadBackfillPayload(queued, liveFrame, out ReadOnlyMemory<byte> frame))
+                    {
+                        Logger.LogWarning(
+                            "Dispatcher {DispatcherId} não conseguiu ler mensagem adiada para {SenderCompId}; LogRef {LogRef}.",
+                            DispatcherId,
+                            session.SenderCompId,
+                            queued.LogRef);
+                        continue;
+                    }
+
+                    bool isApplication = FixWireFrame.TryReadTag(frame.Span, 35, out ReadOnlySpan<byte> msgType)
+                        && !FixAdminMessageTypes.IsAdmin(msgType);
+                    if (isApplication && backfill.WasReplayed(queued.LogRef))
+                    {
+                        continue;
+                    }
+
+                    if (!session.TryEnqueueBuffered(frame, queued.DeliveryMode, queued.LogRef))
+                    {
+                        Logger.LogWarning(
+                            "Sessão {SenderCompId} do dispatcher {DispatcherId} não enfileirou mensagem adiada.",
+                            session.SenderCompId,
+                            DispatcherId);
+                    }
+                    else
+                    {
+                        replayed++;
+                    }
+
+                    continue;
+                }
+
+                if (backfill.TryFinishIfEmpty())
+                {
+                    completed = true;
+                    break;
+                }
+            }
+
+            AcceptorSessionMetrics.StartOfDayBackfill.Add(
+                replayed,
+                new KeyValuePair<string, object?>("dispatcher_id", DispatcherId));
+            Logger.LogInformation(
+                "Dispatcher {DispatcherId} entregou {Messages} mensagens no backfill StartOfDay para {SenderCompId}.",
                 DispatcherId,
-                senderCompId);
+                replayed,
+                session.SenderCompId);
+        }
+        finally
+        {
+            if (!completed)
+            {
+                PublishAbandonedBackfill(binding, backfill);
+            }
         }
     }
+
+    private bool TryAdvanceBackfillCursor(BackfillCursor cursor)
+    {
+        while (cursor.NextSequence <= cursor.Snapshot.Committed)
+        {
+            long sequence = cursor.NextSequence;
+            cursor.NextSequence = sequence == long.MaxValue ? long.MinValue : sequence + 1;
+            cursor.Buffer.ResetWrittenCount();
+            if (!_sessionLog.Reader.TryRead(
+                cursor.Snapshot.Stream,
+                cursor.Snapshot.Epoch,
+                sequence,
+                cursor.Buffer,
+                out long timestamp))
+            {
+                continue;
+            }
+
+            if (!FixWireFrame.TryReadTag(cursor.Buffer.WrittenSpan, 35, out ReadOnlySpan<byte> msgType)
+                || FixAdminMessageTypes.IsAdmin(msgType))
+            {
+                continue;
+            }
+
+            cursor.Timestamp = timestamp;
+            cursor.CurrentSequence = sequence;
+            cursor.CurrentRef = new LogRef(cursor.Snapshot.Stream, cursor.Snapshot.Epoch, sequence);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryReadBackfillPayload(
+        BackfillPayload payload,
+        ArrayBufferWriter<byte> destination,
+        out ReadOnlyMemory<byte> frame)
+    {
+        if (HasLogReference(payload.LogRef))
+        {
+            destination.ResetWrittenCount();
+            if (_sessionLog.Reader.TryRead(
+                payload.LogRef.Stream,
+                payload.LogRef.Epoch,
+                payload.LogRef.InSeq,
+                destination))
+            {
+                frame = destination.WrittenMemory;
+                return true;
+            }
+
+            frame = default;
+            return false;
+        }
+
+        if (payload.Frame is not null)
+        {
+            frame = payload.Frame;
+            return true;
+        }
+
+        frame = default;
+        return false;
+    }
+
+    private void PublishAbandonedBackfill(ClientBinding binding, BackfillState backfill)
+    {
+        BackfillPayload[] queued = backfill.StopAndDrain();
+        int published = 0;
+        foreach (BackfillPayload payload in queued)
+        {
+            if (backfill.WasReplayed(payload.LogRef))
+            {
+                continue;
+            }
+
+            long sequence = binding.Index.ReserveSeq();
+            binding.Index.PublishApp(sequence, payload.LogRef);
+            published++;
+        }
+
+        if (published > 0)
+        {
+            Logger.LogWarning(
+                "Dispatcher {DispatcherId} publicou {Messages} mensagens adiadas no índice após interromper o backfill.",
+                DispatcherId,
+                published);
+        }
+    }
+
+    private static bool HasLogReference(LogRef logRef) => logRef.Stream != 0 && logRef.InSeq > 0;
 
     private void NoteClientAhead(string senderCompId, long requested, long nextOut)
     {
@@ -1033,6 +1259,114 @@ public sealed class FixOutboundDispatcher : DispatcherBase<FixOutboundDispatcher
         options.EnsureValid();
         return options;
     }
+
+    private sealed class BackfillState
+    {
+        private readonly object _gate = new();
+        private readonly Queue<BackfillPayload> _queued = new();
+        private readonly Dictionary<(ushort Stream, int Epoch), long> _replayedThrough = [];
+        private bool _active = true;
+
+        internal bool TryQueue(DispatchPayload payload)
+        {
+            lock (_gate)
+            {
+                if (!_active)
+                {
+                    return false;
+                }
+
+                byte[]? frame = null;
+                if (!HasLogReference(payload.LogRef))
+                {
+                    IMemoryOwner<byte> raw = payload.RawBuffer
+                        ?? throw new InvalidOperationException("O payload FIX outbound não tem buffer.");
+                    frame = raw.Memory.ToArray();
+                }
+
+                _queued.Enqueue(new BackfillPayload(payload.LogRef, payload.DeliveryMode, frame));
+                return true;
+            }
+        }
+
+        internal bool TryDequeue(out BackfillPayload payload)
+        {
+            lock (_gate)
+            {
+                if (_queued.TryDequeue(out payload))
+                {
+                    return true;
+                }
+            }
+
+            payload = default;
+            return false;
+        }
+
+        internal bool TryFinishIfEmpty()
+        {
+            lock (_gate)
+            {
+                if (_queued.Count != 0)
+                {
+                    return false;
+                }
+
+                _active = false;
+                return true;
+            }
+        }
+
+        internal void MarkReplayed(LogRef logRef)
+        {
+            lock (_gate)
+            {
+                var key = (logRef.Stream, logRef.Epoch);
+                if (!_replayedThrough.TryGetValue(key, out long current) || logRef.InSeq > current)
+                {
+                    _replayedThrough[key] = logRef.InSeq;
+                }
+            }
+        }
+
+        internal bool WasReplayed(LogRef logRef)
+        {
+            lock (_gate)
+            {
+                return HasLogReference(logRef)
+                    && _replayedThrough.TryGetValue((logRef.Stream, logRef.Epoch), out long sequence)
+                    && logRef.InSeq <= sequence;
+            }
+        }
+
+        internal BackfillPayload[] StopAndDrain()
+        {
+            lock (_gate)
+            {
+                _active = false;
+                BackfillPayload[] queued = [.. _queued];
+                _queued.Clear();
+                return queued;
+            }
+        }
+    }
+
+    private sealed class BackfillCursor(TradingDayStreamSnapshot snapshot)
+    {
+        internal TradingDayStreamSnapshot Snapshot { get; } = snapshot;
+
+        internal ArrayBufferWriter<byte> Buffer { get; } = new(2048);
+
+        internal long NextSequence { get; set; } = snapshot.FirstSequence;
+
+        internal long CurrentSequence { get; set; }
+
+        internal long Timestamp { get; set; }
+
+        internal LogRef CurrentRef { get; set; }
+    }
+
+    private readonly record struct BackfillPayload(LogRef LogRef, DeliveryMode DeliveryMode, byte[]? Frame);
 
     private readonly struct PendingLogon
     {

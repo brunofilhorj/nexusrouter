@@ -33,6 +33,14 @@ public static class AcceptorSessionMetrics
         description: "Accepted Logons by configured replay mode and whether the mode applied.");
 
     /// <summary>
+    /// Application messages delivered while opening a StartOfDay epoch.
+    /// </summary>
+    internal static readonly Counter<long> StartOfDayBackfill = Meter.CreateCounter<long>(
+        "acceptor_start_of_day_backfill_messages_total",
+        unit: "{messages}",
+        description: "Application messages delivered by StartOfDay backfill.");
+
+    /// <summary>
     /// Logon recusado antes de criar arquivos no log de sessão. A tag <c>reason</c> vale <c>max_clients</c> ou <c>invalid_key</c>.
     /// </summary>
     internal static readonly Counter<long> ClientsRejected = Meter.CreateCounter<long>(

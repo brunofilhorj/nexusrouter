@@ -389,6 +389,8 @@ public sealed class FixSessionIntegrationTests
 
         public int CopyClients(string dispatcherId, Span<ClientBinding> destination) => 0;
 
+        public TradingDayStreamSnapshot[] GetTradingDayStreams() => [];
+
         private sealed class NullStream : ISessionLogStream
         {
             public ushort StreamId => 1;
@@ -412,6 +414,18 @@ public sealed class FixSessionIntegrationTests
         private sealed class NullReader : ISessionLogReader
         {
             public bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination) => false;
+
+            public bool TryRead(
+                ushort stream,
+                int epoch,
+                long inSeq,
+                IBufferWriter<byte> destination,
+                out long ingressTimestampTicks)
+            {
+                ingressTimestampTicks = 0;
+                return false;
+            }
+
             public bool TryReadAt(ushort stream, uint segment, ulong offset, IBufferWriter<byte> destination) => false;
 
             public long GetCommitted(ushort stream, int epoch) => 0;

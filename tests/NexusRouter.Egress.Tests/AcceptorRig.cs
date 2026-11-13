@@ -34,7 +34,8 @@ internal sealed class AcceptorRig : IAsyncDisposable
         int port,
         SessionLogManager log,
         ISessionLogStream stream,
-        FixOutboundDispatcher dispatcher)
+        FixOutboundDispatcher dispatcher,
+        BlockingSessionLog? blockingLog)
     {
         Directory = directory;
         DispatcherId = dispatcherId;
@@ -42,6 +43,7 @@ internal sealed class AcceptorRig : IAsyncDisposable
         Log = log;
         Stream = stream;
         _dispatcher = dispatcher;
+        BlockingLog = blockingLog;
     }
 
     internal string Directory { get; }
@@ -65,7 +67,8 @@ internal sealed class AcceptorRig : IAsyncDisposable
         IReadOnlyList<string>? loggedOnClients = null,
         TimeSpan? slotTimeout = null,
         int uncleanMargin = 5,
-        string dispatcherId = DefaultDispatcherId)
+        string dispatcherId = DefaultDispatcherId,
+        bool blockBackfillReader = false)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -80,6 +83,8 @@ internal sealed class AcceptorRig : IAsyncDisposable
             NullLogger<SessionLogManager>.Instance);
         await log.StartAsync(CancellationToken.None);
         ISessionLogStream stream = log.OpenStream("B3");
+        BlockingSessionLog? blockingLog = blockBackfillReader ? new BlockingSessionLog(log) : null;
+        ISessionLog dispatcherLog = blockingLog is null ? log : blockingLog;
         foreach (string client in knownClients ?? [])
         {
             ClientBinding binding = log.OpenClient(dispatcherId, client);
@@ -107,11 +112,11 @@ internal sealed class AcceptorRig : IAsyncDisposable
             NullLogger<FixOutboundDispatcher>.Instance,
             new DispatchPayloadPool(),
             new NoSecrets(),
-            log,
+            dispatcherLog,
             catchUp: null,
             resendDeliveryMode: _ => mode);
         await dispatcher.StartAsync(CancellationToken.None);
-        return new AcceptorRig(directory, dispatcherId, port, log, stream, dispatcher);
+        return new AcceptorRig(directory, dispatcherId, port, log, stream, dispatcher, blockingLog);
     }
 
     /// <summary>
@@ -194,8 +199,10 @@ internal sealed class AcceptorRig : IAsyncDisposable
         }
 
         _stopped = true;
+        BlockingLog?.ReleaseBackfill();
         await _dispatcher.StopAsync(CancellationToken.None);
         await Log.StopAsync(CancellationToken.None);
+        BlockingLog?.Dispose();
     }
 
     /// <summary>
@@ -218,10 +225,99 @@ internal sealed class AcceptorRig : IAsyncDisposable
 
     internal readonly record struct Appended(byte[] Frame, LogRef Ref);
 
+    internal BlockingSessionLog? BlockingLog { get; }
+
     private sealed class NoSecrets : ISecretResolver
     {
         public string ResolveRequired(string key) =>
             throw new InvalidOperationException($"O resolvedor não deveria ser chamado (chave '{key}').");
+    }
+
+    internal sealed class BlockingSessionLog : ISessionLog, IDisposable
+    {
+        private readonly ISessionLog _inner;
+        private readonly BlockingReader _reader;
+
+        internal BlockingSessionLog(ISessionLog inner)
+        {
+            _inner = inner;
+            _reader = new BlockingReader(inner.Reader);
+        }
+
+        public event Func<CancellationToken, ValueTask>? DayRolloverStarting
+        {
+            add => _inner.DayRolloverStarting += value;
+            remove => _inner.DayRolloverStarting -= value;
+        }
+
+        public event Action? DayRolloverCompleted
+        {
+            add => _inner.DayRolloverCompleted += value;
+            remove => _inner.DayRolloverCompleted -= value;
+        }
+
+        public ISessionLogReader Reader => _reader;
+
+        internal Task BackfillReadStarted => _reader.ReadStarted;
+
+        public ISessionLogStream OpenStream(string sessionId) => _inner.OpenStream(sessionId);
+
+        public ClientBinding OpenClient(string dispatcherId, string clientKey) =>
+            _inner.OpenClient(dispatcherId, clientKey);
+
+        public ClientBinding ResetClient(string dispatcherId, string clientKey) =>
+            _inner.ResetClient(dispatcherId, clientKey);
+
+        public IConsumerState OpenBroker(string dispatcherId) => _inner.OpenBroker(dispatcherId);
+
+        public int CopyClients(string dispatcherId, Span<ClientBinding> destination) =>
+            _inner.CopyClients(dispatcherId, destination);
+
+        public TradingDayStreamSnapshot[] GetTradingDayStreams() => _inner.GetTradingDayStreams();
+
+        internal void ReleaseBackfill() => _reader.Release();
+
+        public void Dispose() => _reader.Dispose();
+
+        private sealed class BlockingReader : ISessionLogReader, IDisposable
+        {
+            private readonly ISessionLogReader _inner;
+            private readonly ManualResetEventSlim _release = new();
+            private readonly TaskCompletionSource _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _blockNext = 1;
+
+            internal BlockingReader(ISessionLogReader inner) => _inner = inner;
+
+            internal Task ReadStarted => _readStarted.Task;
+
+            public bool TryRead(ushort stream, int epoch, long inSeq, IBufferWriter<byte> destination) =>
+                _inner.TryRead(stream, epoch, inSeq, destination);
+
+            public bool TryRead(
+                ushort stream,
+                int epoch,
+                long inSeq,
+                IBufferWriter<byte> destination,
+                out long ingressTimestampTicks)
+            {
+                if (Interlocked.Exchange(ref _blockNext, 0) == 1)
+                {
+                    _readStarted.TrySetResult();
+                    _release.Wait();
+                }
+
+                return _inner.TryRead(stream, epoch, inSeq, destination, out ingressTimestampTicks);
+            }
+
+            public bool TryReadAt(ushort stream, uint segment, ulong offset, IBufferWriter<byte> destination) =>
+                _inner.TryReadAt(stream, segment, offset, destination);
+
+            public long GetCommitted(ushort stream, int epoch) => _inner.GetCommitted(stream, epoch);
+
+            internal void Release() => _release.Set();
+
+            public void Dispose() => _release.Dispose();
+        }
     }
 }
 

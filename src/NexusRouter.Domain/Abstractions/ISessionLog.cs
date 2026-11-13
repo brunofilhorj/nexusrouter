@@ -59,4 +59,10 @@ public interface ISessionLog
     /// <param name="destination">Receives as many bindings as fit. May be empty.</param>
     /// <returns>The total number of known clients, which can be greater than <paramref name="destination"/>.</returns>
     int CopyClients(string dispatcherId, Span<ClientBinding> destination);
+
+    /// <summary>
+    /// Snapshots the committed ingress sequence ranges for the current trading day.
+    /// </summary>
+    /// <returns>One range per ingress stream epoch that has records today.</returns>
+    TradingDayStreamSnapshot[] GetTradingDayStreams();
 }

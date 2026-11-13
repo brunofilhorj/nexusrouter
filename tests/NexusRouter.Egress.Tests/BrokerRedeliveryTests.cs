@@ -261,6 +261,17 @@ public sealed class BrokerRedeliveryTests
             return true;
         }
 
+        public bool TryRead(
+            ushort stream,
+            int epoch,
+            long inSeq,
+            IBufferWriter<byte> destination,
+            out long ingressTimestampTicks)
+        {
+            ingressTimestampTicks = inSeq;
+            return TryRead(stream, epoch, inSeq, destination);
+        }
+
         public long GetCommitted(ushort stream, int epoch) =>
             _committed.TryGetValue((stream, epoch), out long committed) ? committed : 0;
     }

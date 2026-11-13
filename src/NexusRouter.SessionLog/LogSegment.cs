@@ -175,7 +175,25 @@ internal sealed unsafe class LogSegment : IDisposable
             return false;
         }
 
-        return TryCopyRecord(offset, seq, destination);
+        return TryCopyRecord(offset, seq, destination, out _);
+    }
+
+    /// <summary>
+    /// Copies one record and returns its ingress timestamp.
+    /// </summary>
+    /// <param name="seq">Ingress sequence.</param>
+    /// <param name="destination">Receives the payload.</param>
+    /// <param name="timestamp">Timestamp captured when the record was appended.</param>
+    /// <returns>False when the slot is empty or the CRC does not match.</returns>
+    public bool TryRead(long seq, IBufferWriter<byte> destination, out long timestamp)
+    {
+        timestamp = 0;
+        if (!TryLocate(seq, out long offset))
+        {
+            return false;
+        }
+
+        return TryCopyRecord(offset, seq, destination, out timestamp);
     }
 
     /// <summary>
@@ -184,10 +202,16 @@ internal sealed unsafe class LogSegment : IDisposable
     /// <param name="offset">Byte offset of the record, as stored in the client index.</param>
     /// <param name="destination">Receives the payload.</param>
     /// <returns>False when the offset is outside the log, the record is torn or the CRC does not match.</returns>
-    public bool TryReadAt(long offset, IBufferWriter<byte> destination) => TryCopyRecord(offset, expectedSeq: 0, destination);
+    public bool TryReadAt(long offset, IBufferWriter<byte> destination) =>
+        TryCopyRecord(offset, expectedSeq: 0, destination, out _);
 
-    private bool TryCopyRecord(long offset, long expectedSeq, IBufferWriter<byte> destination)
+    private bool TryCopyRecord(
+        long offset,
+        long expectedSeq,
+        IBufferWriter<byte> destination,
+        out long timestamp)
     {
+        timestamp = 0;
         if (offset < 0 || offset + HeaderSize > _log.Length)
         {
             return false;
@@ -207,6 +231,7 @@ internal sealed unsafe class LogSegment : IDisposable
             return false;
         }
 
+        timestamp = Unsafe.ReadUnaligned<long>(record + TsOffset);
         Span<byte> target = destination.GetSpan(length);
         if (length > 0)
         {
