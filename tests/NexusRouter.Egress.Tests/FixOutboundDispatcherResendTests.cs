@@ -28,17 +28,17 @@ public sealed class FixOutboundDispatcherResendTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        await using Harness harness = await StartAsync(directory, port, mode);
+        await using Harness harness = await StartAsync(directory, port, mode, markLoggedOn: true);
         try
         {
             await harness.AppendAndDispatchAsync("A1", "A2", "A3");
-            using TcpClient client = await ConnectAsync(port, "OMS1");
+            using TcpClient client = await ConnectAsync(port, "OMS1", msgSeqNum: 2);
             var stream = new FrameStream(client.GetStream());
             byte[] logon = await stream.ReadFrameAsync();
             Assert.Equal("A", Field(logon, 35));
             Assert.Equal("4", Field(logon, 34));
 
-            await stream.WriteAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 1, end: 0));
+            await stream.WriteAsync(ResendRequest("OMS1", msgSeqNum: 3, begin: 1, end: 0));
 
             string[] expected = ["A1", "A2", "A3"];
             for (int i = 0; i < expected.Length; i++)
@@ -103,15 +103,15 @@ public sealed class FixOutboundDispatcherResendTests
     {
         string directory = TempDirectory();
         int port = FreePort();
-        await using Harness harness = await StartAsync(directory, port, DeliveryMode.PassThrough);
+        await using Harness harness = await StartAsync(directory, port, DeliveryMode.PassThrough, markLoggedOn: true);
         try
         {
             await harness.AppendAndDispatchAsync("C1", "C2", "C3");
-            using TcpClient client = await ConnectAsync(port, "OMS1");
+            using TcpClient client = await ConnectAsync(port, "OMS1", msgSeqNum: 2);
             var stream = new FrameStream(client.GetStream());
             _ = await stream.ReadFrameAsync();
 
-            await stream.WriteAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 2, end: 2));
+            await stream.WriteAsync(ResendRequest("OMS1", msgSeqNum: 3, begin: 2, end: 2));
 
             byte[] only = await stream.ReadFrameAsync();
             Assert.Equal("2", Field(only, 34));
@@ -125,7 +125,7 @@ public sealed class FixOutboundDispatcherResendTests
         }
     }
 
-    private static async Task<Harness> StartAsync(string directory, int port, DeliveryMode mode)
+    private static async Task<Harness> StartAsync(string directory, int port, DeliveryMode mode, bool markLoggedOn = false)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -157,12 +157,16 @@ public sealed class FixOutboundDispatcherResendTests
             log,
             catchUp: null,
             resendDeliveryMode: _ => mode);
-        log.OpenClient("fix-acceptor", "OMS1");
+        ClientBinding client = log.OpenClient("fix-acceptor", "OMS1");
+        if (markLoggedOn)
+        {
+            client.State.NextInExpected = 2;
+        }
         await dispatcher.StartAsync(CancellationToken.None);
         return new Harness(dispatcher, log, stream, mode);
     }
 
-    private static async Task<TcpClient> ConnectAsync(int port, string senderCompId)
+    private static async Task<TcpClient> ConnectAsync(int port, string senderCompId, long msgSeqNum = 1)
     {
         var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, port);
@@ -177,7 +181,7 @@ public sealed class FixOutboundDispatcherResendTests
             HeartBtInt = 30,
         };
         byte[] buffer = new byte[512];
-        int length = FixMessageBuilder.BuildLogon(buffer, options, 1).Length;
+        int length = FixMessageBuilder.BuildLogon(buffer, options, msgSeqNum).Length;
         await client.GetStream().WriteAsync(buffer.AsMemory(0, length));
         return client;
     }

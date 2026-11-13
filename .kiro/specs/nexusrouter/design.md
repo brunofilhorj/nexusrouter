@@ -443,6 +443,8 @@ As regras entre o router e seus clientes são nossas e configuráveis. O initiat
 | 3 | Retomar do ponto atual do router | Logon normal | Com `OnReconnectGap = SkipToCurrent`: responde o Logon e envia `SequenceReset-GapFill` com `34 = N` (início do intervalo) e `NewSeqNo` no seq corrente do router, sem reenviar aplicação. As mensagens continuam no `.cidx`. A ordem exata em relação ao seq do Logon de resposta é detalhe do TD-07, validado contra o QuickFIX. |
 | 4 | Cliente espera um seq que não existe (`N > M`) | `789 = N` ou `ResendRequest` com `BeginSeqNo >= M` | `Logout` com `Text` e fecha, sem adotar o `N` do cliente. Dicionário FIX: `789` acima do próximo seq a atribuir leva a `Logout`. |
 
+**Replay por época (`ReplayMode`, tag 19001).** O modo só é aplicado quando o Logon abre uma época nova: com `141=Y` ou no primeiro Logon do cliente no dia (estado de entrada ainda sem Logon aceito). Nesse caso, o acceptor começa um índice vazio em `FromLogon`; até a TD-15c, `StartOfDay` também começa vazio e registra `WARN`. A ordem de precedência é: tag 19001 do Logon, `ClientOverrides` pelo `SenderCompID`, `Recovery.ReplayMode` do dispatcher e, por fim, o default `FromLogon`. A tag só aceita `1` (`FromLogon`) ou `2` (`StartOfDay`); outro valor recebe `Logout` com `Text`, inclusive em reconexão. Em reconexão sem `141=Y`, uma tag válida e o modo configurado são ignorados e a recuperação TD-07/TD-08 (`789` / `ResendRequest`) permanece inalterada. Cada Logon aceito registra modo/aplicação em `acceptor_replay_mode_total` e no log `Information`; `StartOfDay` aplicado registra também `WARN` até a TD-15c.
+
 **Logout.** Ao recusar, o router envia `Logout` com `Text`, espera o `Logout` de confirmação por `LogoutTimeoutSeconds` e só então fecha o socket. Depois de enviar o `Logout`, só responde a `ResendRequest` (dicionário FIX, Logout). Isso dá ao cliente a chance de pedir gap-fill antes de cair.
 
 **`SequenceReset-Reset` não é usado.** O dicionário o restringe a recuperação de desastre e só permite aumentar o seq. O acceptor usa só o modo `GapFill`.
@@ -465,7 +467,10 @@ As regras entre o router e seus clientes são nossas e configuráveis. O initiat
 | `Recovery.AllowResetSeqNumFlag` | `true`, `false` | `true` |
 | `Recovery.AcceptNextExpectedMsgSeqNum` | `true`, `false` | `true` (usa a `789` quando o cliente a envia) |
 | `Recovery.RequireNextExpectedMsgSeqNum` | `true`, `false` | `false` (`true` recusa Logon sem `789`) |
+| `Recovery.ReplayMode` | `FromLogon`, `StartOfDay` | `FromLogon` |
 | `Recovery.LogoutTimeoutSeconds` | inteiro | `5` |
+
+As opções de recuperação, inclusive `ReplayMode`, podem ser sobrescritas em `ClientOverrides` por `SenderCompID`. A tag 19001 do Logon prevalece sobre ambas as configurações.
 
 O router nunca adota um seq maior declarado pelo cliente, então o `.cidx` denso não cresce por pedido do cliente.
 
@@ -754,11 +759,13 @@ NexusRouter:
         AllowResetSeqNumFlag: true             # permite 141=Y (nova época do cliente)
         AcceptNextExpectedMsgSeqNum: true      # lê a 789 do Logon quando o cliente a envia
         RequireNextExpectedMsgSeqNum: false    # true recusa Logon sem a 789
+        ReplayMode: FromLogon                 # FromLogon | StartOfDay
         LogoutTimeoutSeconds: 5                # espera do Logout de confirmação antes de fechar
         # Cliente que espera seq inexistente (789 ou BeginSeqNo > M): sempre Logout
       # ClientOverrides:
       #   - SenderCompId: "OMS1"
       #     OnReconnectGap: SkipToCurrent
+      #     ReplayMode: StartOfDay
       ChannelCapacity: 8192
 
     - Id: "rabbitmq-dropcopy"

@@ -137,6 +137,34 @@ public sealed class NexusRouterOptionsTests
     }
 
     [Fact]
+    public void Validate_WhenFixClientOverrideReplayModeIsUnknown_Fails()
+    {
+        NexusRouterOptions options = CreateValidOptions();
+        FixOutboundDispatcherOptions current = Assert.IsType<FixOutboundDispatcherOptions>(options.Dispatchers[1]);
+        options.Dispatchers[1] = new FixOutboundDispatcherOptions
+        {
+            Id = current.Id,
+            ListenAddress = current.ListenAddress,
+            ListenPort = current.ListenPort,
+            SenderCompId = current.SenderCompId,
+            BeginString = current.BeginString,
+            ClientOverrides =
+            [
+                new NexusRouter.Egress.Fix.AcceptorClientOverride
+                {
+                    SenderCompId = "OMS1",
+                    ReplayMode = (NexusRouter.Egress.Fix.ReplayMode)99,
+                },
+            ],
+        };
+
+        ValidateOptionsResult result = options.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, failure => failure.Contains("ReplayMode"));
+    }
+
+    [Fact]
     public void Validate_WhenFixClientLacksSenderCompId_Fails()
     {
         NexusRouterOptions options = CreateValidOptions();
@@ -194,6 +222,16 @@ public sealed class NexusRouterOptionsTests
             ["NexusRouter:Dispatchers:1:Type"] = "WebSocket",
             ["NexusRouter:Dispatchers:1:ListenAddress"] = "0.0.0.0",
             ["NexusRouter:Dispatchers:1:ListenPort"] = "6002",
+
+            ["NexusRouter:Dispatchers:2:Id"] = "fix-1",
+            ["NexusRouter:Dispatchers:2:Type"] = "FixOutbound",
+            ["NexusRouter:Dispatchers:2:ListenAddress"] = "127.0.0.1",
+            ["NexusRouter:Dispatchers:2:ListenPort"] = "6001",
+            ["NexusRouter:Dispatchers:2:SenderCompId"] = "NEXUS",
+            ["NexusRouter:Dispatchers:2:BeginString"] = "FIX.4.4",
+            ["NexusRouter:Dispatchers:2:Recovery:ReplayMode"] = "StartOfDay",
+            ["NexusRouter:Dispatchers:2:ClientOverrides:0:SenderCompId"] = "OMS1",
+            ["NexusRouter:Dispatchers:2:ClientOverrides:0:ReplayMode"] = "FromLogon",
             ["NexusRouter:SessionLog:Directory"] = "data/sessionlog",
 
             ["NexusRouter:Audit:ChannelCapacity"] = "32768",
@@ -214,9 +252,12 @@ public sealed class NexusRouterOptionsTests
         NexusRouterOptions options = NexusRouterOptions.FromConfiguration(config);
 
         Assert.Single(options.Sessions);
-        Assert.Equal(2, options.Dispatchers.Count);
+        Assert.Equal(3, options.Dispatchers.Count);
         Assert.IsType<KafkaDispatcherOptions>(options.Dispatchers[0]);
         Assert.IsType<WebSocketDispatcherOptions>(options.Dispatchers[1]);
+        FixOutboundDispatcherOptions fixOptions = Assert.IsType<FixOutboundDispatcherOptions>(options.Dispatchers[2]);
+        Assert.Equal(NexusRouter.Egress.Fix.ReplayMode.StartOfDay, fixOptions.Recovery.ReplayMode);
+        Assert.Equal(NexusRouter.Egress.Fix.ReplayMode.FromLogon, Assert.Single(fixOptions.ClientOverrides).ReplayMode);
         Assert.Equal(32768, options.Audit.ChannelCapacity);
         Assert.Equal(2, options.Audit.Sinks.Count);
         Assert.IsType<SerilogAuditSinkOptions>(options.Audit.Sinks[0]);

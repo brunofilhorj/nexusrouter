@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
+
 using NexusRouter.Domain.Models;
 using NexusRouter.Egress.Fix;
 
@@ -14,6 +17,155 @@ public sealed class RetransmissionOverLogTests
 {
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(300);
 
+    [Fact]
+    public async Task FromLogon_NewClientReceivesOnlyMessagesArrivingAfterLogon()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"]);
+            await rig.AppendAndDispatchAsync("BEFORE");
+
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
+            Assert.Equal("1", Field(await oms.ReadFrameAsync(), 34));
+            await oms.ExpectSilenceAsync(Quiet);
+
+            rig.Dispatch(rig.Append("AFTER"));
+            byte[] live = await oms.ReadFrameAsync();
+            Assert.Equal("2", Field(live, 34));
+            Assert.Equal("AFTER", Field(live, 11));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Logon_ReplayModeTagOverridesClientConfiguration()
+    {
+        const string dispatcherId = "replay-mode-override";
+        string directory = TempDirectory();
+        var observedModes = new ConcurrentBag<string>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Name == "acceptor_replay_mode_total")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
+        {
+            string? observedDispatcher = null;
+            string? mode = null;
+            foreach (KeyValuePair<string, object?> tag in tags)
+            {
+                if (tag.Key == "dispatcher_id")
+                {
+                    observedDispatcher = tag.Value?.ToString();
+                }
+                else if (tag.Key == "mode")
+                {
+                    mode = tag.Value?.ToString();
+                }
+            }
+
+            if (observedDispatcher == dispatcherId && mode is not null)
+            {
+                observedModes.Add(mode);
+            }
+        });
+        listener.Start();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                recovery: new AcceptorRecoveryOptions { ReplayMode = ReplayMode.StartOfDay },
+                dispatcherId: dispatcherId);
+
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "1");
+            _ = await oms.ReadFrameAsync();
+
+            Assert.Contains("FromLogon", observedModes);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Logon_WithUnknownReplayMode_SendsLogout()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                recovery: new AcceptorRecoveryOptions { LogoutTimeoutSeconds = 1 });
+
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", replayMode: "3");
+            byte[] logout = await oms.ReadFrameAsync();
+            Assert.Equal("5", Field(logout, 35));
+            Assert.Equal("Invalid ReplayMode", Field(logout, 58));
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Reconnect_WithoutResetPreservesNextExpectedReplay()
+    {
+        string directory = TempDirectory();
+        try
+        {
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory);
+            using (FixPeer initial = await FixPeer.ConnectAsync(rig, "OMS1"))
+            {
+                Assert.Equal("1", Field(await initial.ReadFrameAsync(), 34));
+                rig.Dispatch(rig.Append("A1"));
+                Assert.Equal("A1", Field(await initial.ReadFrameAsync(), 11));
+            }
+
+            using FixPeer reconnect = await FixPeer.ConnectAsync(
+                rig,
+                "OMS1",
+                msgSeqNum: 2,
+                nextExpected: 2,
+                replayMode: "2");
+            byte[] logon = await reconnect.ReadFrameAsync();
+            long logonSeq = long.Parse(Field(logon, 34));
+            Assert.InRange(logonSeq, 3, 4);
+
+            byte[] replay = await reconnect.ReadFrameAsync();
+            Assert.Equal("2", Field(replay, 34));
+            Assert.Equal("A1", Field(replay, 11));
+            Assert.Equal("Y", Field(replay, 43));
+
+            byte[] gapFill = await reconnect.ReadFrameAsync();
+            Assert.Equal("4", Field(gapFill, 35));
+            Assert.Equal("Y", Field(gapFill, 123));
+            long nextAfterGapFill = long.Parse(Field(gapFill, 36));
+            Assert.True(nextAfterGapFill >= logonSeq);
+            if (nextAfterGapFill == logonSeq)
+            {
+                byte[] logonGapFill = await reconnect.ReadFrameAsync();
+                Assert.Equal("4", Field(logonGapFill, 35));
+                Assert.Equal(logonSeq.ToString(), Field(logonGapFill, 34));
+                Assert.Equal((logonSeq + 1).ToString(), Field(logonGapFill, 36));
+            }
+
+            await reconnect.ExpectSilenceAsync(Quiet);
+        }
+        finally
+        {
+            DeleteDirectory(directory);
+        }
+    }
+
     // Passo 1: cada cliente recebe só o que o índice dele aponta.
     [Fact]
     public async Task ResendRequest_WithTwoClientsOnTheSameAcceptor_ReturnsOnlyTheMessagesOfEachIndex()
@@ -21,11 +173,14 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"]);
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1");
 
             // OMS1 conhecia A1; RISK1 só passa a existir no Logon, depois de A1.
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2);
             Assert.Equal("2", Field(await oms.ReadFrameAsync(), 34));
             using FixPeer risk = await FixPeer.ConnectAsync(rig, "RISK1");
             Assert.Equal("1", Field(await risk.ReadFrameAsync(), 34));
@@ -36,7 +191,7 @@ public sealed class RetransmissionOverLogTests
             Assert.Equal("3", Field(omsLive, 34));
             Assert.Equal("2", Field(riskLive, 34));
 
-            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 1, end: 0));
+            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 3, begin: 1, end: 0));
             await risk.SendAsync(ResendRequest("RISK1", msgSeqNum: 2, begin: 1, end: 0));
 
             byte[] omsFirst = await oms.ReadFrameAsync();
@@ -75,18 +230,22 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            AcceptorRig first = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"], uncleanMargin: 5);
+            AcceptorRig first = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"],
+                uncleanMargin: 5);
             await first.AppendAndDispatchAsync("A1", "A2");
             await first.StopAsUncleanAsync();
 
             await using AcceptorRig restarted = await AcceptorRig.StartAsync(directory, uncleanMargin: 5);
-            using FixPeer oms = await FixPeer.ConnectAsync(restarted, "OMS1");
+            using FixPeer oms = await FixPeer.ConnectAsync(restarted, "OMS1", msgSeqNum: 2);
             byte[] logon = await oms.ReadFrameAsync();
             long logonSeq = long.Parse(Field(logon, 34));
             Assert.True(logonSeq > 2, $"O seq de saída regrediu ou repetiu: {logonSeq}.");
             Assert.Equal(3 + 5, logonSeq);
 
-            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 1, end: 0));
+            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 3, begin: 1, end: 0));
 
             byte[] a1 = await oms.ReadFrameAsync();
             Assert.Equal("1", Field(a1, 34));
@@ -114,7 +273,11 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"], slotTimeout: TimeSpan.FromSeconds(10));
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"],
+                slotTimeout: TimeSpan.FromSeconds(10));
             ClientBinding binding = rig.Client("OMS1");
             AcceptorRig.Appended earlier = rig.Append("S0");
             long reserved = binding.Index.ReserveSeq();
@@ -122,9 +285,9 @@ public sealed class RetransmissionOverLogTests
             rig.Dispatch(rig.Append("S1"));
             await AcceptorRig.WaitPublishedAsync(binding.Index, 2);
 
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2);
             Assert.Equal("3", Field(await oms.ReadFrameAsync(), 34));
-            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 1, end: 2));
+            await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 3, begin: 1, end: 2));
 
             Task<byte[]> pending = oms.ReadFrameAsync();
             await Task.Delay(250);
@@ -154,7 +317,10 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"]);
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1", "A2");
 
             using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 1, reset: true);
@@ -214,14 +380,17 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"]);
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1", "A2", "A3");
 
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", nextExpected: 2);
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2, nextExpected: 2);
             byte[] logon = await oms.ReadFrameAsync();
             Assert.Equal("A", Field(logon, 35));
             Assert.Equal("4", Field(logon, 34));
-            Assert.Equal("2", Field(logon, 789));
+            Assert.Equal("3", Field(logon, 789));
 
             byte[] a2 = await oms.ReadFrameAsync();
             Assert.Equal("2", Field(a2, 34));
@@ -259,10 +428,11 @@ public sealed class RetransmissionOverLogTests
             await using AcceptorRig rig = await AcceptorRig.StartAsync(
                 directory,
                 recovery: new AcceptorRecoveryOptions { OnReconnectGap = OnReconnectGap.SkipToCurrent },
-                knownClients: ["OMS1"]);
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1", "A2");
 
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", nextExpected: 1);
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2, nextExpected: 1);
             byte[] logon = await oms.ReadFrameAsync();
             Assert.Equal("3", Field(logon, 34));
             byte[] gap = await oms.ReadFrameAsync();
@@ -325,7 +495,7 @@ public sealed class RetransmissionOverLogTests
             ClientBinding binding = rig.Client("OMS1");
 
             using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
-            Assert.Equal("2", Field(await oms.ReadFrameAsync(), 34));
+            Assert.Equal("1", Field(await oms.ReadFrameAsync(), 34));
             await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 2, begin: 99, end: 0));
 
             byte[] logout = await oms.ReadFrameAsync();
@@ -349,9 +519,10 @@ public sealed class RetransmissionOverLogTests
             await using AcceptorRig rig = await AcceptorRig.StartAsync(
                 directory,
                 recovery: new AcceptorRecoveryOptions { LogoutTimeoutSeconds = 2 },
-                knownClients: ["OMS1"]);
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
 
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", nextExpected: 10);
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2, nextExpected: 10);
             Assert.Equal("5", Field(await oms.ReadFrameAsync(), 35));
 
             await oms.ExpectSilenceAsync(TimeSpan.FromMilliseconds(800));
@@ -373,9 +544,10 @@ public sealed class RetransmissionOverLogTests
             await using AcceptorRig rig = await AcceptorRig.StartAsync(
                 directory,
                 recovery: new AcceptorRecoveryOptions { LogoutTimeoutSeconds = 10 },
-                knownClients: ["OMS1"]);
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
 
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", nextExpected: 10);
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2, nextExpected: 10);
             Assert.Equal("5", Field(await oms.ReadFrameAsync(), 35));
             await oms.SendAsync(Logout("OMS1", msgSeqNum: 2));
 
@@ -448,9 +620,10 @@ public sealed class RetransmissionOverLogTests
             await using AcceptorRig rig = await AcceptorRig.StartAsync(
                 directory,
                 recovery: new AcceptorRecoveryOptions { LogoutTimeoutSeconds = 3 },
-                knownClients: ["OMS1"]);
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1");
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2);
             Assert.Equal("2", Field(await oms.ReadFrameAsync(), 34));
 
             await oms.SendAsync(TestRequest("OMS1", msgSeqNum: 1, testReqId: "LOW"));
@@ -481,9 +654,12 @@ public sealed class RetransmissionOverLogTests
         string directory = TempDirectory();
         try
         {
-            await using AcceptorRig rig = await AcceptorRig.StartAsync(directory, knownClients: ["OMS1"]);
+            await using AcceptorRig rig = await AcceptorRig.StartAsync(
+                directory,
+                knownClients: ["OMS1"],
+                loggedOnClients: ["OMS1"]);
             await rig.AppendAndDispatchAsync("A1");
-            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1");
+            using FixPeer oms = await FixPeer.ConnectAsync(rig, "OMS1", msgSeqNum: 2);
             Assert.Equal("2", Field(await oms.ReadFrameAsync(), 34));
 
             await oms.SendAsync(ResendRequest("OMS1", msgSeqNum: 20, begin: 1, end: 1));

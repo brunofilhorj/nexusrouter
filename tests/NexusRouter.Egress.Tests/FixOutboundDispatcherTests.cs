@@ -129,14 +129,14 @@ public sealed class FixOutboundDispatcherTests
         Directory.CreateDirectory(Path.Combine(directory, "clients", "fix-acceptor", "OMS1"));
         await File.WriteAllTextAsync(
             Path.Combine(directory, "clients", "fix-acceptor", "OMS1", "state.json"),
-            """{"nextOut":37582,"nextInExpected":1,"epoch":0,"updatedAt":"2026-11-09T00:00:00+00:00"}""");
+            """{"nextOut":37582,"nextInExpected":2,"epoch":0,"updatedAt":"2026-11-09T00:00:00+00:00"}""");
         await File.WriteAllTextAsync(Path.Combine(directory, "clean"), string.Empty);
         int port = FreePort();
         await using var running = await StartAsync(directory, port, allowed: []);
         FixOutboundDispatcher dispatcher = running.Dispatcher;
         try
         {
-            using TcpClient client = await ConnectAsync(port, "OMS1");
+            using TcpClient client = await ConnectAsync(port, "OMS1", msgSeqNum: 2);
             Stream stream = client.GetStream();
             Assert.Equal("37582", Field(await ReadFrameAsync(stream), 34));
 
@@ -216,7 +216,7 @@ public sealed class FixOutboundDispatcherTests
             Assert.Equal(IndexReadResult.Published, published);
 
             using TcpClient client = await ConnectAsync(port, "OMS1");
-            Assert.Equal("2", Field(await ReadFrameAsync(client.GetStream()), 34));
+            Assert.Equal("1", Field(await ReadFrameAsync(client.GetStream()), 34));
         }
         finally
         {

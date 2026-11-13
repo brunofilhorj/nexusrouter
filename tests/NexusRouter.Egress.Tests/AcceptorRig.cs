@@ -22,15 +22,22 @@ namespace NexusRouter.Egress.Tests;
 /// </summary>
 internal sealed class AcceptorRig : IAsyncDisposable
 {
-    internal const string DispatcherId = "fix-acceptor";
+    internal const string DefaultDispatcherId = "fix-acceptor";
 
     private readonly FixOutboundDispatcher _dispatcher;
     private long _inSeq;
     private bool _stopped;
 
-    private AcceptorRig(string directory, int port, SessionLogManager log, ISessionLogStream stream, FixOutboundDispatcher dispatcher)
+    private AcceptorRig(
+        string directory,
+        string dispatcherId,
+        int port,
+        SessionLogManager log,
+        ISessionLogStream stream,
+        FixOutboundDispatcher dispatcher)
     {
         Directory = directory;
+        DispatcherId = dispatcherId;
         Port = port;
         Log = log;
         Stream = stream;
@@ -38,6 +45,8 @@ internal sealed class AcceptorRig : IAsyncDisposable
     }
 
     internal string Directory { get; }
+
+    internal string DispatcherId { get; }
 
     internal int Port { get; }
 
@@ -53,8 +62,10 @@ internal sealed class AcceptorRig : IAsyncDisposable
         AcceptorRecoveryOptions? recovery = null,
         DeliveryMode mode = DeliveryMode.PassThrough,
         IReadOnlyList<string>? knownClients = null,
+        IReadOnlyList<string>? loggedOnClients = null,
         TimeSpan? slotTimeout = null,
-        int uncleanMargin = 5)
+        int uncleanMargin = 5,
+        string dispatcherId = DefaultDispatcherId)
     {
         var log = new SessionLogManager(
             new SessionLogOptions
@@ -71,12 +82,16 @@ internal sealed class AcceptorRig : IAsyncDisposable
         ISessionLogStream stream = log.OpenStream("B3");
         foreach (string client in knownClients ?? [])
         {
-            log.OpenClient(DispatcherId, client);
+            ClientBinding binding = log.OpenClient(dispatcherId, client);
+            if (loggedOnClients?.Contains(client, StringComparer.Ordinal) == true)
+            {
+                binding.State.NextInExpected = 2;
+            }
         }
 
         int port = FixWire.FreePort();
         var dispatcher = new FixOutboundDispatcher(
-            DispatcherId,
+            dispatcherId,
             new FixOutboundDispatcherOptions
             {
                 ListenAddress = "127.0.0.1",
@@ -96,7 +111,7 @@ internal sealed class AcceptorRig : IAsyncDisposable
             catchUp: null,
             resendDeliveryMode: _ => mode);
         await dispatcher.StartAsync(CancellationToken.None);
-        return new AcceptorRig(directory, port, log, stream, dispatcher);
+        return new AcceptorRig(directory, dispatcherId, port, log, stream, dispatcher);
     }
 
     /// <summary>
@@ -230,26 +245,13 @@ internal sealed class FixPeer : IDisposable
         string senderCompId,
         long msgSeqNum = 1,
         bool reset = false,
-        long? nextExpected = null)
+        long? nextExpected = null,
+        string? replayMode = null)
     {
         var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, rig.Port);
         var peer = new FixPeer(client);
-        var options = new SessionOptions
-        {
-            SessionId = senderCompId,
-            Host = "127.0.0.1",
-            Port = 1,
-            SenderCompId = senderCompId,
-            TargetCompId = "NEXUS",
-            BeginString = "FIX.4.4",
-            HeartBtInt = 30,
-            ResetSeqNumFlag = reset,
-            NextExpectedMsgSeqNum = nextExpected,
-        };
-        byte[] buffer = new byte[512];
-        int length = FixMessageBuilder.BuildLogon(buffer, options, msgSeqNum).Length;
-        await peer.SendAsync(buffer[..length]);
+        await peer.SendAsync(FixWire.Logon(senderCompId, msgSeqNum, reset, nextExpected, replayMode));
         return peer;
     }
 
@@ -338,6 +340,21 @@ internal static class FixWire
 
     internal static byte[] ResendRequest(string senderCompId, long msgSeqNum, long begin, long end) =>
         ClientMessage("2", senderCompId, msgSeqNum, $"7={begin}{Soh}16={end}{Soh}");
+
+    internal static byte[] Logon(
+        string senderCompId,
+        long msgSeqNum,
+        bool reset,
+        long? nextExpected,
+        string? replayMode)
+    {
+        string body = $"35=A{Soh}49={senderCompId}{Soh}56=NEXUS{Soh}34={msgSeqNum}{Soh}"
+            + $"52=20260101-00:00:00.000{Soh}98=0{Soh}108=30{Soh}"
+            + (reset ? $"141=Y{Soh}" : string.Empty)
+            + (nextExpected is long next ? $"789={next}{Soh}" : string.Empty)
+            + (replayMode is not null ? $"19001={replayMode}{Soh}" : string.Empty);
+        return WithChecksum(body);
+    }
 
     internal static byte[] TestRequest(string senderCompId, long msgSeqNum, string testReqId, bool possDup = false) =>
         ClientMessage("1", senderCompId, msgSeqNum, $"112={testReqId}{Soh}", possDup);

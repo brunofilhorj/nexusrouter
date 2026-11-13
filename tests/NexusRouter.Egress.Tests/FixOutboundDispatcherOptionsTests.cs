@@ -25,6 +25,47 @@ public sealed class FixOutboundDispatcherOptionsTests
         Assert.Throws<ArgumentException>(() => options.EnsureValid());
     }
 
+    [Fact]
+    public void Validate_WhenReplayModeIsUnknown_Fails()
+    {
+        FixOutboundDispatcherOptions options = new()
+        {
+            ListenAddress = "127.0.0.1",
+            ListenPort = 6001,
+            SenderCompId = "NEXUS",
+            BeginString = "FIX.4.4",
+            Recovery = new AcceptorRecoveryOptions { ReplayMode = (ReplayMode)99 },
+        };
+
+        Assert.Throws<InvalidOperationException>(() => options.EnsureValid());
+    }
+
+    [Fact]
+    public void Validate_WhenClientOverrideReplayModeIsUnknown_Fails()
+    {
+        FixOutboundDispatcherOptions options = new()
+        {
+            ListenAddress = "127.0.0.1",
+            ListenPort = 6001,
+            SenderCompId = "NEXUS",
+            BeginString = "FIX.4.4",
+            ClientOverrides = [new AcceptorClientOverride { SenderCompId = "OMS1", ReplayMode = (ReplayMode)99 }],
+        };
+
+        Assert.Throws<InvalidOperationException>(() => options.EnsureValid());
+    }
+
+    [Fact]
+    public void RecoveryMerge_ClientReplayModeOverridesDispatcher()
+    {
+        AcceptorRecoveryOptions dispatcher = new() { ReplayMode = ReplayMode.StartOfDay };
+
+        AcceptorRecoveryOptions merged = dispatcher.Merge(
+            new AcceptorClientOverride { SenderCompId = "OMS1", ReplayMode = ReplayMode.FromLogon });
+
+        Assert.Equal(ReplayMode.FromLogon, merged.ReplayMode);
+    }
+
     private static FixOutboundDispatcherOptions Listener() =>
         new()
         {
