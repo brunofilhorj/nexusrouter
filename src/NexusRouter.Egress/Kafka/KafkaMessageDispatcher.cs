@@ -6,9 +6,10 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 
 using NexusRouter.Domain.Models;
-using NexusRouter.Egress;
 using NexusRouter.Domain.Pooling;
 using NexusRouter.Domain.Secrets;
+using NexusRouter.Egress;
+using NexusRouter.Egress.Fix;
 
 namespace NexusRouter.Egress.Kafka;
 
@@ -21,6 +22,9 @@ namespace NexusRouter.Egress.Kafka;
 /// que carrega o callback de IAM. Com <c>Acks=0</c> o envio usa <c>Produce</c>. Nos demais, <c>ProduceAsync</c>.
 /// Cada frame com <see cref="LogRef"/> leva o header <see cref="BrokerIdentity.HeaderName"/>.
 /// <see cref="CursorAckMode.OnBrokerAck"/> só avança o cursor depois do ack do broker.
+/// Tag 35 administrativa não é publicada, em <see cref="BrokerPayloadEncoding.Json"/> e em
+/// <see cref="BrokerPayloadEncoding.Raw"/>. O cursor avança mesmo assim: o filtro fica neste envio,
+/// depois que o <see cref="StreamCatchUp"/> já chamou.
 /// </remarks>
 public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptions>
 {
@@ -160,6 +164,12 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
             throw new InvalidOperationException("O payload Kafka não tem buffer.");
         }
 
+        if (IsSessionAdmin(payload.RawBuffer.Memory.Span))
+        {
+            AcknowledgeSkipped(payload);
+            return;
+        }
+
         string? identity = BrokerIdentity.Format(payload.LogRef);
         ReadOnlyMemory<byte>?[] fieldValues = BrokerHeaderFields.ReadValues(payload, Options.HeaderFields);
         Headers? headers = CreateHeaders(identity, Options.HeaderFields, fieldValues);
@@ -193,6 +203,21 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
             _tracker?.Confirm(payload.LogRef);
         }
     }
+
+    private void AcknowledgeSkipped(DispatchPayload payload)
+    {
+        if (Options.CursorAckMode != CursorAckMode.OnBrokerAck)
+        {
+            return;
+        }
+
+        _tracker?.Track(payload.LogRef);
+        _tracker?.Confirm(payload.LogRef);
+    }
+
+    private static bool IsSessionAdmin(ReadOnlySpan<byte> frame) =>
+        FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType)
+        && FixAdminMessageTypes.IsAdmin(msgType);
 
     private async ValueTask PublishWithProducer(
         string topic,

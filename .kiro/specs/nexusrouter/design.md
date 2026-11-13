@@ -165,6 +165,8 @@ O producer é **agnóstico ao provedor**. `ConnectAsync` monta um `ProducerConfi
 
 **`RabbitMQMessageDispatcher`:** Encapsula um `IModel` (cliente clássico) ou `IChannel` (futuro cliente async v7+). Cada instância de dispatcher mantém um channel dedicado para evitar contenção. O flag mandatory e as confirmações de publisher são configuráveis — desabilitados por padrão para latência mínima.
 
+**Formato do corpo (Kafka e RabbitMQ).** `PayloadEncoding` define o que é publicado: `Json` (default) ou `Raw`. `Json` publica o envelope `{"type":"exec","msgType":"8","ts":<ticks UTC>,"fields":{"11":"...",...}}`, com valores como string ASCII do FIX, na ordem do wire, sem as tags 8, 9, 10 e 35 em `fields`; tag repetida (grupo) vira array. `Raw` publica o frame FIX bruto. No RabbitMQ, `Json` marca `content_type=application/json`. A projeção acontece no `SendAsync`, sobre o frame bruto do log. Nos dois encodings, esse envio não publica quando a tag 35 é administrativa (`FixAdminMessageTypes`: Heartbeat `0`, TestRequest `1`, ResendRequest `2`, Reject `3`, SequenceReset `4`, Logout `5`, Logon `A`, NetworkStatusResponse `BD`). O cursor avança do mesmo jeito: o filtro roda depois que o `StreamCatchUp` já chamou o envio, então um Heartbeat não volta no catch-up. O `FanOutEngine` não filtra. O acceptor FIX continua recebendo o frame de todos os eventos, inclusive sessão.
+
 **Segregação por tag (TD-10a, 2026-11-11).** O router não escolhe o consumidor. `HeaderFields` lista as tags FIX que o consume loop carimba. Lista vazia, o default, não acrescenta header: a routing key do RabbitMQ continua `RoutingKey` e o único header segue sendo o de idempotência do TD-04b. No RabbitMQ, `RoutingKeyTemplate` (por exemplo `fix.<1>.<55>`) só entra quando preenchido; cada `<tag>` tem de estar em `HeaderFields`. O dispatcher declara a exchange configurada (topic, durável) ao abrir o canal. Os bindings ficam com o operador. No Kafka não há tópico por critério: as mesmas tags viram record headers e a partição continua a de `PartitionStrategy`. O dicionário B3 (`docs/FIX44Entrypoint.xml` 1.0.61) não tem a tag 440 (`ClearingAccount`); a conta é a tag 1 (`Account`). Dimensões presentes e usadas como exemplo: 1 (`Account`), 11 (`ClOrdID`), 49 (`SenderCompID`) e 55 (`Symbol`).
 
 #### 3.3.1 `WebSocketMessageDispatcher`
@@ -1024,8 +1026,8 @@ NexusRouter/
         ├─► Clientes conhecidos (FIX, WebSocket): ReserveSeq + PublishApp no índice do cliente,
         │       mesmo sem sessão logada; só envia se a sessão existe
         │
-        ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message)
-        ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body)
+        ├─► KafkaMessageDispatcher: IProducer.ProduceAsync(topic, message) — só aplicação; tag 35 admin avança o cursor e não publica
+        ├─► RabbitMQMessageDispatcher: IModel.BasicPublish(exchange, routingKey, body) — mesma regra de aplicação
         ├─► FixOutboundDispatcher: enfileira uma cópia por sessão aceita, cada uma com o próprio MsgSeqNum
         └─► WebSocketMessageDispatcher: projeta por sessão (json ou binary, campos do Logon) e enfileira
 
