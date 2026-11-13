@@ -79,8 +79,11 @@ public sealed class FixInitiatorAdapterTests
             var exec = Encoding.ASCII.GetBytes("8=FIX.4.4\u00019=5\u000135=8\u000134=3\u000111=ORD1\u000110=000\u0001");
             await stream.WriteAsync(exec);
             await Task.Delay(300);
-            Assert.Equal(1, adapter.Counters.Received);
-            Assert.Equal("8", publisher.Events.Single().MsgType);
+            Assert.Equal(2, adapter.Counters.Received);
+            Assert.Equal(
+                [(ProbeDirection.Out, "A"), (ProbeDirection.In, "A"), (ProbeDirection.In, "8")],
+                publisher.Events.Select(e => (e.Direction, e.MsgType)).ToArray());
+            Assert.Contains("|35=A|49=PROBE|56=NEXUSROUTER|", publisher.Events[0].RawPreview);
             Assert.Equal(3, adapter.Session.LastReceivedSeqNum);
 
             // TestRequest is answered with a Heartbeat carrying TestReqID and a rising MsgSeqNum.
@@ -91,10 +94,21 @@ public sealed class FixInitiatorAdapterTests
             Assert.Contains("|112=T1|", heartbeat);
             Assert.Contains("|34=2|", heartbeat);
 
+            var reject = Encoding.ASCII.GetBytes("8=FIX.4.4\u00019=5\u000135=3\u000134=5\u000158=bad\u000110=000\u0001");
+            await stream.WriteAsync(reject);
+            for (var i = 0; i < 50 && !publisher.Events.Exists(e => e.MsgType == "3"); i++)
+            {
+                await Task.Delay(50);
+            }
+
+            Assert.Contains(publisher.Events, e => e.Direction == ProbeDirection.In && e.MsgType == "3");
+            Assert.DoesNotContain(publisher.Events, e => e.MsgType == "0" || e.MsgType == "1");
+
             await adapter.DisconnectAsync(CancellationToken.None);
             var logout = Text(await ReadFrameAsync(stream, scanner));
             Assert.Contains("|35=5|", logout);
             Assert.Contains("|34=3|", logout);
+            Assert.Contains(publisher.Events, e => e.Direction == ProbeDirection.Out && e.MsgType == "5");
             Assert.Equal(ProbeState.Disconnected, adapter.State);
         }
         finally
@@ -232,7 +246,8 @@ public sealed class FixInitiatorAdapterTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var adapter = Create(new Publisher());
+            var publisher = new Publisher();
+            var adapter = Create(publisher);
             var accept = listener.AcceptTcpClientAsync();
             var connect = adapter.ConnectAsync(
                 new FixProfile("127.0.0.1", port, "PROBE", "NEXUSROUTER", 20, SendNextExpected: false),
@@ -257,6 +272,9 @@ public sealed class FixInitiatorAdapterTests
             Assert.Contains("|34=1|", gapFill);
             Assert.Contains("|123=Y|", gapFill);
             Assert.Contains("|36=3|", gapFill);
+            Assert.Contains(publisher.Events, e => e.Direction == ProbeDirection.Out && e.MsgType == "2" && e.RawPreview.Contains("|7=1|"));
+            Assert.Contains(publisher.Events, e => e.Direction == ProbeDirection.In && e.MsgType == "2");
+            Assert.Contains(publisher.Events, e => e.Direction == ProbeDirection.Out && e.MsgType == "4" && e.RawPreview.Contains("|123=Y|"));
             await adapter.DisconnectAsync(CancellationToken.None);
         }
         finally

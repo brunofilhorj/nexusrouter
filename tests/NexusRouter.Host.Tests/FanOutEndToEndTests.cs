@@ -232,7 +232,7 @@ public sealed class FanOutEndToEndTests
         };
         using IConnection connection = factory.CreateConnection();
         using IModel channel = connection.CreateModel();
-        channel.ExchangeDeclare(RabbitExchange, ExchangeType.Direct, durable: false, autoDelete: false);
+        channel.ExchangeDeclare(RabbitExchange, ExchangeType.Topic, durable: true, autoDelete: false);
         channel.QueueDeclare(RabbitQueue, durable: false, exclusive: false, autoDelete: false);
         channel.QueueBind(RabbitQueue, RabbitExchange, RabbitRoutingKey);
         await Task.CompletedTask;

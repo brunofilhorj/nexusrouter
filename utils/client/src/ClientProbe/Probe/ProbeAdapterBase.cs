@@ -104,4 +104,17 @@ public abstract class ProbeAdapterBase : IProbeAdapter
         _publisher.TryPublish(probeEvent, Counters);
         return probeEvent;
     }
+
+    /// <summary>
+    /// Publishes a frame the probe sent. Does not increment <see cref="ProbeCounters.Received"/>.
+    /// </summary>
+    /// <param name="frame">ASCII bytes of one FIX frame.</param>
+    protected void PublishSent(ReadOnlySpan<byte> frame)
+    {
+        var sent = ShortFieldExtractor.Extract(Transport, frame, _time.GetUtcNow(), _previewLength) with
+        {
+            Direction = ProbeDirection.Out,
+        };
+        _publisher.TryPublish(sent, Counters);
+    }
 }

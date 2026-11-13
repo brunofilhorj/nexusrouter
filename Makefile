@@ -18,7 +18,7 @@ CLIENT       := utils/client/src/ClientProbe
 # A ordem só é garantida em `make up` por meio das esperas abaixo (WAIT_SIM).
 WAIT_SIM ?= 5
 
-.PHONY: help up infra down install sim-backend sim-panel router client-panel build test
+.PHONY: help up infra down clean-state install sim-backend sim-panel router client-panel build test
 
 help: ## Lista os alvos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -31,6 +31,11 @@ infra: ## Kafka, RabbitMQ e TimescaleDB via docker compose
 
 down: ## Derruba a infra Docker (os processos dotnet/node param com Ctrl+C)
 	docker compose down
+
+clean-state: ## Apaga data/* do router e probe-state/* do ClientProbe
+	rm -rf $(ROUTER)/data
+	mkdir -p $(ROUTER)/data
+	find $(CLIENT) -type d -name probe-state -prune -exec rm -rf {} +
 
 install: ## npm install do painel do simulador
 	cd $(SIM_FRONTEND) && npm install

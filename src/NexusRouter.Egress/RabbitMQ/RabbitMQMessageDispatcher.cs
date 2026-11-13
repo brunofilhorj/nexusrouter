@@ -21,6 +21,7 @@ namespace NexusRouter.Egress.RabbitMQ;
 /// <see cref="CursorAckMode.OnEnqueue"/> publica sem esperar o broker.
 /// Cada frame com <see cref="LogRef"/> leva o header <see cref="BrokerIdentity.HeaderName"/>.
 /// Se o model já fechou, o envio abre a conexão de novo uma vez e tenta publicar outra vez.
+/// Cada abertura declara a exchange configurada (topic, durável). A fila e o bind ficam com o consumidor.
 /// </remarks>
 public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatcherOptions>
 {
@@ -313,6 +314,7 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
 
             _connection = factory.CreateConnection(DispatcherId);
             _model = _connection.CreateModel();
+            _model.ExchangeDeclare(Options.Exchange, ExchangeType.Topic, durable: true, autoDelete: false);
             if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
             {
                 _model.ConfirmSelect();
