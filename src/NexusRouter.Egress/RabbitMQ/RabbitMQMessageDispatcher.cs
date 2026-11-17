@@ -27,13 +27,12 @@ namespace NexusRouter.Egress.RabbitMQ;
 /// Se o model já fechou, o envio abre a conexão de novo uma vez e tenta publicar outra vez.
 /// Cada abertura declara a exchange configurada (topic, durável). A fila e o bind ficam com o consumidor.
 /// </remarks>
-public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatcherOptions>
+public sealed class RabbitMQMessageDispatcher : BrokerDispatcherBase<RabbitMQDispatcherOptions>
 {
     private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
 
     private readonly object _connectionGate = new();
     private readonly ISecretResolver _secretResolver;
-    private readonly BrokerCursorTracker? _tracker;
     private readonly RabbitPublish? _publish;
     private IConnection? _connection;
     private IModel? _model;
@@ -73,11 +72,18 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         ISecretResolver secretResolver,
         StreamCatchUp? catchUp = null,
         BrokerCursorTracker? tracker = null)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
+        : base(
+            dispatcherId,
+            Validate(options),
+            options.ChannelCapacity,
+            payloadPool,
+            logger,
+            options.CursorAckMode,
+            tracker,
+            catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         _secretResolver = secretResolver;
-        _tracker = tracker;
     }
 
     /// <summary>
@@ -163,10 +169,7 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
         ReadOnlyMemory<byte>?[] fieldValues = BrokerHeaderFields.ReadValues(payload, Options.HeaderFields);
         string routingKey = BuildRoutingKey(fieldValues);
         Dictionary<string, object>? headers = CreateHeaders(identity, fieldValues);
-        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
-        {
-            _tracker?.Track(payload.LogRef);
-        }
+        TrackForBrokerAck(payload);
 
         if (_publish is not null)
         {
@@ -186,26 +189,8 @@ public sealed class RabbitMQMessageDispatcher : DispatcherBase<RabbitMQDispatche
             }
         }
 
-        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
-        {
-            _tracker?.Confirm(payload.LogRef);
-        }
+        ConfirmBrokerAck(payload);
     }
-
-    private void AcknowledgeSkipped(DispatchPayload payload)
-    {
-        if (Options.CursorAckMode != CursorAckMode.OnBrokerAck)
-        {
-            return;
-        }
-
-        _tracker?.Track(payload.LogRef);
-        _tracker?.Confirm(payload.LogRef);
-    }
-
-    private static bool IsSessionAdmin(ReadOnlySpan<byte> frame) =>
-        FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType)
-        && FixAdminMessageTypes.IsAdmin(msgType);
 
     private void Publish(
         ReadOnlyMemory<byte> body,

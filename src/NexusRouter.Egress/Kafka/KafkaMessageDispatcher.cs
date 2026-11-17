@@ -26,11 +26,10 @@ namespace NexusRouter.Egress.Kafka;
 /// <see cref="BrokerPayloadEncoding.Raw"/>. O cursor avança mesmo assim: o filtro fica neste envio,
 /// depois que o <see cref="StreamCatchUp"/> já chamou.
 /// </remarks>
-public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptions>
+public sealed class KafkaMessageDispatcher : BrokerDispatcherBase<KafkaDispatcherOptions>
 {
     private readonly IKafkaPartitionStrategy _partitionStrategy;
     private readonly ISecretResolver _secretResolver;
-    private readonly BrokerCursorTracker? _tracker;
     private IProducer<Null, byte[]>? _producer;
     private KafkaPublish? _publish;
     private int _released;
@@ -75,12 +74,19 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         IKafkaPartitionStrategy? partitionStrategy = null,
         StreamCatchUp? catchUp = null,
         BrokerCursorTracker? tracker = null)
-        : base(dispatcherId, Validate(options), options.ChannelCapacity, payloadPool, logger, catchUp)
+        : base(
+            dispatcherId,
+            Validate(options),
+            options.ChannelCapacity,
+            payloadPool,
+            logger,
+            options.CursorAckMode,
+            tracker,
+            catchUp)
     {
         ArgumentNullException.ThrowIfNull(secretResolver);
         _secretResolver = secretResolver;
         _partitionStrategy = partitionStrategy ?? CreateStrategy(options);
-        _tracker = tracker;
     }
 
     /// <summary>
@@ -173,10 +179,7 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
         string? identity = BrokerIdentity.Format(payload.LogRef);
         ReadOnlyMemory<byte>?[] fieldValues = BrokerHeaderFields.ReadValues(payload, Options.HeaderFields);
         Headers? headers = CreateHeaders(identity, Options.HeaderFields, fieldValues);
-        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
-        {
-            _tracker?.Track(payload.LogRef);
-        }
+        TrackForBrokerAck(payload);
 
         byte[] value;
         if (Options.PayloadEncoding == BrokerPayloadEncoding.Json)
@@ -198,26 +201,8 @@ public sealed class KafkaMessageDispatcher : DispatcherBase<KafkaDispatcherOptio
             headers,
             cancellationToken).ConfigureAwait(false);
 
-        if (Options.CursorAckMode == CursorAckMode.OnBrokerAck)
-        {
-            _tracker?.Confirm(payload.LogRef);
-        }
+        ConfirmBrokerAck(payload);
     }
-
-    private void AcknowledgeSkipped(DispatchPayload payload)
-    {
-        if (Options.CursorAckMode != CursorAckMode.OnBrokerAck)
-        {
-            return;
-        }
-
-        _tracker?.Track(payload.LogRef);
-        _tracker?.Confirm(payload.LogRef);
-    }
-
-    private static bool IsSessionAdmin(ReadOnlySpan<byte> frame) =>
-        FixWireFrame.TryReadTag(frame, 35, out ReadOnlySpan<byte> msgType)
-        && FixAdminMessageTypes.IsAdmin(msgType);
 
     private async ValueTask PublishWithProducer(
         string topic,

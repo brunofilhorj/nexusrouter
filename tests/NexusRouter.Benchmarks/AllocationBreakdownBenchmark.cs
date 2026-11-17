@@ -44,8 +44,12 @@ public class AllocationBreakdownBenchmark
             DeliveryMode.PassThrough,
             ImmutableArray.Create<IMessageDispatcher>(dispatcher));
         _routeResolver = new RouteResolver([_route], NullLogger<RouteResolver>.Instance);
+        // Evita reter snapshots de auditoria sem limite durante as medições.
         _fanOutEngine = new FanOutEngine(
-            Channel.CreateUnbounded<AuditRecord>(),
+            Channel.CreateBounded<AuditRecord>(new BoundedChannelOptions(64)
+            {
+                FullMode = BoundedChannelFullMode.DropWrite,
+            }),
             _payloadPool,
             NullLogger<FanOutEngine>.Instance,
             _metrics);
